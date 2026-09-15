@@ -315,8 +315,13 @@ shader bytecode rather than source and the export holds no shader blobs to decom
 
 Consequences worth knowing before reading any visual result: the compute shaders *are* real
 (`Assets\Resources\compute\*.asset`, 140 of them, with real DXBC blobs) so the GPU skinning, cloth and
-collider systems run; but anything drawn through one of the placeholders renders flat and, in the
-character's case, in its bind pose - the character's body deforms correctly on the GPU and then has
-that result bound into a shader with no vertex buffer to receive it. See *The body defect* in
+collider systems run; but anything drawn through one of the placeholders renders flat, and the
+character's body also renders in its bind pose - it deforms correctly on the GPU and then has that
+result bound into a shader that has no vertex buffer to receive it. See *The body defect* in
 `docs\verification.md` for the evidence and the routes out.
+
+What the placeholders *do* preserve is worth having: every stub keeps its shader's real property list
+(with names, types, ranges and defaults) and its `Fallback` chain, because AssetRipper rebuilt them
+from the compiled reflection. That is what makes a replacement shader a tractable job rather than a
+guess - the property names the materials expect are known.
 

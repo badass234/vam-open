@@ -335,19 +335,29 @@ skeleton rather than being deformed by a shader that ignores its input.
 
 **Why it cannot simply be fixed by editing something.** VaM ships shader *bytecode*, not source.
 `ShaderExportMode = Decompile` (`docs\asset-export.md:48`) was chosen over the default and still
-produced these stubs; the export carries no shader blobs and a text search for `DXBC`,
-`m_SubPrograms` and `m_CompileInfo` across `ExportedProject` returns nothing. The compute shaders that
-*do* work survive because they are different objects - `Assets\Resources\compute\*.asset` holds 140
-real serialised `ComputeShader` assets with real DXBC blobs. Nothing equivalent for the draw shaders
-came across.
+produced these stubs: AssetRipper reconstructed each shader's property list and its stage inputs from
+the compiled reflection, which is enough to name the material properties and see one `POSITION` input
+and one `TEXCOORD0`, and not enough to see a vertex id or a structured buffer. The export itself
+carries no shader blobs - a text search for `DXBC`, `m_SubPrograms` and `m_CompileInfo` across
+`ExportedProject` returns nothing. The bytecode has not vanished from the world, though: the installed
+game's `VaM_Data\globalgamemanagers.assets` contains 64 `DXBC` headers alongside the `ComputeBuff`
+shader names, so the original compiled shaders are still on disk if anyone wants them back. The
+compute shaders that *do* work survive for a different reason - they are different objects, and
+`Assets\Resources\compute\*.asset` holds 140 real serialised `ComputeShader` assets with real DXBC
+blobs.
 
-**The three routes out**, all of them a decision rather than a detail:
+**The three routes out**, with what is actually known about their cost:
 
-| Route | What it means | Cost and fidelity |
+| Route | What it means | Cost |
 |---|---|---|
-| Replace the `*ComputeBuff` shaders | ~12 variants that read `verts`/`normals`/`tangents` from `StructuredBuffer`s by vertex id and re-implement the subsurface/marmoset look | Faithful movement, approximate look; real shader authoring with no reference |
-| Recover the original bytecode | The `Shader` objects in `VaM_Data\resources.assets` and `globalgamemanagers.assets` still hold their compiled DXBC: extract, decompile, rebuild | Most faithful; needs DXBC tooling, heaviest |
-| Use Unity's own skinning | Enable the existing `Genesis2Female.Shape` `SkinnedMeshRenderer` with its 80 bones and stop VaM's GPU draw for the body | Minutes; the body moves and is lit, without the morph/UV-morph pipeline - coarse, but enough to finish stage-5 verification |
+| **Replace the `*ComputeBuff` shaders** | The contract is exactly specified: `verts` (stride 12), `normals` (stride 12) and `tangents` (stride 16) `StructuredBuffer`s indexed by vertex id, drawn with an identity object matrix (`DAZSkinV2.cs:4746-4778`), so the buffers already hold **world-space** positions. A replacement reads `verts[SV_VertexID]`, multiplies by `UNITY_MATRIX_VP`, and shades. The materials' own property lists survive in the exported stubs, so `_MainTex`, `_BumpMap`, `_SpecInt`, `_Shininess`, `_SubdermisColor` and the rest keep their meanings. Only the lighting model has to be invented | 8 distinct ComputeBuff shaders carry the character; the same work makes cloth, hair and colliders pose too. Approximate look, correct movement |
+| **Recover the original bytecode** | The compiled DXBC blobs *do* survive in the installation - `VaM_Data\globalgamemanagers.assets` holds 64 `DXBC` headers and the `ComputeBuff` shader names. Extract them, decompile to HLSL, rebuild the Unity shaders | Most faithful, and the source of truth is on disk; but needs DXBC tooling and a DXBC-to-HLSL decompiler, then hand-conversion into Cg |
+| **Use Unity's own skinning** | The rip already has `Genesis2Female.Shape` as a real `SkinnedMeshRenderer` (24 119 verts, 80 bones, `Standard` materials - a *built-in* shader, so it lights correctly): enable it and stop VaM's GPU draw for the body | Minutes, not days; the body moves and is lit, without the morph/UV-morph pipeline - coarse, but enough to finish stage-5 verification |
+
+Note that the body is not the only victim: the 120 plain stubs are drawn with correct geometry but
+**no lighting at all**, so the whole scene renders flat. Anything that is not a Unity built-in shader
+is unlit. A second, separable tier of work - giving the plain stubs a real lit surface shader while
+keeping their exported property names - is what the scene as a whole needs.
 
 Until one is chosen, the visual comparison below is bounded by this: **movement, lighting and
 material response on the body cannot be verified against the original**, because the rebuild does not
