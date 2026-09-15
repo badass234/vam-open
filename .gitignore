@@ -1,0 +1,82 @@
+# ---------------------------------------------------------------------------------------------
+# In this repository only the code is tracked. Everything that is a copy of the game, a result of
+# the build, or a piece of the local toolchain stays out - see README.md for the reasoning.
+# ---------------------------------------------------------------------------------------------
+
+# --- the game itself (junctions/copies into the installation directory) ------------------------
+VaM_Rebuild/AddonPackages/
+VaM_Rebuild/AddonPackagesUserPrefs/
+VaM_Rebuild/Custom/
+VaM_Rebuild/Saves/
+VaM_Rebuild/StreamingAssets/
+VaM_Rebuild/Plugins/
+VaM_Rebuild/Keys/
+
+# --- exported assets: AssetRipper output, kept out even where it is only .meta files ------------
+VaM_Rebuild/Assets/AnimationClip/
+VaM_Rebuild/Assets/AnimatorController/
+VaM_Rebuild/Assets/Avatar/
+VaM_Rebuild/Assets/Cubemap/
+VaM_Rebuild/Assets/Flare/
+VaM_Rebuild/Assets/Font/
+VaM_Rebuild/Assets/GameObject/
+VaM_Rebuild/Assets/Material/
+VaM_Rebuild/Assets/Mesh/
+VaM_Rebuild/Assets/PhysicMaterial/
+VaM_Rebuild/Assets/Plugins/
+VaM_Rebuild/Assets/Resources/
+VaM_Rebuild/Assets/Shader/
+VaM_Rebuild/Assets/Sprite/
+VaM_Rebuild/Assets/TextAsset/
+VaM_Rebuild/Assets/Texture2D/
+VaM_Rebuild/Assets/VaMAssets/
+VaM_Rebuild/Assets/*.meta
+!VaM_Rebuild/Assets/Editor.meta
+
+# --- the code the project compiles is a copy of src\, placed there by Setup-RebuildProject.ps1 ---
+VaM_Rebuild/Assets/Scripts/
+
+# --- Unity build state ------------------------------------------------------------------------
+VaM_Rebuild/Library/
+VaM_Rebuild/Cache/
+VaM_Rebuild/Temp/
+VaM_Rebuild/Obj/
+VaM_Rebuild/Build/
+VaM_Rebuild/Builds/
+VaM_Rebuild/Logs/
+VaM_Rebuild/UserSettings/
+VaM_Rebuild/prefs.json
+VaM_Rebuild/*.csproj
+VaM_Rebuild/*.sln
+VaM_Rebuild/*.unityproj
+
+# --- ripped assemblies and other working copies of the game -----------------------------------
+work/ripped-core/
+work/downloads/
+work/Assets/
+work/ExportedProject/
+
+# --- toolchain: .NET SDK, ilspycmd, AssetRipper (downloaded by the setup scripts) ---------------
+.tools/
+
+# --- run output -------------------------------------------------------------------------------
+artifacts/
+
+# --- credentials ------------------------------------------------------------------------------
+**/key.json
+**/Unity_lic.ulf
+**/Unity_lic.ulf.*
+
+# --- intermediates and editor noise -----------------------------------------------------------
+src/UnityReferences.props
+tools/__pycache__/
+**/obj/
+**/bin/
+.vs/
+.idea/
+*.user
+*.suo
+*.log
+
+# session working plan, lives outside the repository
+plan.md

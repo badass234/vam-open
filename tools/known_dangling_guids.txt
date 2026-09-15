@@ -1,0 +1,22 @@
+# GUIDs that are referenced by assets but deliberately not defined by any .meta file.
+# Anything not listed here makes check_asset_guids.py exit non-zero.
+#
+# AssetRipper invents the whole GUID space on export (the original project's .meta files are not
+# in a shipped build), so these are export artifacts rather than anything recoverable.
+
+# Unity's sentinels for a MonoBehaviour whose script could not be resolved at build time. They
+# appear on ~80 UI prefabs; Unity shows them as "Missing (Mono Script)" and drops the component.
+0000000000000000e000000000000000
+0000000000000000f000000000000000
+
+# One more unknown-script GUID, always paired with a hash fileID instead of the 11500000 that
+# .cs-backed scripts use. 309 references across the UI prefabs, same cause as the sentinels.
+f5f67c52d1564df4a8936ccd202a3bd8
+
+# SteamVR: AssetRipper decompiled SteamVR.dll into Assets\Scripts\SteamVR and pointed these three
+# scriptable objects at the generated .cs files. The project ships SteamVR.dll as a plugin instead
+# (see docs\rebuild-project.md), so these break. Affects Resources\SteamVR_Settings.asset,
+# Resources\SteamVR_ExternalCamera.prefab and the three Resources\ReferencePose_*.asset files.
+1f8b21067ddc5d3e82ada8871809e11a
+59472c286047efb8b486f27051c691c7
+a45dbaba982dfcd8b0bc9cfcd1bdd614

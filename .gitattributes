@@ -1,0 +1,4 @@
+# The decompiled sources are exactly what ilspycmd/AssetRipper wrote, on Windows. No line-ending
+# normalisation, no charset conversion: byte-for-byte parity with the extracted files is what makes
+# the parity checks in docs/ meaningful.
+* -text

@@ -1,0 +1,21 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Unity 2018.1.9f2 ships the .NET 4.x equivalent profile and a C# 6 compiler. -->
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>6</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Deterministic>false</Deterministic>
+    <NoWarn>$(NoWarn);CS0649;CS0169;CS0414;CS0108;CS0114;CS1591</NoWarn>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <!-- Keep build output out of the source tree. -->
+    <BaseOutputPath>$(MSBuildThisFileDirectory)..\artifacts\bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)..\artifacts\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)UnityReferences.props"
+          Condition="Exists('$(MSBuildThisFileDirectory)UnityReferences.props')" />
+
+</Project>
+

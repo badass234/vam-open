@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Assembly-UnityScript</AssemblyName>
+    <RootNamespace></RootNamespace>
+  </PropertyGroup>
+
+</Project>
