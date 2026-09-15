@@ -19,8 +19,16 @@ passes removed" and ComputeShader.FindKernel returns -1, so the run dies in
 GPUCollidersManager.FixedUpdate before it can report anything. Pass -Headless to force the old
 behaviour when all you want to know is whether the scene even starts.
 
-The run deliberately omits -quit. Play mode needs the editor alive, so the gate method exits the
-editor itself once it is done; -quit would shut everything down before the first frame.
+The run deliberately omits -quit for -Method Play. Play mode needs the editor alive, so the gate method
+exits the editor itself once it is done; -quit would shut everything down before the first frame. The
+other two methods never enter play mode, so there -quit costs nothing and is what guarantees the run
+ends even in a state where the gate method cannot exit the editor.
+
+A run always ends in a verdict, never in an exception. An editor that does not exit within -TimeoutSec
+is stopped and its log read anyway - the report the gate already wrote is what decides. A failure
+caused by the built assemblies losing Assembly-CSharp.dll (the cascading
+`CS0246: SuperController / MeshVR / Battlehub` state) is repaired once by
+scripts\Repair-ScriptAssemblies.ps1 and the run is repeated; see docs\verification.md.
 
 Batch mode creates no window at all, so the game only renders offscreen and there is nothing to
 watch. Pass -Visible to drop -batchmode and open the editor normally: the game renders in its Game
@@ -72,7 +80,13 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $LogFile) -Force | Out-Nu
 
 # The gate writes its report both into the log and beside it, so both have to start out empty - a
 # stale report would otherwise be read as this run's result when the run fails to start at all.
-$reportFile = [System.IO.Path]::ChangeExtension($LogFile, $null) + '.report.txt'
+# [System.IO.Path]::ChangeExtension($path, $null) keeps the trailing dot on PowerShell 5.1, which
+# would name a file the gate never writes; the sibling name is derived explicitly instead.
+function Get-SiblingPath {
+    param([string] $Path, [string] $Suffix)
+    return Join-Path (Split-Path -Parent $Path) ([System.IO.Path]::GetFileNameWithoutExtension($Path) + $Suffix)
+}
+$reportFile = Get-SiblingPath -Path $LogFile -Suffix '.report.txt'
 foreach ($stale in @($LogFile, $reportFile)) {
     if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
 }
@@ -81,51 +95,82 @@ foreach ($stale in @($LogFile, $reportFile)) {
 # cheap. -Headless forces the cheap path for both.
 $windowed = ($Method -eq 'Play') -and -not $Headless
 
-# -batchmode is what makes a run unobservable: it creates no window at all, so the game renders
-# offscreen and there is nothing to watch. -Visible drops it - the editor opens normally, the gate
-# still exits it when the run is over, so a visible run does not have to be closed by hand.
-$arguments = @(
-    '-projectPath', $ProjectPath,
-    '-logFile', $LogFile,
-    '-executeMethod', "RebuildGate.$Method",
-    '-acceptSoftwareTermsForThisRunOnly'
-)
-if (-not $Visible) { $arguments = @('-batchmode') + $arguments }
-if (-not $windowed -and -not $Visible) { $arguments += '-nographics' }
-if ($Method -eq 'Play') {
-    $arguments += @('-smokeSeconds', $Seconds)
-    if ($Scene) {
-        # The name goes through the game's own addressing, so it can contain spaces
-        # (".../VR Breast Play.json") and dots - quote it for CreateProcess.
-        $arguments += @('-smokeWarmup', $WarmupSeconds, '-smokeScene', ('"{0}"' -f $Scene))
+# The Unity command line for one run. -logFile is a parameter because a failed run may be repeated
+# with its log kept aside, so that no attempt can inherit the verdict of the one before it.
+function Get-GateArguments {
+    param([string] $RunLog)
+
+    # -batchmode is what makes a run unobservable: it creates no window at all, so the game renders
+    # offscreen and there is nothing to watch. -Visible drops it - the editor opens normally, the gate
+    # still exits it when the run is over, so a visible run does not have to be closed by hand.
+    $arguments = @(
+        '-projectPath', $ProjectPath,
+        '-logFile', $RunLog,
+        '-executeMethod', "RebuildGate.$Method",
+        '-acceptSoftwareTermsForThisRunOnly'
+    )
+    if (-not $Visible) { $arguments = @('-batchmode') + $arguments }
+    if (-not $windowed -and -not $Visible) { $arguments += '-nographics' }
+    if ($Method -eq 'Play') {
+        # Play mode needs the editor alive, so -quit is deliberately absent there and the gate method
+        # exits the editor itself once the run is over.
+        $arguments += @('-smokeSeconds', $Seconds)
+        if ($Scene) {
+            # The name goes through the game's own addressing, so it can contain spaces
+            # (".../VR Breast Play.json") and dots - quote it for CreateProcess.
+            $arguments += @('-smokeWarmup', $WarmupSeconds, '-smokeScene', ('"{0}"' -f $Scene))
+        }
+    } else {
+        # Neither of the other two methods enters play mode, so -quit costs nothing and is what
+        # guarantees the run ends even in a state where the gate method cannot exit the editor.
+        $arguments += '-quit'
     }
+    return $arguments
 }
 
-Write-Host ("Running RebuildGate.{0} on {1} (timeout {2} s)" -f $Method, $ProjectPath, $TimeoutSec)
-if ($Visible) { Write-Host 'Visible run: a Unity editor window will open and the game will render in its Game view.' }
-if ($Scene)   { Write-Host ("Scene to load after {0} s: {1}" -f $WarmupSeconds, $Scene) }
-$process = Start-Process -FilePath $UnityExe -ArgumentList $arguments -WorkingDirectory $ProjectPath -PassThru
-if (-not $process.WaitForExit($TimeoutSec * 1000)) {
-    $process.Kill()
-    throw ("Unity did not finish within {0} s - see {1}" -f $TimeoutSec, $LogFile)
-}
+# One run and the verdict it wrote, printed as it is read. A run is a function because a failed one
+# may be repeated exactly once, after the script-assembly state is repaired - docs\verification.md.
+function Invoke-SmokeRun {
+    param([string] $RunLog)
 
-$lines = Get-Content -LiteralPath $LogFile
+    if (Test-Path -LiteralPath $RunLog) { Remove-Item -LiteralPath $RunLog -Force }
+    $runReport = Get-SiblingPath -Path $RunLog -Suffix '.report.txt'
+    if (Test-Path -LiteralPath $runReport) { Remove-Item -LiteralPath $runReport -Force }
 
-# A run tears play mode down before it exits, and a log still being flushed at that moment loses its
-# tail - one run reached 20799 frames and its log had no report at all. The gate writes the same
-# report to a sidecar file for exactly that case, so a run is read from there when the log is short.
-if (-not (Select-String -LiteralPath $LogFile -Pattern '----- RebuildGate (OK|FAILED) -----' -Quiet)) {
-    if (Test-Path -LiteralPath $reportFile) {
-        Write-Host ("the log has no verdict - reading the report file {0}" -f $reportFile)
-        $lines = @(Get-Content -LiteralPath $reportFile)
+    Write-Host ("Running RebuildGate.{0} on {1} (timeout {2} s)" -f $Method, $ProjectPath, $TimeoutSec)
+    if ($Visible) { Write-Host 'Visible run: a Unity editor window will open and the game will render in its Game view.' }
+    if ($Scene)   { Write-Host ("Scene to load after {0} s: {1}" -f $WarmupSeconds, $Scene) }
+
+    $process = Start-Process -FilePath $UnityExe -ArgumentList (Get-GateArguments -RunLog $RunLog) -WorkingDirectory $ProjectPath -PassThru
+    $finished = $process.WaitForExit($TimeoutSec * 1000)
+    if (-not $finished) {
+        # An editor that will not exit is not the same thing as a failed run: the report it already
+        # wrote is still on disk, so it is stopped and its output judged like any other instead of
+        # being thrown away.
+        Write-Host ("the editor did not exit within {0} s - stopping it and reading what it wrote" -f $TimeoutSec)
+        $process.Kill()
+        $process.WaitForExit(30000) | Out-Null
     }
-}
-$header = '----- RebuildGate scene inspection -----', '----- RebuildGate play report -----'
+
+    $lines = if (Test-Path -LiteralPath $RunLog) { @(Get-Content -LiteralPath $RunLog) } else { @() }
+
+    # A run tears play mode down before it exits, and a log still being flushed at that moment loses its
+    # tail - one run reached 20799 frames and its log had no report at all. The gate writes the same
+    # report to a sidecar file for exactly that case, so a run is read from there when the log is short.
+    if (-not (Test-Path -LiteralPath $RunLog) -or
+        -not (Select-String -LiteralPath $RunLog -Pattern '----- RebuildGate (OK|FAILED) -----' -Quiet)) {
+        if (Test-Path -LiteralPath $runReport) {
+            Write-Host ("the log has no verdict - reading the report file {0}" -f $runReport)
+            $lines = @(Get-Content -LiteralPath $runReport)
+        }
+    }
+# Every report opens with a header of its own; the version form is matched loosely because it carries
+# the Unity version. The verdict line looks similar but never starts with a digit.
+$header = '----- RebuildGate scene inspection -----', '----- RebuildGate play report -----', '----- RebuildGate 20*'
 $start = -1
 $verdictLine = -1
 for ($i = 0; $i -lt $lines.Count; $i++) {
-    if ($header -contains $lines[$i]) { $start = $i }
+    if ($header -contains $lines[$i] -or $lines[$i] -like $header[2]) { $start = $i }
     if ($lines[$i] -like '*----- RebuildGate OK -----*' -or $lines[$i] -like '*----- RebuildGate FAILED -----*') { $verdictLine = $i }
 }
 
@@ -142,16 +187,46 @@ if ($start -ge 0) {
 } else {
     Write-Host ''
     Write-Host 'the gate method never ran - the project did not compile or start:'
-    Select-String -LiteralPath $LogFile -Pattern ': error CS|Exception:|Compilation failed' |
+    Select-String -LiteralPath $RunLog -Pattern ': error CS|Exception:|Compilation failed' |
         Select-Object -First 40 | ForEach-Object { $_.Line.Trim() }
 }
 
 Write-Host ''
-Write-Host ("log: {0} ({1} lines)" -f $LogFile, $lines.Count)
+Write-Host ("log: {0} ({1} lines)" -f $RunLog, $lines.Count)
 $ok = $false
 if ($verdictLine -ge 0 -and ($start -lt 0 -or $verdictLine -gt $start)) {
     $ok = $lines[$verdictLine] -like '*RebuildGate OK*'
 }
-if ($ok) { exit 0 }
+return [pscustomobject]@{ Ok = $ok; TimedOut = (-not $finished) }
+}
+
+
+$result = Invoke-SmokeRun -RunLog $LogFile
+
+# A failed run has one recoverable cause: the built assemblies lost Assembly-CSharp.dll while the asset
+# database still calls the scripts unchanged, so the editor compiles only the editor assembly and every
+# use of a type from the game assembly reports as missing. The state is repaired once and the run is
+# repeated; a second failure is real and stands. The decision belongs to the repair script, which
+# refuses a log whose errors point anywhere but Assets\Editor\RebuildGate.cs.
+if (-not $result.Ok) {
+    $repair = Join-Path $root 'Repair-ScriptAssemblies.ps1'
+    & $repair -ProjectPath $ProjectPath -LogFile $LogFile
+    if ($LASTEXITCODE -eq 0) {
+        $previous = Get-SiblingPath -Path $LogFile -Suffix '.attempt1.log'
+        Move-Item -LiteralPath $LogFile -Destination $previous -Force
+        if (Test-Path -LiteralPath $reportFile) {
+            Move-Item -LiteralPath $reportFile -Destination (Get-SiblingPath -Path $reportFile -Suffix '.attempt1.txt') -Force
+        }
+        Write-Host ("the failed run is kept as {0}" -f $previous)
+        $result = Invoke-SmokeRun -RunLog $LogFile
+    } elseif ($LASTEXITCODE -ne 3) {
+        Write-Host ("Repair-ScriptAssemblies.ps1 exited with code {0}" -f $LASTEXITCODE)
+    }
+}
+
+if ($result.TimedOut) {
+    Write-Host 'note: the editor did not exit on its own - it was stopped, and the verdict comes from the report it wrote before that'
+}
+if ($result.Ok) { exit 0 }
 Write-Host 'verdict: FAILED'
 exit 1

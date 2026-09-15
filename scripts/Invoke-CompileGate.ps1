@@ -10,6 +10,12 @@ end with "Nothing changed" and compile nothing, which hides errors.
 
 Afterwards the log is run through tools\parse_unity_log.py so the errors are grouped by category.
 
+A run always ends in a verdict, never in an exception. An editor that does not exit within -TimeoutSec
+is stopped and its log read anyway, because the report the gate already wrote is what decides. A
+failure caused by the built assemblies losing Assembly-CSharp.dll (the cascading
+`CS0246: SuperController / MeshVR / Battlehub` state) is repaired once by
+scripts\Repair-ScriptAssemblies.ps1 and the run is repeated; see docs\verification.md.
+
 .EXAMPLE
 scripts\Invoke-CompileGate.ps1
 scripts\Invoke-CompileGate.ps1 -LogFile artifacts\compile-gate-2.log
@@ -36,43 +42,87 @@ $LogFile = [System.IO.Path]::GetFullPath($LogFile)
 New-Item -ItemType Directory -Path (Split-Path -Parent $LogFile) -Force | Out-Null
 if (Test-Path -LiteralPath $LogFile) { Remove-Item -LiteralPath $LogFile -Force }
 
-$arguments = @(
-    '-batchmode', '-nographics', '-quit',
-    '-projectPath', $ProjectPath,
-    '-logFile', $LogFile,
-    '-executeMethod', 'RebuildGate.Report',
-    '-acceptSoftwareTermsForThisRunOnly'
-)
+# One Unity run and the verdict it wrote. A run is a function because a failed one may be repeated
+# exactly once, after the script-assembly state is repaired (see docs\verification.md).
+function Invoke-CompileRun {
+    param([string] $RunLog)
 
-Write-Host ("Running the compile gate on {0} (timeout {1} s)" -f $ProjectPath, $TimeoutSec)
-$process = Start-Process -FilePath $UnityExe -ArgumentList $arguments -PassThru
-if (-not $process.WaitForExit($TimeoutSec * 1000)) {
-    $process.Kill()
-    throw ("Unity did not finish within {0} s - see {1}" -f $TimeoutSec, $LogFile)
-}
+    if (Test-Path -LiteralPath $RunLog) { Remove-Item -LiteralPath $RunLog -Force }
 
-# The exit code alone is a weak signal: the gate method is not called when scripting fails, and
-# Unity's own exit codes are not documented. The verdict therefore comes from the marker the gate
-# logs at the end, which can only appear if every script assembly compiled and the editor loaded it.
-$verdict = $null
-$errorsAfterMarker = 0
-$staleErrors = 0
-if (Test-Path -LiteralPath $LogFile) {
-    $lines = Get-Content -LiteralPath $LogFile
-    $marker = -1
-    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
-        if ($lines[$i] -like '*----- RebuildGate*-----*') { $marker = $i; break }
-    }
-    if ($marker -ge 0) {
-        $verdict = if ($lines[$marker] -like '*RebuildGate OK*') { 'OK' } else { 'FAILED' }
-        $staleErrors = @($lines[0..$marker] | Where-Object { $_ -like '*: error CS*' }).Count
-        $errorsAfterMarker = @($lines[($marker + 1)..($lines.Count - 1)] | Where-Object { $_ -like '*: error CS*' }).Count
+    $arguments = @(
+        '-batchmode', '-nographics', '-quit',
+        '-projectPath', $ProjectPath,
+        '-logFile', $RunLog,
+        '-executeMethod', 'RebuildGate.Report',
+        '-acceptSoftwareTermsForThisRunOnly'
+    )
+
+    Write-Host ("Running the compile gate on {0} (timeout {1} s)" -f $ProjectPath, $TimeoutSec)
+    $process = Start-Process -FilePath $UnityExe -ArgumentList $arguments -PassThru
+    $finished = $process.WaitForExit($TimeoutSec * 1000)
+    if (-not $finished) {
+        # An editor that will not exit is not the same thing as a failed build: the report it already
+        # wrote is still on disk, so it is stopped and its log judged like any other instead of being
+        # thrown away. A hang is reported, but it is the log that decides.
+        Write-Host ("the editor did not exit within {0} s - stopping it and reading what it wrote" -f $TimeoutSec)
+        $process.Kill()
+        $process.WaitForExit(30000) | Out-Null
     }
 
-    # The gate logs its report through Debug.Log, so the interesting lines are in the log, not stdout.
-    Select-String -LiteralPath $LogFile -Pattern '----- RebuildGate|: error CS' |
-        Select-Object -First 60 | ForEach-Object { $_.Line.Trim() }
+    # The exit code alone is a weak signal: the gate method is not called when scripting fails, and
+    # Unity's own exit codes are not documented. The verdict therefore comes from the marker the gate
+    # logs at the end, which can only appear if every script assembly compiled and the editor loaded it.
+    $verdict = $null
+    $errorsAfterMarker = 0
+    $staleErrors = 0
+    if (Test-Path -LiteralPath $RunLog) {
+        $lines = @(Get-Content -LiteralPath $RunLog)
+        $marker = -1
+        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+            if ($lines[$i] -like '*----- RebuildGate*-----*') { $marker = $i; break }
+        }
+        if ($marker -ge 0) {
+            $verdict = if ($lines[$marker] -like '*RebuildGate OK*') { 'OK' } else { 'FAILED' }
+            $staleErrors = @($lines[0..$marker] | Where-Object { $_ -like '*: error CS*' }).Count
+            $errorsAfterMarker = @($lines[($marker + 1)..($lines.Count - 1)] | Where-Object { $_ -like '*: error CS*' }).Count
+        }
+
+        # The gate logs its report through Debug.Log, so the interesting lines are in the log, not stdout.
+        Select-String -LiteralPath $RunLog -Pattern '----- RebuildGate|: error CS' |
+            Select-Object -First 60 | ForEach-Object { $_.Line.Trim() }
+    }
+
+    return [pscustomobject]@{
+        Verdict           = $verdict
+        StaleErrors       = $staleErrors
+        ErrorsAfterMarker = $errorsAfterMarker
+        TimedOut          = (-not $finished)
+    }
 }
+
+$result = Invoke-CompileRun -RunLog $LogFile
+
+# A failed run has one recoverable cause: the built assemblies lost Assembly-CSharp.dll while the
+# asset database still calls the scripts unchanged, so the editor compiles only the editor assembly and
+# every use of a type from the game assembly reports as missing. The state is repaired once and the run
+# is repeated; a second failure is real and stands. The decision belongs to the repair script, which
+# refuses a log whose errors point anywhere but Assets\Editor\RebuildGate.cs.
+if ($result.Verdict -ne 'OK') {
+    $repair = Join-Path $root 'Repair-ScriptAssemblies.ps1'
+    & $repair -ProjectPath $ProjectPath -LogFile $LogFile
+    if ($LASTEXITCODE -eq 0) {
+        $previous = [System.IO.Path]::ChangeExtension($LogFile, $null).TrimEnd('.') + '.attempt1.log'
+        Move-Item -LiteralPath $LogFile -Destination $previous -Force
+        Write-Host ("the failed log is kept as {0}" -f $previous)
+        $result = Invoke-CompileRun -RunLog $LogFile
+    } elseif ($LASTEXITCODE -ne 3) {
+        Write-Host ("Repair-ScriptAssemblies.ps1 exited with code {0}" -f $LASTEXITCODE)
+    }
+}
+
+$verdict = $result.Verdict
+$staleErrors = $result.StaleErrors
+$errorsAfterMarker = $result.ErrorsAfterMarker
 
 Write-Host ''
 Write-Host 'verdict from the log, not from the exit code:'

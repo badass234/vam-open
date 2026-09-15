@@ -21,6 +21,8 @@ clean build. The verdict is the literal marker `----- RebuildGate OK -----`, whi
 unless `Assembly-CSharp-Editor` compiled. `tools\parse_unity_log.py` is run over the log afterwards to
 group any errors by category.
 
+The runner repairs the one recoverable failure, and repeats the run once; see *When a gate lies* below.
+
 *Current state*: `----- RebuildGate OK -----`, 0 errors, `Assembly-CSharp.dll` 6 159 360 B,
 `VaMUnityScript.dll` 16 896 B, `Assembly-CSharp-Editor.dll` present.
 
@@ -41,6 +43,9 @@ the play test is four and not more.
 
 Starts the game in the editor, lets it run for `-Seconds`, then prints a report and exits. The report
 ends with the state of `SuperController`, the singleton the whole of VaM hangs off.
+
+The run is guaranteed to end in a verdict: an editor that outlives `-TimeoutSec` is stopped and its log
+read anyway, and the one recoverable failure is repaired and retried once - see *When a gate lies*.
 
 Batch mode creates no window at all - the game renders offscreen, so a plain run proves the boot
 works but shows you nothing. `-Visible` drops `-batchmode`, the editor opens normally and the game
@@ -109,6 +114,64 @@ its numbers are replaced with `<n>`; without that the original's `Avg. FPS: 313.
 `Avg. FPS: 181.05` look like two different events. A visible run also prints editor-only chatter that
 batch mode does not (`EditorUpdateCheck`, `TrimDiskCacheJob`, `IsTimeToCheckForNewEditor`, ...), so
 those patterns are filtered as well.
+
+## When a gate lies
+
+Both failure modes below have already happened once, and each of them produced a red verdict that had
+nothing to do with the rebuild. A check that can fail for the wrong reason is worse than no check, so
+the runners now defend against both. The first failure mode is *repaired*; the second is *contained*.
+
+**Failure mode A - the built assemblies lose `Assembly-CSharp.dll`.** Unity decides what to recompile
+from state it keeps in `Library`: the assemblies in `Library\ScriptAssemblies`, the asset database and
+the recorded source timestamps. Those can disagree with the sources on disk, and then the next batch run
+compiles *only* `Assembly-CSharp-Editor.dll`. Its compiler command line has no
+`-r:Library/ScriptAssemblies/Assembly-CSharp.dll`, so `Assets\Editor\RebuildGate.cs` - which uses
+`SuperController`, `MeshVR` and `Battlehub` - dies with a wall of cascading
+
+```
+Assets/Editor/RebuildGate.cs(300,13): error CS0246: The type or namespace name 'SuperController' could not be found
+```
+
+**Nothing in those sources is wrong.** The assembly that declares the types is simply not in the
+reference list. Note also that a *genuine* error in `src\` produces the same cascade, since the editor
+assembly cannot reference an assembly that never built - which is exactly what the repair must not
+mistake for this state.
+
+`scripts\Repair-ScriptAssemblies.ps1` performs the recovery that used to be done by hand: it deletes the
+stale assemblies in `Library\ScriptAssemblies` and moves the timestamp of every source under
+`Assets\Scripts` forward, so a full recompilation is scheduled. **It changes a timestamp and nothing
+else** - no content, no project setting, no asset database. The decision is the exit code:
+
+| Exit code | Meaning | The caller's move |
+|---|---|---|
+| `0` | the state was present and is repaired | run the same gate once more |
+| `3` | not that state, or the project is healthy | trust the run's own verdict |
+| `1` | the project could not be read | fix the invocation |
+
+With `-LogFile` it demands the evidence before touching anything: at least three `CS0246` lines naming
+`SuperController`, `MeshVR` or `Battlehub`, and **not one error anywhere but
+`Assets\Editor\RebuildGate.cs`**. A log that reports an error in `src\` is left alone, because there
+`Assembly-CSharp.dll` is missing for a real reason and repeating the run would only cost time.
+
+Both runners call it exactly once, no matter which method failed: the old log is moved aside to
+`<log>.attempt1.log` (so the failed attempt stays readable) and the run is repeated. A second failure is
+real and stands.
+
+**Failure mode B - the editor does not exit.** The last `-Method Report` never terminated on its own:
+the script hit its 1800 s timeout and the editor was stopped by hand, although
+`----- RebuildGate OK -----` had already been written to the log. Throwing a timed-out run away is
+therefore a way to report a failure that the run itself did not. A timeout is now a *note*, not a
+verdict:
+
+- the editor is stopped, and **its log is judged anyway** - the report on disk is what decides;
+- before every run the runner deletes both the log and the sidecar `*.report.txt`, so a report that is
+  read always belongs to the run that just happened and never to the one before it;
+- `-Method Report` and `-Method InspectScene` also pass `-quit`, which guarantees termination even in a
+  state where the gate method cannot exit the editor itself. `-Method Play` deliberately has no `-quit`:
+  play mode needs the editor alive, and the gate exits it when the run is over.
+
+The consequence is the rule to work by: **a gate always ends in a verdict, never in an exception.** If a
+run reports `FAILED`, that verdict came from a report the gate wrote, not from a timeout or a crash.
 
 ## What the harness cannot show
 
