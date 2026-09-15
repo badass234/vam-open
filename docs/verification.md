@@ -72,6 +72,35 @@ boot both creates and retires transient objects, and the original never prints t
 nothing to compare it against. What has to hold is that it is in the hundreds rather than collapsed
 toward zero, which would mean the scene never instantiated anything.
 
+**Loading a scene on top of the boot.** `-Scene` asks the game to load a scene once the boot has had
+`-WarmupSeconds`, through the same call the in-game file browser makes, so one report covers the boot
+and the scene:
+
+```
+scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 150 -WarmupSeconds 15 `
+    -Scene 'MeshedVR.DemoScenes.2:/Saves/scene/MeshedVR/DemoScenes/Cyber/CyberDemoAlt.json'
+```
+
+The name is the game's addressing, not a filesystem path: `<packageUid>:/<path inside the package>`
+for content that lives in a `.var`, or a bare `Saves/scene/...` path for content that sits in the
+installation. A name that is not addressing **does not load, and does not complain**: no error is
+raised and the scene already on screen simply stays there. The report therefore carries the flags that
+separate "asked" from "arrived", plus the loaded scene's own atom list, and a requested scene that did
+not arrive fails the run:
+
+| Signal | A settled `CyberDemoAlt` run |
+|---|---|
+| `scene load` | `requested=True, taken=True, finished=True after 28.7 s, refused=False` |
+| `scene atoms` | `17 declared, 17 present, 0 missing - the scene on screen is the scene that was asked for` |
+| `atoms:` | 17 - `Person`, `Start Head Position`, `CoreControl`, `[CameraRig]`, five music buttons, ... |
+| `dynamic content` | `1 item(s), 0 cannot load, 1 active` |
+| `errors and exceptions` | 0 |
+| `loading:` | `SuperController=False, GlobalSceneOptions=False, simulation resetting=False` |
+
+That is not a hypothetical: `-Scene CyberDemoAlt` was accepted, silently loaded nothing, and left the
+boot scene in place - the run failed on the missing atoms, which is how the wrong invocation was
+found instead of being believed.
+
 **The loading flags matter more than the atom count.** "Is it alive" and "has it finished loading"
 are different questions, and a boot stuck mid-load still has a live `SuperController`. The report
 therefore prints `SuperController.isLoading`, `MeshVR.GlobalSceneOptions.IsLoading` and
@@ -227,7 +256,20 @@ gates that do not need a device: `Report` and `InspectScene`.
 
 ## Named non-issues
 
-Both of these looked like defects and are not. They are recorded so they are not re-investigated.
+All three of these looked like defects and are not. They are recorded so they are not re-investigated.
+
+- **A hair slot the scene has switched off.** What the skeleton report printed as a broken skeleton -
+  `10 of 20 bones share a name with the body, 10 of those are rotated differently`, the hair `hip`
+  sitting `4.18 m` from the body's - is the built-in `VictoriaElitePonytailHair` slot. `CyberDemoAlt`
+  selects exactly one hair (`RenVR:Simone (REN).vam`, `enabled: true`) and every other hair item in the
+  scene is inactive; a slot the scene does not use stays in the scene with its own copy of the joints,
+  switched off and left in the rest pose it was built with, which is why a whole skeleton reads as
+  rotated and metres away. The report now says `<- inactive in the hierarchy` and skips the comparison,
+  and the underlying accessor is the reason it has to: `SceneObjects<T>()` uses
+  `Resources.FindObjectsOfTypeAll` and deliberately includes objects that are switched off. The same
+  mistake hid in `DAZBone components in the scene: 108, rotated away from identity: 101`, which counted
+  dead slots and dumped five of their bones; it now reads `108, in active objects: 84, of those rotated
+  away from identity: 82` and dumps the live body's bones.
 
 - **`Unloading broken assembly Assets/Plugins/RTTypeModel.dll`.** The editor prints the identical
   line about its own `UnityEditor.UI.dll`, so it is not specific to the rebuild. The assembly loads:
@@ -249,11 +291,13 @@ Both of these looked like defects and are not. They are recorded so they are not
   ready (`tools\compare_view.py`, section 5) and the target is a capture of the original on
   `CyberDemoAlt` through the camera the player actually sees, which is the desktop monitor rig -
   `SceneAtoms/CoreControl/WorldScaleAdjust/NavRig/[CameraRig]/HeightOffset/MonitorRig` at
-  `(-3.96, 1.48, -3.82)`, depth 2, framed 16:9. Shaders from the AssetRipper export remain the most
-  likely place for a difference.
-- **The hair skeleton.** In the same run the `NSFB` hair item does not follow the body: of its 20 bones,
-  10 share a name with the body and all 10 are rotated differently, and the hair `hip` sits `4.18 m`
-  from the body's. That is the hair asset rather than the body, and it needs the item's own diagnosis.
+  `(-1.81, 1.14, -4.13)`, depth 2, framed 16:9. That position is the scene's own `[CameraRig]` atom
+  (`(-1.810732, 0, -4.127665)`, yaw `320.24`) with the rig's eye height on top, so the framing can be
+  read out of `artifacts\reference\CyberDemoAlt.json` rather than remembered. An earlier note here
+  recorded `(-3.96, 1.48, -3.82)` for the same rig; that reading does not reproduce and is superseded -
+  give the run enough time past the load for `simulation resetting` to go `False` (`-Seconds 150` with
+  `-WarmupSeconds 15`) before capturing anything.
+  Shaders from the AssetRipper export remain the most likely place for a difference.
 - **Animation, physics and UI.** `CyberDemoAlt` loads and its character is drawn and skinned, but the
   animation, physics and UI systems have not been exercised: the reference scenarios are the
   `* Benchmark.bat` files in the installation root. One cheap question belongs here - the scene's
