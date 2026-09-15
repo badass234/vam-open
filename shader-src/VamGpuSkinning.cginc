@@ -16,6 +16,14 @@
 //      tangents  StructuredBuffer<float4>  stride 16   world-space tangents
 //                                                      (body meshes only)
 //
+//  The same source also produces VaM's plain twins of these shaders -- the
+//  ones *without* the "ComputeBuff" suffix, which a mesh drawn the ordinary
+//  way has to use.  Those passes bind no structured buffers at all; the
+//  generated shader defines VAM_MESH_SKIN and VaM's own vertex data supplies
+//  the position, normal and tangent instead.  Everything from vam_v2f down is
+//  shared: the two vertex programs pack their varyings identically and the
+//  fragment programs are byte-identical (only the shader model differs).
+//
 //  VaM ships these shaders only as compiled DXBC, so this file is a
 //  reconstruction from that bytecode (see scripts/Extract-VaMShaders.py and
 //  docs/shader-reconstruction.md).  The lighting model follows the decompiled
@@ -59,8 +67,10 @@
 //
 //  Every generated shader defines VAM_NO_TANGENTS for the passes whose original
 //  program did not bind a tangent buffer (all hair meshes, and the debug
-//  shader) -- declaring an unbound SRV there would read garbage.
+//  shader) -- declaring an unbound SRV there would read garbage.  The plain
+//  (VAM_MESH_SKIN) shaders bind nothing, so they declare nothing.
 // -----------------------------------------------------------------------------
+#ifndef VAM_MESH_SKIN
 #ifndef VAM_NO_TANGENTS
 StructuredBuffer<float3> verts    : register(t0);
 StructuredBuffer<float3> normals  : register(t1);
@@ -68,6 +78,7 @@ StructuredBuffer<float4> tangents : register(t2);
 #else
 StructuredBuffer<float3> verts   : register(t0);
 StructuredBuffer<float3> normals : register(t1);
+#endif
 #endif
 
 // -----------------------------------------------------------------------------
@@ -231,9 +242,10 @@ float4 _SH6;  float4 _SH7;  float4 _SH8;
 //  Vertex stage
 //
 //  The DXBC input signature is POSITION0 (w carries a per-vertex object-space
-//  offset weight), TANGENT0, NORMAL0, TEXCOORD0, SV_VertexID -- the vertex data
-//  in the mesh is *only* used for those extras.  Position, normal and tangent
-//  all come from the compute buffers.
+//  offset weight), TANGENT0, NORMAL0, TEXCOORD0, SV_VertexID.  In the
+//  compute-buffer path the vertex data in the mesh is *only* used for those
+//  extras and the skinning comes from the buffers; in the plain path it is the
+//  vertex data itself that is transformed.
 // -----------------------------------------------------------------------------
 struct vam_appdata {
     float4 vertex  : POSITION;
@@ -288,7 +300,20 @@ float3 VamAmbientScale() {
 
 vam_skinned VamSkin(vam_appdata v) {
     vam_skinned s;
+    float3 nrmWS, tanWS;
+    float  tanSign = 1.0;
 
+#ifdef VAM_MESH_SKIN
+    // Plain path.  The original computes the clip position from the plain
+    // object-to-world transform and the pixel-facing world position with the
+    // translation column scaled by POSITION.w -- the same per-vertex offset
+    // term the compute-buffer path adds to the buffer's world position.  For
+    // the w=1 meshes Unity actually feeds, both are the same point.
+    s.pos = mul(unity_ObjectToWorld, v.vertex).xyz;
+    nrmWS = UnityObjectToWorldNormal(v.normal);
+    tanWS = UnityObjectToWorldDir(v.tangent.xyz);
+    tanSign = v.tangent.w * unity_WorldTransformParams.w;
+#else
     // World-space position straight out of the compute buffer, plus the
     // per-vertex object-space offset the mesh's POSITION.w asks for.  The
     // original adds it scaled by the translation column of the object matrix.
@@ -296,10 +321,8 @@ vam_skinned VamSkin(vam_appdata v) {
     float4 posWS = mul(unity_ObjectToWorld, float4(posOS, 1.0));
     s.pos = posWS.xyz;
 
-    float3 nrmWS = UnityObjectToWorldNormal(normals[v.vid]);
+    nrmWS = UnityObjectToWorldNormal(normals[v.vid]);
 
-    float3 tanWS;
-    float  tanSign = 1.0;
 #ifndef VAM_NO_TANGENTS
     float4 tanIn = tangents[v.vid];
     tanWS = UnityObjectToWorldDir(tanIn.xyz);
@@ -310,8 +333,11 @@ vam_skinned VamSkin(vam_appdata v) {
     // without _BumpMap disables anyway, so any unit vector will do.
     tanWS = float3(1, 0, 0);
 #endif
-    // Gram-Schmidt: the buffers are skinned independently, so the tangent is
-    // not guaranteed to stay orthogonal to the normal.
+#endif
+
+    // Gram-Schmidt: in the compute-buffer path the buffers are skinned
+    // independently, so the tangent is not guaranteed to stay orthogonal to
+    // the normal.
     tanWS = normalize(tanWS - nrmWS * dot(nrmWS, tanWS));
 
     s.nrm = nrmWS;

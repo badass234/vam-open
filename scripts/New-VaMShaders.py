@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Rebuild Virt-a-Mate's "*ComputeBuff" shaders from their extracted DXBC.
+Rebuild Virt-a-Mate's shaders from their extracted DXBC.
 
-VaM skins its characters on the GPU: DAZSkinV2 runs the skinning as a compute
-shader and then draws the mesh with the result bound as structured buffers
-(verts/normals/tangents, see shader-src/VamGpuSkinning.cginc).  A shader that
-cannot read those buffers draws the mesh in its bind pose -- the T-pose that
-hangs motionless in the middle of the scene while the animation plays on the
-invisible skeleton.  Exactly 51 of the game's shaders can read them, they are
-the "*ComputeBuff" family, and the AssetRipper stubs shipped in
-VaM_Rebuild/Assets/Shader are not among them: AssetRipper has no access to the
-DXBC and emits a placeholder that samples the mesh in bind pose, unlit.
+Two families are produced, and they differ only in where the vertex stage gets
+its data:
+
+  * The "*ComputeBuff" shaders.  VaM skins its characters on the GPU: DAZSkinV2
+    runs the skinning as a compute shader and then draws the mesh with the
+    result bound as structured buffers (verts/normals/tangents, see
+    shader-src/VamGpuSkinning.cginc).  A shader that cannot read those buffers
+    draws the mesh in its bind pose -- the T-pose that hangs motionless in the
+    middle of the scene while the animation plays on the invisible skeleton.
+    Exactly 51 of the game's shaders can read them, they are the "*ComputeBuff"
+    family, and the AssetRipper stubs shipped in VaM_Rebuild/Assets/Shader are
+    not among them: AssetRipper has no access to the DXBC and emits a
+    placeholder that samples the mesh in bind pose, unlit.
+
+  * Their plain twins -- the same shaders without the suffix, for meshes drawn
+    the ordinary way.  VaM generates both from one source, so the vertex
+    programs pack their varyings identically and the fragment programs are
+    byte-identical; the plain passes bind no structured buffers and take the
+    position, normal and tangent from the vertex attributes instead.  Those
+    shaders therefore reuse the same cginc with VAM_MESH_SKIN defined.
 
 This script reads the per-shader contracts produced by Extract-VaMShaders.py
 (artifacts/shader-blobs/<name>/contract.json) and writes real ShaderLab files
@@ -31,6 +42,10 @@ that forward to the reconstruction in shader-src/VamGpuSkinning.cginc:
     *TessMapped* variants are not reconstructed, so those passes render with
     plain vertex skinning, exactly like the *TessMappedFixed* variants that
     VaM ships side by side with them.
+
+Shaders whose fragment program is a *different* model are left alone: they are
+reported as pending and keep whatever AssetRipper wrote.  Reconstructing them
+means another shading library, not another entry in this table.
 
 The cginc is copied into the project because Unity can only include files from
 inside Assets, but the repository tracks it once, under shader-src.
@@ -64,6 +79,18 @@ BLEND = {0: "Zero", 1: "One", 2: "DstColor", 3: "SrcColor", 4: "OneMinusDstColor
 
 # Passes this project does not use (forward rendering only, no lightmap baking).
 SKIP_LIGHTMODES = {"META", "DEFERRED", "PREPASSBASE", "PREPASSFINAL"}
+
+# Plain (non-"*ComputeBuff") shaders that are the ordinary-mesh twins of the
+# compute-buffer family.  VaM generates both from one source, so the vertex
+# programs pack their varyings identically and the fragment programs are
+# byte-identical -- only the shader model differs -- which is what lets the
+# shading model in VamGpuSkinning.cginc serve them unchanged.  Every pair under
+# these prefixes was checked by disassembling both fragment programs (see
+# docs/shader-reconstruction.md); the two conditions below stand in for that
+# check here, so that a plain shader of a *different* model -- one with no
+# compute-buffer twin at all, like Custom/Subsurface/EmissiveGlow -- is left
+# alone instead of being quietly shaded by the wrong library.
+MESH_FAMILY_PREFIXES = ("Custom/Subsurface/",)
 
 # Declared by Unity's own include files, so the generated shader must not
 # declare them a second time.  UnityLightingCommon.cginc declares _SpecColor.
@@ -186,17 +213,24 @@ def entry_points(lightmode: str):
     return "VamVertex", "VamFragment", ["multi_compile_fwdbase"]
 
 
-def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int) -> str:
+def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
+              family: str) -> str:
     bufs = pass_buffers(pas)
-    if not {"verts", "normals"} <= bufs:
+    if family == "skin" and not {"verts", "normals"} <= bufs:
         raise ValueError(f"pass {lightmode or '<untagged>'} binds {sorted(bufs)}, "
                          "not the compute buffers -- it cannot be skinned")
+    if family == "mesh" and bufs:
+        raise ValueError(f"pass {lightmode or '<untagged>'} binds {sorted(bufs)}; "
+                         "a plain shader's pass reads the vertex attributes")
     names = {p["name"] for p in props}
     vert, frag, keywords = entry_points(lightmode)
 
     body = []
     body.append("#pragma target 4.0")
-    if "tangents" not in bufs:
+    if family == "mesh":
+        body.append("// drawn the ordinary way: the vertex stage transforms the mesh")
+        body.append("#define VAM_MESH_SKIN")
+    elif "tangents" not in bufs:
         body.append("// hair meshes are bound without a tangent buffer")
         body.append("#define VAM_NO_TANGENTS")
     cutoff = cutoff_for(pas, lightmode, names, opaque_fb_index)
@@ -238,11 +272,36 @@ def is_opaque_pass(pas: dict) -> bool:
             and (int(blend["srcBlend"]["val"]), int(blend["destBlend"]["val"])) == (1, 0))
 
 
-def emit_shader(contract: dict, blob_dir: str, skipped: list):
-    """The whole ShaderLab file for one *ComputeBuff shader."""
+def classify(name: str, sub: dict, names: set):
+    """Which vertex path a contract's shader needs, or None if it is pending.
+
+    "skin"  -- reads the compute buffers, skinned by DAZSkinV2
+    "mesh"  -- plain twin of one of those shaders, drawn the ordinary way
+    None    -- a different shading model, not reconstructed by this script
+    """
+    if name.endswith("ComputeBuff"):
+        return "skin"
+    if not name.startswith(MESH_FAMILY_PREFIXES):
+        return None
+    if name + "ComputeBuff" not in names:
+        return None
+    # A plain twin must not bind the compute buffers in any pass this project
+    # renders -- if it did, its fragment program would be a different model.
+    for pas in sub["passes"]:
+        if pass_lightmode(pas) in SKIP_LIGHTMODES:
+            continue
+        if pass_buffers(pas) & {"verts", "normals", "tangents"}:
+            return None
+    return "mesh"
+
+
+def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
+    """The whole ShaderLab file for one shader."""
     name = contract["name"]
     sub = contract["subshaders"][0]
     props = contract["properties"]
+    skin = family == "skin"
+    library = "VamGpuSkinning.cginc"
 
     lines = [
         BANNER,
@@ -250,7 +309,8 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list):
         "//",
         "// Reconstructed from the game's own DXBC by scripts/New-VaMShaders.py.",
         f"// Program contracts: artifacts/shader-blobs/{blob_dir}/",
-        "// Shading model:     shader-src/VamGpuSkinning.cginc",
+        f"// Shading model:     shader-src/{library}",
+        f"// Vertex stage:      {'GPU skinning (compute buffers)' if skin else 'mesh attributes'}",
         BANNER,
         f'Shader "{name}" {{',
     ]
@@ -274,10 +334,14 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list):
         if lm in SKIP_LIGHTMODES:
             skipped.append((name, lm, "rendering path not used by this project"))
             continue
-        if not {"verts", "normals"} <= pass_buffers(pas):
+        bufs = pass_buffers(pas)
+        if skin and not {"verts", "normals"} <= bufs:
             skipped.append((name, lm or "<untagged>", "pass does not read the compute buffers"))
             continue
-        lines.append(emit_pass(pas, lm, props, opaque_fb))
+        if not skin and bufs:
+            skipped.append((name, lm or "<untagged>", "pass reads the compute buffers"))
+            continue
+        lines.append(emit_pass(pas, lm, props, opaque_fb, family))
         lines.append("")
         passes += 1
         if lm == "FORWARDBASE" and is_opaque_pass(pas):
@@ -290,7 +354,7 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list):
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Rebuild VaM's *ComputeBuff shaders.")
+    parser = argparse.ArgumentParser(description="Rebuild VaM's shaders.")
     parser.add_argument("--list", action="store_true",
                         help="print the inventory instead of writing files")
     args = parser.parse_args(argv)
@@ -304,21 +368,31 @@ def main(argv=None) -> int:
         return 2
 
     contracts = []
+    pending = []
+    found = []
     for path in sorted(CONTRACTS.glob("*/contract.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data["name"].endswith("ComputeBuff"):
-            contracts.append((path.parent.name, data))
+        found.append((path.parent.name, data))
+    names = {data["name"] for _, data in found}
+
+    for blob_dir, data in found:
+        family = classify(data["name"], data["subshaders"][0], names)
+        if family:
+            contracts.append((blob_dir, data, family))
+        else:
+            pending.append(data["name"])
     if not contracts:
-        print("error: no *ComputeBuff contracts found", file=sys.stderr)
+        print("error: no reconstructable contracts found", file=sys.stderr)
         return 2
 
     skipped = []
     shaders = 0
     passes = 0
-    for blob_dir, data in contracts:
-        text, n = emit_shader(data, blob_dir, skipped)
+    for blob_dir, data, family in contracts:
+        text, n = emit_shader(data, blob_dir, skipped, family)
         if args.list:
-            print(f"{data['name']:<58} passes={n} props={len(data['properties']):>2}")
+            print(f"{family:<5} {data['name']:<58} "
+                  f"passes={n} props={len(data['properties']):>2}")
             continue
         if not n:
             print(f"warning: {data['name']} produced no passes", file=sys.stderr)
@@ -328,6 +402,9 @@ def main(argv=None) -> int:
         passes += n
 
     if args.list:
+        print(f"\n{len(contracts)} reconstructed, {len(pending)} pending (no shading model yet):")
+        for name in pending:
+            print(f"      {name}")
         print(f"\n{len(contracts)} shaders, {len(skipped)} passes skipped")
         return 0
 
@@ -340,6 +417,11 @@ def main(argv=None) -> int:
     print(f"copied  {CGINC_SRC.relative_to(REPO)} -> {CGINC_DST.relative_to(REPO)}")
     for name, lightmode, why in skipped:
         print(f"skipped {lightmode:<13} {name}  ({why})")
+    if pending:
+        print(f"\n{len(pending)} of VaM's shaders are still AssetRipper stubs "
+              "(different shading model, not built here):")
+        for name in pending:
+            print(f"  {name}")
     return 0
 
 
