@@ -106,88 +106,131 @@ public static class RebuildGate
         }
     }
 
+    /// <summary>Path of the assembly the editor compiles the game's scripts into.</summary>
+    private static string ScriptAssemblyPath()
+    {
+        string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        return Path.Combine(Path.Combine(Path.Combine(projectRoot, "Library"), "ScriptAssemblies"), "Assembly-CSharp.dll");
+    }
+
     /// <summary>
-    /// Unity is free to reuse a script assembly it built earlier, so a probe can be compiled into
-    /// the project, print nothing, and look like a negative result. Every diagnostic run therefore
-    /// starts by proving which probes are present in the assembly the player actually loaded.
+    /// The markers a diagnostic run depends on live as string literals in the assembly metadata, so
+    /// the probes that are really compiled in are read straight out of the built assembly: find every
+    /// "[DIAG" literal and read the surrounding text back. The literals are stored as UTF-16, which is
+    /// why this searches bytes rather than text.
+    ///
+    /// Reflection would be the obvious way to ask the same question, but the editor loads the gameplay
+    /// assembly lazily - AppDomain.GetAssemblies() does not list it yet when a batch method runs - and
+    /// a probe that missed the last compile is exactly the false negative this report exists to catch.
+    /// </summary>
+    private static List<string> FindProbes(string assemblyPath)
+    {
+        List<string> probes = new List<string>();
+        byte[] bytes = File.ReadAllBytes(assemblyPath);
+        for (int i = 0; i + 1 < bytes.Length; i++)
+        {
+            if (bytes[i] != (byte)'[' || bytes[i + 1] != 0)
+            {
+                continue;
+            }
+
+            StringBuilder text = new StringBuilder();
+            int at = i;
+            while (at + 1 < bytes.Length && bytes[at + 1] == 0 && bytes[at] >= 0x20 && bytes[at] < 0x7F)
+            {
+                text.Append((char)bytes[at]);
+                at += 2;
+            }
+
+            string literal = text.ToString();
+            if (literal.StartsWith("[DIAG", StringComparison.Ordinal))
+            {
+                int end = literal.IndexOf(']');
+                string probe = end >= 0 ? literal.Substring(0, end + 1) : literal;
+                if (!probes.Contains(probe))
+                {
+                    probes.Add(probe);
+                }
+            }
+
+            i = at;
+        }
+
+        probes.Sort(StringComparer.Ordinal);
+        return probes;
+    }
+
+    /// <summary>The compiled-in probes as one line, for the reports that only need the summary.</summary>
+    private static string ProbeSummary()
+    {
+        string assembly = ScriptAssemblyPath();
+        if (!File.Exists(assembly))
+        {
+            return "Assembly-CSharp.dll is not built";
+        }
+
+        List<string> probes = FindProbes(assembly);
+        return probes.Count == 0 ? "no TEMP DIAGNOSTIC probe is compiled in" : string.Join(", ", probes.ToArray());
+    }
+
+    /// <summary>Newest write time of any script under the given root, i.e. the moment the assembly should have been built.</summary>
+    private static DateTime NewestScript(string assetsRoot)
+    {
+        DateTime newest = DateTime.MinValue;
+        foreach (string file in Directory.GetFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            DateTime written = File.GetLastWriteTime(file);
+            if (written > newest)
+            {
+                newest = written;
+            }
+        }
+
+        return newest;
+    }
+
+    /// <summary>
+    /// Unity is free to reuse a script assembly it built earlier, so a probe can be compiled into the
+    /// project, print nothing, and look like a negative result. Every diagnostic run therefore starts
+    /// by proving which probes the build actually contains - and whether the build is current at all.
+    ///
+    /// The stale build is a real trap, not a hypothetical one: after a script is edited outside the
+    /// editor the asset database can still believe nothing changed, the old assembly survives, and
+    /// every probe added since then silently does nothing while the project looks healthy.
     /// </summary>
     private static void ReportScriptMarkers(StringBuilder report)
     {
-        Assembly scriptAssembly = null;
-        foreach (Assembly candidate in AppDomain.CurrentDomain.GetAssemblies())
+        string assembly = ScriptAssemblyPath();
+        if (!File.Exists(assembly))
         {
-            if (candidate.GetName().Name == "Assembly-CSharp")
-            {
-                scriptAssembly = candidate;
-                break;
-            }
-        }
-
-        if (scriptAssembly == null)
-        {
-            report.AppendLine("script assembly: Assembly-CSharp is not loaded");
+            report.AppendLine("script assembly: not built - Library/ScriptAssemblies/Assembly-CSharp.dll is missing");
             return;
         }
 
-        report.AppendLine(string.Format("script assembly: {0}", scriptAssembly.Location));
-        report.AppendLine(string.Format("  written: {0:yyyy-MM-dd HH:mm:ss}", File.GetLastWriteTime(scriptAssembly.Location)));
+        FileInfo info = new FileInfo(assembly);
+        report.AppendLine(string.Format("script assembly: {0} ({1:N0} B, written {2:yyyy-MM-dd HH:mm:ss})",
+                                        assembly, info.Length, info.LastWriteTime));
 
-        string[][] probes =
+        // Only the gameplay sources matter here: a change under Assets/Editor rebuilds the editor
+        // assembly, not the one the probes live in.
+        DateTime newest = NewestScript(Path.Combine(Application.dataPath, "Scripts"));
+        report.AppendLine(string.Format("  newest gameplay script: {0:yyyy-MM-dd HH:mm:ss}", newest));
+        if (newest > info.LastWriteTime.AddSeconds(1))
         {
-            new string[] { "MeshVR.PresetManager", "SetNamesFromPath" },
-            new string[] { "DAZHairGroup", "InitInstance" },
-            new string[] { "DAZCharacterSelector", "SyncCustomItems" }
-        };
-
-        foreach (string[] probe in probes)
-        {
-            Type type = scriptAssembly.GetType(probe[0]);
-            MethodInfo method = type == null ? null : type.GetMethod(probe[1], BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (method == null)
-            {
-                report.AppendLine(string.Format("  {0}.{1}: not found", probe[0], probe[1]));
-                continue;
-            }
-
-            report.AppendLine(string.Format("  {0}.{1}: {2}", probe[0], probe[1], HasProbe(method) ? "probe present" : "probe MISSING"));
-        }
-    }
-
-    /// <summary>True when the method body still contains a "[DIAG" string literal.</summary>
-    private static bool HasProbe(MethodInfo method)
-    {
-        MethodBody body = method.GetMethodBody();
-        if (body == null)
-        {
-            return false;
+            report.AppendLine("  WARNING: the scripts are newer than the assembly - Unity did not recompile it");
         }
 
-        byte[] il = body.GetILAsByteArray();
-        for (int i = 0; i + 4 < il.Length; i++)
+        List<string> probes = FindProbes(assembly);
+        report.AppendLine(string.Format("  TEMP DIAGNOSTIC probes compiled in: {0}", probes.Count));
+        foreach (string probe in probes)
         {
-            if (il[i] != 0x72)
-            {
-                continue;
-            }
-
-            string literal = null;
-            try
-            {
-                literal = method.Module.ResolveString(BitConverter.ToInt32(il, i + 1));
-            }
-            catch (Exception)
-            {
-            }
-
-            if (literal != null && literal.StartsWith("[DIAG"))
-            {
-                return true;
-            }
-
-            i += 4;
+            report.AppendLine("    " + probe);
         }
 
-        return false;
+        if (probes.Count == 0)
+        {
+            report.AppendLine("    (a probe missing here was not compiled - rebuild before trusting a play run)");
+        }
     }
 
     public static void Report()
@@ -211,6 +254,11 @@ public static class RebuildGate
 
         Debug.Log(report.ToString());
         Debug.Log("----- RebuildGate OK -----");
+
+        // -batchmode without -quit leaves the editor running forever once the method returns, and a
+        // gate that has to be killed by hand cannot be a gate. The play runs exit themselves for the
+        // same reason; the report has nothing left to wait for.
+        EditorApplication.Exit(0);
     }
 
     // ---------------------------------------------------------------- scene inspection
@@ -310,6 +358,24 @@ public static class RebuildGate
     private static double playWarmup = 15.0;
     private static bool playSceneRequested;
     private static int playErrorsAtLoad = -1;
+
+    // A scene still loading when the run's own clock reaches -smokeSeconds is a run that ran out of
+    // time, not a verdict, so the run waits this much longer for the load to finish. It is bounded so
+    // that a load which hangs can never hold the editor open indefinitely.
+    private const double PlaySceneGraceSeconds = 120.0;
+
+    // The request, as opposed to the scene: whether the game was asked, whether it took the request,
+    // and whether it got through it. These are tracked apart from the run's own errors because a
+    // refused request is silent - the game logs a warning and returns - and a warning is not an error.
+    private static double playSceneWaitedSince;
+    private static bool playSceneLoadStarted;
+    private static bool playSceneLoadFinished;
+    private static double playSceneFinishedAt;
+    private static bool playLoadRefused;
+    private static int playSceneDeclared = -1;
+    private static int playScenePresent;
+    private static readonly List<string> playSceneMissing = new List<string>();
+    private static string playSceneAuditError;
     private static string playContentAtFailure;
 
     /// <summary>
@@ -475,6 +541,14 @@ public static class RebuildGate
 
     private static void OnLogMessage(string message, string stackTrace, LogType type)
     {
+        // SuperController answers a load it cannot start with a warning and then returns, so a scene
+        // that never loaded leaves no error and no exception behind at all. The gate has to see it,
+        // which means looking at this one warning before warnings are discarded.
+        if (message.IndexOf("Can't load another until complete", StringComparison.Ordinal) >= 0)
+        {
+            playLoadRefused = true;
+        }
+
         if (type != LogType.Error && type != LogType.Exception && type != LogType.Assert)
         {
             return;
@@ -528,13 +602,19 @@ public static class RebuildGate
 
         if (!playSceneRequested && playScene != null && playScene != string.Empty && elapsed >= playWarmup)
         {
-            playSceneRequested = true;
-            playErrorsAtLoad = PlayErrors.Count;
-            EditorPrefs.SetBool(SceneDoneKey, true);
-            LoadPlayScene();
+            RequestPlayScene(elapsed);
         }
 
+        TrackPlayScene();
+
         if (elapsed < playSeconds)
+        {
+            return;
+        }
+
+        // The requested scene has the run's remaining time to finish loading. Reporting in the middle of
+        // a load would measure a half-built scene and call it the rebuild's fault.
+        if (playSceneRequested && !playSceneLoadFinished && elapsed < playSeconds + PlaySceneGraceSeconds)
         {
             return;
         }
@@ -560,28 +640,164 @@ public static class RebuildGate
     /// </summary>
     private static void WriteReportFile(string report)
     {
-        string[] arguments = Environment.GetCommandLineArgs();
-        string path = null;
-        for (int i = 0; i < arguments.Length - 1; i++)
-        {
-            if (arguments[i] == "-logFile")
-            {
-                path = arguments[i + 1];
-            }
-        }
+        string path = LogPathBase();
 
-        if (path == null || path == string.Empty)
+        if (path == null)
         {
             return;
         }
 
         try
         {
-            File.WriteAllText(Path.ChangeExtension(path, null) + ".report.txt", report);
+            File.WriteAllText(path + ".report.txt", report);
         }
         catch (Exception e)
         {
             Debug.LogWarning("----- RebuildGate play: could not write the report file: " + e.Message + " -----");
+        }
+    }
+
+    /// <summary>
+    /// Where the run was told to log, without an extension. Every artefact a run leaves behind goes
+    /// beside its log. Null when nobody named a log file.
+    /// </summary>
+    private static string LogPathBase()
+    {
+        string[] arguments = Environment.GetCommandLineArgs();
+        for (int i = 0; i < arguments.Length - 1; i++)
+        {
+            if (arguments[i] == "-logFile" && arguments[i + 1] != string.Empty)
+            {
+                return Path.ChangeExtension(arguments[i + 1], null);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Asks the game for the requested scene, once the game is in a state to accept it.
+    ///
+    /// -smokeWarmup is a lower bound, not a deadline. The game boots by loading a scene of its own
+    /// (Saves/scene/MeshedVR/default.json), and SuperController.LoadInternal drops a load that arrives
+    /// while another one is in flight - it logs "Already loading file ... Can't load another until
+    /// complete" and returns. A warmup shorter than the boot therefore requested nothing, and the run
+    /// went on to inspect the boot scene while its report claimed the request had been made.
+    /// </summary>
+    private static void RequestPlayScene(double elapsed)
+    {
+        SuperController controller = SuperController.singleton;
+        if (controller == null)
+        {
+            ReportPlaySceneWait(elapsed, "the game has not created its SuperController yet");
+            return;
+        }
+
+        if (controller.isLoading)
+        {
+            ReportPlaySceneWait(elapsed, "the game is still loading its own scene");
+            return;
+        }
+
+        playSceneRequested = true;
+        playErrorsAtLoad = PlayErrors.Count;
+        EditorPrefs.SetBool(SceneDoneKey, true);
+        LoadPlayScene();
+    }
+
+    /// <summary>
+    /// Says once in a while why the scene has not been requested yet, so a run that waits out a long
+    /// boot is distinguishable in the log from one whose -smokeScene was never reached.
+    /// </summary>
+    private static void ReportPlaySceneWait(double elapsed, string reason)
+    {
+        if (elapsed - playSceneWaitedSince < 15.0)
+        {
+            return;
+        }
+
+        playSceneWaitedSince = elapsed;
+        Debug.Log(string.Format("----- RebuildGate play: waiting to load {0} - {1} -----", playScene, reason));
+    }
+
+    /// <summary>
+    /// Follows the requested load from "the game took it" to "the game finished it", and audits the
+    /// result once it is over. isLoading is set before the load's coroutine starts, so a transition to
+    /// true is the game taking the request, and the transition back to false is the load being over.
+    /// A request that was refused never shows the first transition, which is exactly how it is caught.
+    /// </summary>
+    private static void TrackPlayScene()
+    {
+        if (!playSceneRequested || playSceneLoadFinished)
+        {
+            return;
+        }
+
+        SuperController controller = SuperController.singleton;
+        if (controller == null)
+        {
+            return;
+        }
+
+        if (controller.isLoading)
+        {
+            playSceneLoadStarted = true;
+            return;
+        }
+
+        if (!playSceneLoadStarted)
+        {
+            return;
+        }
+
+        playSceneLoadFinished = true;
+        playSceneFinishedAt = EditorApplication.timeSinceStartup - playStartedAt;
+        AuditPlayScene(controller);
+    }
+
+    /// <summary>
+    /// Compares the scene file's own atom list with the atoms the game actually created.
+    ///
+    /// The file the game was told to load names every atom it contains, and this reads it back through
+    /// the game's own file layer, package addressing included. A scene that loaded has those atoms; the
+    /// boot scene does not have them. That difference is the only thing separating "the requested scene
+    /// is on screen" from "the game never left its boot scene", and reporting the second as the first is
+    /// what made a T-posed, unlit default Person look like a defect in the rebuilt renderer.
+    /// </summary>
+    private static void AuditPlayScene(SuperController controller)
+    {
+        try
+        {
+            using (MVR.FileManagement.FileEntryStreamReader reader = MVR.FileManagement.FileManager.OpenStreamReader(playScene, true))
+            {
+                SimpleJSON.JSONNode root = SimpleJSON.JSON.Parse(reader.ReadToEnd());
+                SimpleJSON.JSONArray atoms = root["atoms"].AsArray;
+                HashSet<string> present = new HashSet<string>(controller.GetAtomUIDs());
+
+                playSceneDeclared = 0;
+                foreach (SimpleJSON.JSONNode atom in atoms)
+                {
+                    string id = atom["id"];
+                    if (id == null || id == string.Empty)
+                    {
+                        continue;
+                    }
+
+                    playSceneDeclared++;
+                    if (present.Contains(id))
+                    {
+                        playScenePresent++;
+                    }
+                    else
+                    {
+                        playSceneMissing.Add(id);
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            playSceneAuditError = e.GetType().Name + ": " + e.Message;
         }
     }
 
@@ -630,6 +846,31 @@ public static class RebuildGate
         if (controller == null || controller.GetAtomUIDs().Count == 0)
         {
             return false;
+        }
+
+        // A load the game refused is not a load. It is also the quietest failure this gate has: the
+        // request is dropped with a warning, no error, and the scene already on screen stays there, so
+        // the run looks exactly like a successful load of a scene nobody asked for.
+        if (playLoadRefused)
+        {
+            return false;
+        }
+
+        // Being told to load a scene counts for nothing; having that scene on screen counts. The check
+        // is the scene's own atom list against the atoms that exist, because the boot scene and the
+        // scene that was asked for do not share their atoms, and until this check existed a run that
+        // never loaded the Cyber demo passed the gate and reported its boot-scene Person as a defect.
+        if (playScene != null && playScene != string.Empty)
+        {
+            if (!playSceneLoadStarted || !playSceneLoadFinished || playSceneAuditError != null)
+            {
+                return false;
+            }
+
+            if (playSceneDeclared > 0 && playSceneMissing.Count > 0)
+            {
+                return false;
+            }
         }
 
         // Two messages mean a scene item could not be resolved. "X is missing" is FileManager's way of
@@ -739,6 +980,1037 @@ public static class RebuildGate
         return path;
     }
 
+    /// <summary>Scene instances of a type, i.e. without the prefabs and package assets that share it.</summary>
+    private static List<T> SceneObjects<T>() where T : UnityEngine.Object
+    {
+        List<T> found = new List<T>();
+        foreach (UnityEngine.Object candidate in Resources.FindObjectsOfTypeAll(typeof(T)))
+        {
+            T item = candidate as T;
+            if (item != null && !EditorUtility.IsPersistent(item))
+            {
+                found.Add(item);
+            }
+        }
+
+        return found;
+    }
+
+    private static string Describe(UnityEngine.Object value)
+    {
+        return value == null ? "NULL" : "\"" + value.name + "\"";
+    }
+
+    /// <summary>
+    /// Reads a field the report has no access to, so that a protected flag can still be printed.
+    /// Arrays are printed as their length: "is the buffer there" is what a diagnostic needs from one.
+    /// </summary>
+    private static string Flag(object target, string name)
+    {
+        FieldInfo field = target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (field == null)
+        {
+            return "<no field " + name + ">";
+        }
+
+        object value = field.GetValue(target);
+        if (value == null)
+        {
+            return "NULL";
+        }
+
+        Array array = value as Array;
+        return array != null ? array.Length.ToString() : value.ToString();
+    }
+
+    private static string MaterialSummary(Material[] materials)
+    {
+        if (materials == null)
+        {
+            return "NULL";
+        }
+
+        StringBuilder text = new StringBuilder(materials.Length.ToString());
+        for (int i = 0; i < materials.Length; i++)
+        {
+            text.Append(i == 0 ? ": " : ", ");
+            text.Append(materials[i] == null
+                ? "NULL"
+                : (materials[i].shader == null ? materials[i].name + " (no shader)" : materials[i].shader.name));
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>True when any of the materials draws with one of the DAZ character shaders.</summary>
+    private static bool UsesCharacterShader(Material[] materials)
+    {
+        if (materials == null)
+        {
+            return false;
+        }
+
+        foreach (Material material in materials)
+        {
+            if (material != null && material.shader != null &&
+                material.shader.name.IndexOf("Subsurface", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Reads a vertex array field by name, protected or not. Null when the field is missing.</summary>
+    private static Vector3[] VectorField(object target, string name)
+    {
+        FieldInfo field = target.GetType().GetField(name,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        return field == null ? null : field.GetValue(target) as Vector3[];
+    }
+
+    /// <summary>How many vertices of one array are not the same as the matching vertex of the other.</summary>
+    private static string Drift(Vector3[] first, Vector3[] second)
+    {
+        if (first == null || second == null)
+        {
+            return "n/a";
+        }
+
+        int count = Math.Min(first.Length, second.Length);
+        int moved = 0;
+        for (int i = 0; i < count; i++)
+        {
+            if ((first[i] - second[i]).sqrMagnitude > 1e-10f)
+            {
+                moved++;
+            }
+        }
+
+        return string.Format("{0}/{1}", moved, count);
+    }
+
+    /// <summary>
+    /// Reads a compute buffer back to the CPU. VaM creates its vertex buffers one element longer than the
+    /// mesh, so the last entry of the result is not a vertex.
+    /// </summary>
+    private static Vector3[] ReadVertices(ComputeBuffer buffer)
+    {
+        if (buffer == null || buffer.count == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            Vector3[] data = new Vector3[buffer.count];
+            buffer.GetData(data);
+            return data;
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("----- RebuildGate play: could not read a vertex buffer back: " + e.Message + " -----");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Compares the vertices the body is drawn from with the mesh those vertices belong to.
+    ///
+    /// The drawn array is the "verts" compute buffer that DrawMeshGPU hands to the ComputeBuff shaders,
+    /// and the mesh is the unskinned geometry the skinning is supposed to be applied to. Vertices that
+    /// match are vertices the skinning moved nowhere - the whole array matching is a body whose pose is
+    /// on screen only in the bind pose, which is what a character in a T-pose turns out to be.
+    ///
+    /// This is deliberately not measured off rawSkinnedVerts or startVerts: on the merged path those hold
+    /// the bind pose plus morphs whatever the state of the skinning.
+    /// </summary>
+    private static string DrawnVertexDrift(DAZSkinV2 skin)
+    {
+        Vector3[] drawn = ReadVertices(skin.rawVertsBuffer);
+        Mesh mesh = skin.GetMesh();
+        if (drawn == null)
+        {
+            return "drawn=n/a (rawVertsBuffer=NULL)";
+        }
+
+        if (mesh == null)
+        {
+            return string.Format("drawn={0} verts, mesh=none", drawn.Length);
+        }
+
+        Vector3[] unskinned = mesh.vertices;
+        return string.Format("drawn={0} verts (buffer {1} slots), {2} of them differ from the unskinned mesh ({3})",
+            drawn.Length, skin.rawVertsBuffer.count, Drift(drawn, unskinned), unskinned.Length);
+    }
+
+    /// <summary>The field of any name on an object, public or not, or null when there is no such field.</summary>
+    private static object Field(object target, string name)
+    {
+        FieldInfo field = target.GetType().GetField(name,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        return field == null ? null : field.GetValue(target);
+    }
+
+    /// <summary>Bounds around the first <paramref name="count"/> points. False when there are none.</summary>
+    private static bool PointsBounds(Vector3[] points, int count, out Bounds bounds)
+    {
+        bounds = new Bounds(Vector3.zero, Vector3.zero);
+        if (points == null)
+        {
+            return false;
+        }
+
+        count = Math.Min(count, points.Length);
+        if (count == 0)
+        {
+            return false;
+        }
+
+        bounds = new Bounds(points[0], Vector3.zero);
+        for (int i = 1; i < count; i++)
+        {
+            bounds.Encapsulate(points[i]);
+        }
+
+        return true;
+    }
+
+    private static Vector3[] Transformed(Vector3[] points, Matrix4x4 matrix, int count)
+    {
+        count = Math.Min(count, points.Length);
+        Vector3[] result = new Vector3[count];
+        for (int i = 0; i < count; i++)
+        {
+            result[i] = matrix.MultiplyPoint3x4(points[i]);
+        }
+
+        return result;
+    }
+
+    private static string BoxText(bool present, Bounds bounds)
+    {
+        return present
+            ? string.Format("center {0} size {1}", bounds.center.ToString("F2"), bounds.size.ToString("F2"))
+            : "n/a";
+    }
+
+    /// <summary>
+    /// Where the drawn body sits, next to where its own skeleton sits.
+    ///
+    /// The drawn body goes to the screen through Graphics.DrawMesh with the identity matrix, so the
+    /// vertices the skinning writes have to be world positions already. A body whose vertices come out in
+    /// a frame of their own is drawn away from its own skeleton, and the parts of the character that are
+    /// driven through another path - the hair, which has its own copy of the skeleton under FemaleHair -
+    /// stay where the skeleton is and so appear to hang on their own next to a body that is not there.
+    ///
+    /// The bind pose box is the payload of the whole comparison: the drawn vertices expressed in the
+    /// root's frame are the same box as the bind pose, in the same size, when the body on screen is the
+    /// bind pose - a T-pose is exactly that, and a T-pose cannot be told from a posed body by flags.
+    /// </summary>
+    private static string SpatialReport(DAZSkinV2 skin)
+    {
+        Mesh mesh = skin.GetMesh();
+        if (mesh == null)
+        {
+            return "  space: no mesh";
+        }
+
+        Vector3[] drawn = ReadVertices(skin.rawVertsBuffer);
+        Vector3[] bind = skin.dazMesh == null ? null : skin.dazMesh.baseVertices;
+        Transform root = skin.root == null ? null : skin.root.transform;
+        DAZBone[] bones = Field(skin, "dazBones") as DAZBone[];
+
+        StringBuilder report = new StringBuilder();
+        report.AppendLine(string.Format("  space: root={0} at {1}, root scale {2}, drawOffset={3}, smoothing={4}",
+            root == null ? "NULL" : TransformPath(root),
+            root == null ? "n/a" : root.position.ToString("F2"),
+            root == null ? "n/a" : root.lossyScale.ToString("F3"),
+            skin.drawOffset.ToString("F2"), skin.useSmoothing));
+
+        Bounds box;
+        bool hasDrawn = PointsBounds(drawn, mesh.vertexCount, out box);
+        report.AppendLine(string.Format("    drawn in world: {0}", BoxText(hasDrawn, box)));
+
+        Bounds rootBox = new Bounds();
+        bool hasDrawnInRoot = false;
+        if (hasDrawn && root != null)
+        {
+            hasDrawnInRoot = PointsBounds(
+                Transformed(drawn, root.worldToLocalMatrix, mesh.vertexCount), mesh.vertexCount, out rootBox);
+        }
+
+        Bounds bindInRoot = new Bounds();
+        bool hasBind = PointsBounds(bind, bind == null ? 0 : bind.Length, out bindInRoot);
+        Bounds bindInWorld = new Bounds();
+        bool hasBindInWorld = hasBind && root != null;
+        if (hasBindInWorld)
+        {
+            hasBindInWorld = PointsBounds(
+                Transformed(bind, root.localToWorldMatrix, bind.Length), bind.Length, out bindInWorld);
+        }
+
+        report.AppendLine(string.Format("    bind pose in world: {0}", BoxText(hasBindInWorld, bindInWorld)));
+        report.AppendLine(string.Format("    drawn in root frame: {0}", BoxText(hasDrawnInRoot, rootBox)));
+        report.AppendLine(string.Format("    bind pose in root frame: {0}", BoxText(hasBind, bindInRoot)));
+
+        if (bones != null && bones.Length > 0)
+        {
+            Vector3[] bonePoints = new Vector3[bones.Length];
+            for (int i = 0; i < bones.Length; i++)
+            {
+                bonePoints[i] = bones[i].transform.position;
+            }
+
+            Bounds boneBox;
+            PointsBounds(bonePoints, bonePoints.Length, out boneBox);
+            report.AppendLine(string.Format("    skeleton in world: {0}, {1} bones, first at {2}",
+                BoxText(true, boneBox), bones.Length, bonePoints[0].ToString("F2")));
+        }
+
+        report.AppendLine(AncestorChain(skin.transform));
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>Renders one camera into a PNG beside the report, and returns the path.</summary>
+    private static string RenderToFile(Camera camera, int width, int height, string suffix)
+    {
+        string path = LogPathBase();
+        if (path == null)
+        {
+            return null;
+        }
+
+        string file = path + suffix + ".png";
+        RenderTexture target = RenderTexture.GetTemporary(width, height, 24);
+        RenderTexture active = RenderTexture.active;
+        try
+        {
+            camera.targetTexture = target;
+            camera.Render();
+
+            RenderTexture.active = target;
+            Texture2D image = new Texture2D(width, height, TextureFormat.RGB24, false);
+            image.ReadPixels(new Rect(0f, 0f, width, height), 0, 0);
+            image.Apply();
+            File.WriteAllBytes(file, image.EncodeToPNG());
+            UnityEngine.Object.DestroyImmediate(image);
+            return file;
+        }
+        finally
+        {
+            RenderTexture.active = active;
+            camera.targetTexture = null;
+            RenderTexture.ReleaseTemporary(target);
+        }
+    }
+
+    /// <summary>
+    /// Renders the body from a corner, framed on the body and on the skeleton that is supposed to be
+    /// driving it, so that one frame shows whether the two are in the same place.
+    /// </summary>
+    private static string CaptureSkin(DAZSkinV2 skin)
+    {
+        if (skin == null)
+        {
+            return "picture: skipped, no skin in the scene owns a mesh";
+        }
+
+        Vector3[] drawn = ReadVertices(skin.rawVertsBuffer);
+        Mesh mesh = skin.GetMesh();
+        if (drawn == null || mesh == null)
+        {
+            return "picture: skipped, the body has no drawn vertices";
+        }
+
+        Bounds bounds;
+        if (!PointsBounds(drawn, mesh.vertexCount, out bounds))
+        {
+            return "picture: skipped, the body has no drawn vertices";
+        }
+
+        DAZBone[] bones = Field(skin, "dazBones") as DAZBone[];
+        if (bones != null)
+        {
+            foreach (DAZBone bone in bones)
+            {
+                bounds.Encapsulate(bone.transform.position);
+            }
+        }
+
+        float radius = Mathf.Max(bounds.extents.magnitude, 0.001f);
+        float distance = radius / Mathf.Tan(45f * 0.5f * Mathf.Deg2Rad) * 1.5f;
+
+        GameObject holder = new GameObject("RebuildGateCapture");
+        try
+        {
+            Camera camera = holder.AddComponent<Camera>();
+            camera.enabled = false;
+            camera.fieldOfView = 45f;
+            camera.nearClipPlane = Mathf.Max(0.01f, distance - radius * 3f);
+            camera.farClipPlane = distance + radius * 6f;
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = new Color(0.1f, 0.1f, 0.14f, 1f);
+            camera.transform.position = bounds.center + new Vector3(0.7f, 0.4f, -1f).normalized * distance;
+            camera.transform.LookAt(bounds.center);
+
+            string file = RenderToFile(camera, 1024, 1024, string.Empty);
+            return file == null
+                ? "picture: skipped, the run was not told where to log"
+                : string.Format("picture: {0} (framed on the body at {1} and its skeleton, from {2})",
+                                file, bounds.center.ToString("F2"), TransformPath(skin.transform));
+        }
+        catch (Exception e)
+        {
+            return "picture: could not be rendered - " + e.Message;
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(holder);
+        }
+    }
+
+    /// <summary>
+    /// Renders the frame the game's own camera would put on screen, which is the only frame that shows
+    /// what the defect looks like rather than what the numbers say about it.
+    /// </summary>
+    private static string CaptureView()
+    {
+        Camera camera = Camera.main;
+        if (camera == null)
+        {
+            foreach (Camera candidate in Camera.allCameras)
+            {
+                if (candidate.enabled && candidate.gameObject.activeInHierarchy)
+                {
+                    camera = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (camera == null)
+        {
+            return "view: skipped, the scene has no enabled camera";
+        }
+
+        try
+        {
+            string file = RenderToFile(camera, 1024, 576, ".view");
+            return file == null
+                ? "view: skipped, the run was not told where to log"
+                : string.Format("view: {0} (the game's camera {1}, depth {2}, at {3})",
+                                file, TransformPath(camera.transform), camera.depth,
+                                camera.transform.position.ToString("F2"));
+        }
+        catch (Exception e)
+        {
+            return "view: could not be rendered - " + e.Message;
+        }
+    }
+
+    /// <summary>Bones worth showing side by side when two copies of a skeleton disagree.</summary>
+    private static readonly string[] BoneProbes =
+    {
+        "hip", "abdomen", "abdomen2", "chest", "neck", "head",
+        "lCollar", "lShldr", "lForeArm", "lHand", "lThigh", "lShin", "lFoot", "Ponytail01"
+    };
+
+    /// <summary>
+    /// Groups every DAZBone in the scene into the skeleton it belongs to, by walking up to the topmost
+    /// bone of the chain. A DAZ character carries one such skeleton, and an item worn by that character
+    /// carries another: hair embeds a full copy of the joint hierarchy (hip, chest, head, Ponytail01...)
+    /// so that one item can be fitted to any body. The copy is meant to be driven by the body's copy.
+    /// Nothing in the skinning path compares the two, and the copy holds rest rotations of its own, so an
+    /// undriven copy skins the hair as if the character were standing in its rest pose while the body is
+    /// drawn in the pose the scene asked for. The two then line up only by coincidence, which is what a
+    /// head of hair sitting away from its body looks like.
+    ///
+    /// So the copies are matched bone by bone by name and their local rotations compared: a driven copy
+    /// agrees with the body, an undriven one keeps the rest rotations and disagrees.
+    /// </summary>
+    private static string SkeletonReport(DAZSkinV2 subject)
+    {
+        Dictionary<Transform, List<DAZBone>> forest = new Dictionary<Transform, List<DAZBone>>();
+        foreach (DAZBone bone in SceneObjects<DAZBone>())
+        {
+            Transform top = bone.transform.parent;
+            while (top != null && top.GetComponent<DAZBone>() != null)
+            {
+                top = top.parent;
+            }
+
+            List<DAZBone> chain;
+            if (!forest.TryGetValue(top, out chain))
+            {
+                chain = new List<DAZBone>();
+                forest[top] = chain;
+            }
+
+            chain.Add(bone);
+        }
+
+        if (forest.Count == 0)
+        {
+            return "  skeletons: no bones in the scene";
+        }
+
+        string referenceName = subject != null && subject.root != null ? subject.root.gameObject.name : null;
+        Dictionary<string, Quaternion> referenceRotations = new Dictionary<string, Quaternion>();
+        Dictionary<string, Vector3> referencePositions = new Dictionary<string, Vector3>();
+        Transform referenceTop = null;
+        foreach (KeyValuePair<Transform, List<DAZBone>> candidate in forest)
+        {
+            if (referenceName != null && candidate.Key != null && candidate.Key.name == referenceName)
+            {
+                referenceTop = candidate.Key;
+                break;
+            }
+        }
+
+        if (referenceTop != null)
+        {
+            foreach (DAZBone bone in forest[referenceTop])
+            {
+                referenceRotations[bone.gameObject.name] = bone.transform.localRotation;
+                referencePositions[bone.gameObject.name] = bone.transform.position;
+            }
+        }
+
+        StringBuilder report = new StringBuilder();
+        foreach (KeyValuePair<Transform, List<DAZBone>> entry in forest)
+        {
+            List<DAZBone> chain = entry.Value;
+            Vector3[] points = new Vector3[chain.Count];
+            Dictionary<string, Quaternion> rotations = new Dictionary<string, Quaternion>();
+            Dictionary<string, Vector3> positions = new Dictionary<string, Vector3>();
+            for (int i = 0; i < chain.Count; i++)
+            {
+                points[i] = chain[i].transform.position;
+                rotations[chain[i].gameObject.name] = chain[i].transform.localRotation;
+                positions[chain[i].gameObject.name] = chain[i].transform.position;
+            }
+
+            Bounds box;
+            PointsBounds(points, points.Length, out box);
+            bool isReference = entry.Key == referenceTop;
+            report.AppendLine(string.Format("  skeleton {0}: {1} bones, world {2}{3}",
+                entry.Key == null ? "(no parent)" : TransformPath(entry.Key), chain.Count,
+                BoxText(true, box), isReference ? " <- the body" : string.Empty));
+
+            if (isReference)
+            {
+                report.AppendLine(AncestorChain(entry.Key));
+                continue;
+            }
+
+            if (referenceTop == null)
+            {
+                continue;
+            }
+
+            int shared = 0;
+            int differing = 0;
+            foreach (KeyValuePair<string, Quaternion> bone in rotations)
+            {
+                Quaternion reference;
+                if (!referenceRotations.TryGetValue(bone.Key, out reference))
+                {
+                    continue;
+                }
+
+                shared++;
+                if (Quaternion.Angle(bone.Value, reference) > 1f)
+                {
+                    differing++;
+                }
+            }
+
+            report.AppendLine(string.Format(
+                "    {0} of {1} bones share a name with the body, {2} of those are rotated differently",
+                shared, chain.Count, differing));
+            report.AppendLine(AncestorChain(entry.Key));
+
+            foreach (string probe in BoneProbes)
+            {
+                Quaternion own;
+                Quaternion reference;
+                Vector3 ownAt;
+                Vector3 referenceAt;
+                if (!rotations.TryGetValue(probe, out own) || !referenceRotations.TryGetValue(probe, out reference))
+                {
+                    continue;
+                }
+
+                if (!positions.TryGetValue(probe, out ownAt) || !referencePositions.TryGetValue(probe, out referenceAt))
+                {
+                    continue;
+                }
+
+                report.AppendLine(string.Format("    {0}: ours {1} body {2} - {3:F1} deg apart, sitting {4:F2} m apart",
+                    probe, own.eulerAngles.ToString("F1"), reference.eulerAngles.ToString("F1"),
+                    Quaternion.Angle(own, reference), Vector3.Distance(ownAt, referenceAt)));
+            }
+        }
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>
+    /// Reports how the hair items of a scene are wired to the body.
+    ///
+    /// A hair item ships its own copy of the character's joint hierarchy, and DAZHairGroup is the
+    /// component that points the item's skins at the skeleton that is meant to drive them
+    /// (rootBonesForSkinning). A group that never received that reference leaves its skins bound to the
+    /// item's own copy, which keeps the import rotations and the import position of the item, so the
+    /// hair is skinned as if the character still stood where the item was imported while the body
+    /// stands in the pose the scene asked for. The group and every skin under it are printed with the
+    /// skeleton each one actually resolves to, together with the world positions of the two ancestor
+    /// chains, so the skeleton the skins use and the skeleton the body uses can be compared by path.
+    /// </summary>
+    private static string HairReport()
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- hair -----");
+
+        List<DAZHairGroup> groups = SceneObjects<DAZHairGroup>();
+        report.AppendLine(string.Format("DAZHairGroup components in the scene: {0}", groups.Count));
+
+        foreach (DAZHairGroup group in groups)
+        {
+            report.AppendLine(string.Format("  {0}: active={1}, uid={2}, type={3}, at {4}",
+                TransformPath(group.transform), group.gameObject.activeInHierarchy, group.uid,
+                group.type, group.transform.position.ToString("F2")));
+            report.AppendLine(string.Format("    rootBonesForSkinning={0}",
+                group.rootBonesForSkinning == null
+                    ? "NULL"
+                    : TransformPath(group.rootBonesForSkinning.transform)));
+            report.AppendLine(string.Format("    skin={0}",
+                group.skin == null ? "NULL" : TransformPath(group.skin.transform)));
+            report.AppendLine(string.Format("    positionLink={0}, isDynamicRuntimeLoaded={1}, drawRigidOnBone={2}",
+                Flag(group, "positionLink"), group.isDynamicRuntimeLoaded,
+                group.drawRigidOnBone == null ? "NULL" : TransformPath(group.drawRigidOnBone.transform)));
+
+            DAZSkinV2[] owned = group.GetComponentsInChildren<DAZSkinV2>(true);
+            for (int i = 0; i < owned.Length; i++)
+            {
+                Mesh mesh = owned[i].GetMesh();
+                report.AppendLine(string.Format("    own skin {0}: mesh={1}, skin={2}, draw={3}, root={4}",
+                    TransformPath(owned[i].transform), mesh == null ? "none" : mesh.name,
+                    owned[i].skin, owned[i].draw,
+                    owned[i].root == null ? "NULL" : TransformPath(owned[i].root.transform)));
+            }
+
+            report.AppendLine(AncestorChain(group.transform));
+        }
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>
+    /// Prints the world position of every ancestor of a transform, from the topmost one down. Two
+    /// objects that are described as sharing a parent can sit metres apart if one of them carries an
+    /// offset, and only the world position of each node tells which of the two moved.
+    /// </summary>
+    private static string AncestorChain(Transform transform)
+    {
+        StringBuilder report = new StringBuilder();
+        List<Transform> chain = new List<Transform>();
+        for (Transform node = transform; node != null; node = node.parent)
+        {
+            chain.Add(node);
+        }
+
+        chain.Reverse();
+        report.AppendLine(string.Format("    chain of {0}:", TransformPath(transform)));
+        for (int i = 0; i < chain.Count; i++)
+        {
+            report.AppendLine(string.Format("      {0} {1}: at {2}, local {3}, active={4}",
+                new string(' ', i), chain[i].name, chain[i].position.ToString("F2"),
+                chain[i].localPosition.ToString("F2"), chain[i].gameObject.activeInHierarchy));
+        }
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>
+    /// Reports how far the skinning of a loaded scene's characters got.
+    ///
+    /// VaM skins a body through compute shaders rather than through a SkinnedMeshRenderer, and the
+    /// pipeline that owns a merged body skin is not DAZSkinV2 at all: DAZCharacterRun connects to the
+    /// merged skin, switches the skin's own skin/draw off, skins on its own threads and draws the result
+    /// itself. A body that stops halfway through that pipeline keeps its raw bind pose geometry, which
+    /// reaches the screen as a T-posed body standing in for a character whose actual pose never gets
+    /// drawn. Nothing is logged when it happens, so the state has to be read off the objects.
+    ///
+    /// Every flag that decides whether the body is drawn is printed: the skins that own a mesh, the run
+    /// that drives the merged one, the renderer each skin sits on and whether that renderer is still
+    /// enabled, plus how many of the vertices the body is drawn from the skinning actually moved. The
+    /// body itself is rendered into a PNG beside the report, because a body drawn in its bind pose and a
+    /// body that is not drawn at all print the same flags and look nothing alike.
+    /// </summary>
+    /// <summary>
+    /// Which renderer is putting the character on the screen, and where.
+    ///
+    /// The body of a VaM character is not drawn by a renderer of its own: DAZSkinV2 draws it with
+    /// Graphics.DrawMesh from a compute buffer, and skips any submesh whose material is null or whose
+    /// material flag is off. Whatever else is holding a character-sized mesh - a MeshRenderer left with
+    /// the bind pose mesh that DrawMeshGPU would have switched off, or the DAZMesh fallback to a single
+    /// unlit simpleMaterial, which is what a fullbright body without shadows is - is then what the eye
+    /// sees, at the place that renderer's transform puts it.
+    /// </summary>
+    private static string DrawReport(DAZSkinV2 subject)
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- draw -----");
+
+        List<string> lines = new List<string>();
+        foreach (SkinnedMeshRenderer renderer in SceneObjects<SkinnedMeshRenderer>())
+        {
+            Mesh mesh = renderer.sharedMesh;
+            if (mesh == null || mesh.vertexCount < 3000)
+            {
+                continue;
+            }
+
+            lines.Add(string.Format(
+                "  SMR {0}: enabled={1}, visible={2}, verts={3}, world={4}, position={5}, materials={6}",
+                TransformPath(renderer.transform), renderer.enabled, renderer.isVisible, mesh.vertexCount,
+                BoxText(true, renderer.bounds), renderer.transform.position.ToString("F2"),
+                MaterialSummary(renderer.sharedMaterials)));
+        }
+
+        foreach (MeshRenderer renderer in SceneObjects<MeshRenderer>())
+        {
+            MeshFilter filter = renderer.GetComponent<MeshFilter>();
+            Mesh mesh = filter == null ? null : filter.sharedMesh;
+            if (mesh == null || mesh.vertexCount < 3000)
+            {
+                continue;
+            }
+
+            lines.Add(string.Format(
+                "  MR {0}: enabled={1}, visible={2}, verts={3}, world={4}, position={5}, materials={6}",
+                TransformPath(renderer.transform), renderer.enabled, renderer.isVisible, mesh.vertexCount,
+                BoxText(true, renderer.bounds), renderer.transform.position.ToString("F2"),
+                MaterialSummary(renderer.sharedMaterials)));
+        }
+
+        report.AppendLine(string.Format("DAZSkinV2.staticDraw={0}, renderers holding a mesh of 3000+ vertices: {1}",
+                                        DAZSkinV2.staticDraw, lines.Count));
+        lines.Sort(string.CompareOrdinal);
+        for (int i = 0; i < lines.Count && i < 30; i++)
+        {
+            report.AppendLine(lines[i]);
+        }
+
+        if (lines.Count > 30)
+        {
+            report.AppendLine(string.Format("  ... {0} more", lines.Count - 30));
+        }
+
+        if (subject == null)
+        {
+            report.AppendLine("no subject skin to inspect");
+            return report.ToString();
+        }
+
+        report.AppendLine(string.Format("subject {0}", TransformPath(subject.transform)));
+        report.AppendLine(string.Format(
+            "    GPUuseSimpleMaterial={0}, GPUsimpleMaterial={1} ({2}), renderSuspend={3}",
+            subject.GPUuseSimpleMaterial, Describe(subject.GPUsimpleMaterial),
+            subject.GPUsimpleMaterial == null || subject.GPUsimpleMaterial.shader == null
+                ? "NULL"
+                : subject.GPUsimpleMaterial.shader.name,
+            subject.renderSuspend));
+        report.AppendLine(string.Format("    GPUmaterials={0}", MaterialSummary(subject.GPUmaterials)));
+
+        if (subject.materialsEnabled != null)
+        {
+            StringBuilder flags = new StringBuilder();
+            for (int i = 0; i < subject.materialsEnabled.Length; i++)
+            {
+                flags.Append(subject.materialsEnabled[i] ? "1" : "0");
+            }
+
+            report.AppendLine(string.Format("    materialsEnabled={0}", flags.ToString()));
+        }
+
+        MeshFilter ownFilter = subject.GetComponent<MeshFilter>();
+        MeshRenderer ownRenderer = subject.GetComponent<MeshRenderer>();
+        Mesh ownMesh = ownFilter == null ? null : ownFilter.sharedMesh;
+        report.AppendLine(string.Format("    own MeshFilter={0}, own MeshRenderer={1}",
+            ownFilter == null ? "none" : Describe(ownMesh),
+            ownRenderer == null
+                ? "none"
+                : string.Format("enabled={0}, visible={1}, mesh={2}, materials={3}",
+                                ownRenderer.enabled, ownRenderer.isVisible,
+                                ownMesh == null ? "NULL" : ownMesh.name,
+                                MaterialSummary(ownRenderer.sharedMaterials))));
+
+        DAZMesh dazMesh = subject.dazMesh;
+        if (dazMesh == null)
+        {
+            report.AppendLine("    dazMesh=NULL");
+            return report.ToString();
+        }
+
+        report.AppendLine(string.Format(
+            "    DAZMesh {0}: useSimpleMaterial={1}, simpleMaterial={2} ({3}), use2PassMaterials={4}",
+            TransformPath(dazMesh.transform), dazMesh.useSimpleMaterial, Describe(dazMesh.simpleMaterial),
+            dazMesh.simpleMaterial == null || dazMesh.simpleMaterial.shader == null
+                ? "NULL"
+                : dazMesh.simpleMaterial.shader.name,
+            dazMesh.use2PassMaterials));
+        report.AppendLine(string.Format("    materials={0}", MaterialSummary(dazMesh.materials)));
+        report.AppendLine(string.Format("    materialsPass1={0}", MaterialSummary(dazMesh.materialsPass1)));
+        report.AppendLine(string.Format("    morphedUVMappedMesh={0}, baseMesh={1}, morphedBaseMesh={2}",
+            dazMesh.morphedUVMappedMesh == null
+                ? "NULL"
+                : dazMesh.morphedUVMappedMesh.name + " (" + dazMesh.morphedUVMappedMesh.vertexCount + " verts)",
+            Describe(Field(dazMesh, "_baseMesh") as UnityEngine.Object),
+            Describe(Field(dazMesh, "_morphedBaseMesh") as UnityEngine.Object)));
+
+        MeshFilter meshFilter = dazMesh.GetComponent<MeshFilter>();
+        MeshRenderer meshRenderer = dazMesh.GetComponent<MeshRenderer>();
+        Mesh shownMesh = meshFilter == null ? null : meshFilter.sharedMesh;
+        report.AppendLine(string.Format("    MeshFilter={0}, MeshRenderer={1}",
+            meshFilter == null ? "none" : Describe(shownMesh),
+            meshRenderer == null
+                ? "none"
+                : string.Format("enabled={0}, visible={1}, mesh={2}, materials={3}",
+                                meshRenderer.enabled, meshRenderer.isVisible,
+                                shownMesh == null ? "NULL" : shownMesh.name,
+                                MaterialSummary(meshRenderer.sharedMaterials))));
+
+        return report.ToString();
+    }
+
+    private static string SkinReport()
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- skin -----");
+
+        try
+        {
+            report.AppendLine(string.Format("compute shader assets in the project: {0}",
+                                            AssetDatabase.FindAssets("t:ComputeShader").Length));
+
+            List<MeshVR.DAZImport> imports = SceneObjects<MeshVR.DAZImport>();
+            report.AppendLine(string.Format("DAZImport components in the scene: {0}", imports.Count));
+            for (int i = 0; i < imports.Count && i < 6; i++)
+            {
+                MeshVR.DAZImport import = imports[i];
+                report.AppendLine(string.Format("  {0}: GPUSkinCompute={1}, GPUMeshCompute={2}",
+                    TransformPath(import.transform), Describe(import.GPUSkinCompute), Describe(import.GPUMeshCompute)));
+            }
+
+            report.AppendLine(HairReport());
+
+            List<DAZSkinV2> skins = SceneObjects<DAZSkinV2>();
+            report.AppendLine(string.Format(
+                "DAZSkinV2 components in the scene: {0}, staticDraw={1}",
+                skins.Count, DAZSkinV2.staticDraw));
+
+            // A skin whose mesh is null is one of the source skins a merge consumed, and it is correct
+            // for those to be idle - one line each. A skin that owns a mesh is a skin that has to reach
+            // the screen, so those get every flag that decides whether it does.
+            List<string> idleSkins = new List<string>();
+            DAZSkinV2 subject = null;
+            int subjectVertices = 0;
+            foreach (DAZSkinV2 skin in skins)
+            {
+                Mesh mesh = skin.GetMesh();
+                if (mesh == null)
+                {
+                    idleSkins.Add(string.Format("  {0}: mesh=none, wasInit={1}, skin={2}, draw={3}, method={4}, GPUSkinner={5}, root={6}",
+                        TransformPath(skin.transform), skin.wasInit, skin.skin, skin.draw, skin.skinMethod,
+                        Describe(skin.GPUSkinner),
+                        skin.root == null ? "NULL" : TransformPath(skin.root.transform)));
+                    continue;
+                }
+
+                if (skin.gameObject.activeInHierarchy && mesh.vertexCount > subjectVertices)
+                {
+                    subject = skin;
+                    subjectVertices = mesh.vertexCount;
+                }
+
+                MeshRenderer ownRenderer = skin.GetComponent<MeshRenderer>();
+                report.AppendLine(string.Format(
+                    "  {0}: enabled={1}, active={2}, wasInit={3}, skin={4}, draw={5}, method={6}, renderSuspend={7}",
+                    TransformPath(skin.transform), skin.enabled, skin.gameObject.activeInHierarchy,
+                    skin.wasInit, skin.skin, skin.draw, skin.skinMethod, skin.renderSuspend));
+                report.AppendLine(string.Format("    renderer: {0}, materials={1}",
+                    ownRenderer == null
+                        ? "none"
+                        : string.Format("enabled={0}, visible={1}", ownRenderer.enabled, ownRenderer.isVisible),
+                    MaterialSummary(ownRenderer == null ? null : ownRenderer.sharedMaterials)));
+                report.AppendLine(string.Format(
+                    "    drawDisabled={0}, needsDispatch={1}, checkedComponents={2}, materialsEnabled={3}",
+                    Flag(skin, "_updateDrawDisabled"), Flag(skin, "needsDispatch"),
+                    Flag(skin, "alreadyCheckedForMeshComponents"),
+                    skin.materialsEnabled == null ? "NULL" : skin.materialsEnabled.Length.ToString()));
+                report.AppendLine(string.Format("    GPUSkinner={0}, GPUMeshCompute={1}, delayedVertsBuffer={2}, nodes={3}, root={4}",
+                    Describe(skin.GPUSkinner), Describe(skin.GPUMeshCompute),
+                    skin.delayedVertsBuffer == null ? "NULL" : "set",
+                    skin.nodes == null ? "NULL" : skin.nodes.Length.ToString(),
+                    skin.root == null ? "NULL" : skin.root.name));
+                report.AppendLine(string.Format("    dazMesh={0}, mesh={1}",
+                    skin.dazMesh == null
+                        ? "NULL"
+                        : string.Format("{0} ({1} base, {2} uv verts)", skin.dazMesh.geometryId,
+                                        skin.dazMesh.numBaseVertices, skin.dazMesh.numUVVertices),
+                    string.Format("{0} ({1} verts)", mesh.name, mesh.vertexCount)));
+                report.AppendLine(string.Format("    generalWeights={0}, {1}",
+                    Flag(skin, "_useGeneralWeights"), DrawnVertexDrift(skin)));
+                report.AppendLine(string.Format("    GPUmaterials={0}", MaterialSummary(skin.GPUmaterials)));
+            }
+
+            foreach (string idle in idleSkins)
+            {
+                report.AppendLine(idle);
+            }
+
+            // The merged body of a VaM character is not drawn by DAZSkinV2 at all: DAZCharacterRun
+            // connects to the merged skin, turns the skin's own skin/draw off, skins on its own threads
+            // and draws the result with skin.DrawMeshGPU() from its LateUpdate. Every one of those steps
+            // is a flag, and a run that stopped half way leaves the body drawn in its bind pose.
+            List<DAZCharacterRun> runs = SceneObjects<DAZCharacterRun>();
+            SuperController controller = SuperController.singleton;
+            report.AppendLine(string.Format(
+                "DAZCharacterRun components in the scene: {0}, SuperController.autoSimulation={1}",
+                runs.Count, controller == null ? "no controller" : controller.autoSimulation.ToString()));
+            for (int i = 0; i < runs.Count && i < 4; i++)
+            {
+                DAZCharacterRun run = runs[i];
+                report.AppendLine(string.Format(
+                    "  {0}: enabled={1}, active={2}, doUpdate={3}, doSkin={4}, doDraw={5}, useThreading={6}, renderSuspend={7}",
+                    TransformPath(run.transform), run.enabled, run.gameObject.activeInHierarchy,
+                    run.doUpdate, run.doSkin, run.doDraw, run.useThreading, run.renderSuspend));
+                report.AppendLine(string.Format(
+                    "    threadsRunning={0}, threadWasRun={1}, morphedUVVerts={2}, skin={3}, bones={4}, morphBank1={5}, morphBank2={6}, setDazMorphContainer={7}",
+                    Flag(run, "_threadsRunning"), Flag(run, "threadWasRun"),
+                    Flag(run, "mergedMeshMorphedUVVertices"), Describe(run.skin), Describe(run.bones),
+                    Describe(run.morphBank1), Describe(run.morphBank2), Describe(run.setDazMorphContainer)));
+                report.AppendLine(string.Format(
+                    "    thisFrame: skinPrep={0} ms, skinFinish={1} ms, skinDraw={2} ms, threadSkin={3} ms, threadMerge={4} ms",
+                    Flag(run, "MAIN_skinPrepTime"), Flag(run, "MAIN_skinFinishTime"),
+                    Flag(run, "MAIN_skinDrawTime"),
+                    Flag(run, "THREAD_skinTime"), Flag(run, "THREAD_mergeTime")));
+
+                // RunThreaded skins mergedMeshMorphedUVVertices in place, so the copy the run takes one
+                // step earlier is the same body before any bone moved it. Two identical arrays mean the
+                // skinning wrote nothing, and the buffer the body is drawn from is holding the bind pose.
+                Vector3[] skinnedVerts = VectorField(run, "mergedMeshMorphedUVVertices");
+                Vector3[] morphOnlyVerts = VectorField(run, "mergedMeshMorphedUVVerticesCopy");
+                report.AppendLine(string.Format(
+                    "    mergedUVVerts={0}, prefixedMorphedUVVerts={1}, verts the skinning moved: {2}",
+                    Flag(run, "mergedMeshMorphedUVVertices"), Flag(run, "mergedMeshMorphedUVVerticesCopy"),
+                    Drift(skinnedVerts, morphOnlyVerts)));
+            }
+
+            report.AppendLine(DrawReport(subject));
+            report.AppendLine(CaptureSkin(subject));
+            report.AppendLine(CaptureView());
+            if (subject != null)
+            {
+                report.AppendLine(SpatialReport(subject));
+            }
+
+            List<DAZBone> bones = SceneObjects<DAZBone>();
+            int rotated = 0;
+            foreach (DAZBone bone in bones)
+            {
+                if (Quaternion.Angle(bone.transform.localRotation, Quaternion.identity) > 1f)
+                {
+                    rotated++;
+                }
+            }
+
+            report.AppendLine(string.Format("DAZBone components in the scene: {0}, rotated away from identity: {1}",
+                                            bones.Count, rotated));
+            for (int i = 0; i < bones.Count && i < 5; i++)
+            {
+                report.AppendLine(string.Format("  {0}: localRotation {1}",
+                    TransformPath(bones[i].transform), bones[i].transform.localRotation.eulerAngles.ToString("F1")));
+            }
+
+            report.AppendLine(SkeletonReport(subject));
+
+            List<SkinnedMeshRenderer> skinnedRenderers = SceneObjects<SkinnedMeshRenderer>();
+            List<MeshRenderer> meshRenderers = SceneObjects<MeshRenderer>();
+            report.AppendLine(string.Format("renderers in the scene: {0} SkinnedMeshRenderer, {1} MeshRenderer",
+                                            skinnedRenderers.Count, meshRenderers.Count));
+
+            List<string> rendererLines = new List<string>();
+            foreach (SkinnedMeshRenderer renderer in skinnedRenderers)
+            {
+                rendererLines.Add(string.Format("  SMR {0}: enabled={1}, visible={2}, mesh={3}, bones={4}, materials={5}",
+                    TransformPath(renderer.transform), renderer.enabled, renderer.isVisible,
+                    renderer.sharedMesh == null
+                        ? "NULL"
+                        : string.Format("{0} ({1} verts)", renderer.sharedMesh.name, renderer.sharedMesh.vertexCount),
+                    renderer.bones.Length, MaterialSummary(renderer.sharedMaterials)));
+            }
+
+            // A loaded scene holds hundreds of mesh renderers, most of them room and tool geometry, and
+            // the list a diagnostic needs is the one that carries a character shader. Everything else is
+            // counted instead of printed.
+            List<string> characterLines = new List<string>();
+            int enabledMeshRenderers = 0;
+            int visibleMeshRenderers = 0;
+            foreach (MeshRenderer renderer in meshRenderers)
+            {
+                enabledMeshRenderers += renderer.enabled ? 1 : 0;
+                visibleMeshRenderers += renderer.isVisible ? 1 : 0;
+                if (!UsesCharacterShader(renderer.sharedMaterials))
+                {
+                    continue;
+                }
+
+                MeshFilter filter = renderer.GetComponent<MeshFilter>();
+                characterLines.Add(string.Format("  MR {0}: enabled={1}, visible={2}, mesh={3}, materials={4}",
+                    TransformPath(renderer.transform), renderer.enabled, renderer.isVisible,
+                    filter == null || filter.sharedMesh == null ? "NULL" : filter.sharedMesh.name,
+                    MaterialSummary(renderer.sharedMaterials)));
+            }
+
+            characterLines.Sort(string.CompareOrdinal);
+
+            report.AppendLine(string.Format(
+                "  mesh renderers with a character shader: {0} (of {1} enabled, {2} visible in the scene)",
+                characterLines.Count, enabledMeshRenderers, visibleMeshRenderers));
+
+            // The skinned renderers go first and on their own budget: they are nine against forty
+            // character mesh renderers, and a single shared cap printed only the mesh ones.
+            rendererLines.Sort(string.CompareOrdinal);
+            for (int i = 0; i < rendererLines.Count && i < 40; i++)
+            {
+                report.AppendLine(rendererLines[i]);
+            }
+
+            for (int i = 0; i < characterLines.Count && i < 40; i++)
+            {
+                report.AppendLine(characterLines[i]);
+            }
+
+            if (characterLines.Count > 40)
+            {
+                report.AppendLine(string.Format(
+                    "  ... {0} more mesh renderers with a character shader", characterLines.Count - 40));
+            }
+        }
+        catch (Exception e)
+        {
+            report.AppendLine("skin diagnostics stopped at " + e.GetType().Name + ": " + e.Message);
+        }
+
+        return report.ToString();
+    }
+
     private static string PlayReport()
     {
         StringBuilder report = new StringBuilder();
@@ -746,11 +2018,32 @@ public static class RebuildGate
         report.AppendLine(string.Format("played: {0:N1} s", playSeconds));
         if (playScene != null && playScene != string.Empty)
         {
-            report.AppendLine(string.Format("scene: {0} (after {1:N0} s)", playScene, playWarmup));
-            report.AppendLine(string.Format("scene loaded: {0}{1}",
-                playSceneRequested ? "yes" : "no - the run ended before the load",
-                playErrorsAtLoad >= 0 ? string.Format(", errors before the load: {0}", playErrorsAtLoad) : ""));
+            report.AppendLine(string.Format("scene: {0} (asked for after {1:N0} s)", playScene, playWarmup));
+            report.AppendLine(string.Format("scene load: requested={0}, taken={1}, finished={2}{3}, refused={4}",
+                playSceneRequested, playSceneLoadStarted, playSceneLoadFinished,
+                playSceneLoadFinished ? string.Format(" after {0:N1} s", playSceneFinishedAt) : "",
+                playLoadRefused));
+            report.AppendLine(string.Format("errors before the load: {0}",
+                playErrorsAtLoad >= 0 ? playErrorsAtLoad.ToString() : "the load was never requested"));
+
+            if (playSceneAuditError != null)
+            {
+                report.AppendLine("scene atoms: could not be read back - " + playSceneAuditError);
+            }
+            else if (playSceneDeclared >= 0)
+            {
+                report.AppendLine(string.Format("scene atoms: {0} declared, {1} present, {2} missing{3}",
+                    playSceneDeclared, playScenePresent, playSceneMissing.Count,
+                    playSceneDeclared > 0 && playSceneMissing.Count == 0
+                        ? " - the scene on screen is the scene that was asked for" : ""));
+                foreach (string id in playSceneMissing)
+                {
+                    report.AppendLine("  missing atom: " + id);
+                }
+            }
         }
+
+        report.Append(SkinReport());
 
         report.AppendLine(string.Format("errors and exceptions: {0}{1}", PlayErrors.Count,
             PlayErrors.Count >= playErrorLimit ? " (capped, distinct messages only)" : ""));
@@ -827,6 +2120,10 @@ public static class RebuildGate
 
         report.AppendLine(string.Format("loaded scenes: {0}", SceneManager.sceneCount));
         report.AppendLine(string.Format("mono behaviours in the loaded scenes: {0}", UnityEngine.Object.FindObjectsOfType<MonoBehaviour>().Length));
+
+        // A probe that never made it into the build cannot print anything, and its silence is
+        // indistinguishable from a negative result, so every play report states what was compiled in.
+        report.AppendLine("probes: " + ProbeSummary());
         report.AppendLine(playVerdict ? "----- RebuildGate OK -----" : "----- RebuildGate FAILED -----");
         return report.ToString();
     }
