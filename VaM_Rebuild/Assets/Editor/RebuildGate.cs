@@ -378,6 +378,17 @@ public static class RebuildGate
     private static string playSceneAuditError;
     private static string playContentAtFailure;
 
+    // Animation cannot be judged from one look at the scene: a single sample of a posed body is a
+    // still frame, and a still frame is exactly what a run looks like when the skinning wrote the
+    // bind pose. The run therefore samples the posed bones, waits, and samples them again, which is
+    // the only thing that separates "the clip is playing" from "the pose was applied once".
+    private const double AnimationSampleSeconds = 0.6;
+    private static List<Transform> playAnimationBones;
+    private static List<Vector3> playAnimationBefore;
+    private static string playAnimationClockBefore;
+    private static double playAnimationSampledAt;
+    private static string playAnimationAdvance;
+
     /// <summary>
     /// Runs the boot scene in play mode for a while and reports what the game printed.
     ///
@@ -617,6 +628,25 @@ public static class RebuildGate
         if (playSceneRequested && !playSceneLoadFinished && elapsed < playSeconds + PlaySceneGraceSeconds)
         {
             return;
+        }
+
+        // Two looks at the posed body, taken from the run's clock rather than in one pass: see the
+        // note on AnimationSampleSeconds. The report waits for the second sample instead of writing
+        // a still frame down as "the animation does not run".
+        if (playAnimationBones == null)
+        {
+            SampleAnimation();
+            return;
+        }
+
+        if (playAnimationAdvance == null)
+        {
+            if (EditorApplication.timeSinceStartup - playAnimationSampledAt < AnimationSampleSeconds)
+            {
+                return;
+            }
+
+            playAnimationAdvance = AnimationAdvance();
         }
 
         // Report before trying to stop: a play mode that is being torn down is exactly when the
@@ -1419,6 +1449,213 @@ public static class RebuildGate
     };
 
     /// <summary>
+    /// The skin the report calls the character: the switched-on skin whose mesh has the most vertices.
+    /// A merged body is built from several skins, and only one of them owns the mesh that is drawn.
+    /// </summary>
+    private static DAZSkinV2 CharacterSkin()
+    {
+        DAZSkinV2 subject = null;
+        int subjectVertices = 0;
+        foreach (DAZSkinV2 skin in SceneObjects<DAZSkinV2>())
+        {
+            Mesh mesh = skin == null ? null : skin.GetMesh();
+            if (mesh == null || !skin.gameObject.activeInHierarchy)
+            {
+                continue;
+            }
+
+            if (mesh.vertexCount > subjectVertices)
+            {
+                subject = skin;
+                subjectVertices = mesh.vertexCount;
+            }
+        }
+
+        return subject;
+    }
+
+    /// <summary>The posed bones of the scene, i.e. the joints of every skeleton that is switched on.</summary>
+    private static List<Transform> PosedBones()
+    {
+        List<Transform> bones = new List<Transform>();
+        foreach (DAZBone bone in SceneObjects<DAZBone>())
+        {
+            if (bone.gameObject.activeInHierarchy)
+            {
+                bones.Add(bone.transform);
+            }
+        }
+
+        return bones;
+    }
+
+    // A hair joint is a DAZBone too, and the hair item's own joints are driven by physics rather than
+    // by the clip, so "some bone moved" is not by itself proof that the animation runs. The joints are
+    // counted apart for that reason: the body's joints are the ones only a clip can move.
+    private static bool IsBodyBone(Transform bone)
+    {
+        return bone.GetComponentInParent<DAZHairGroup>() == null;
+    }
+
+    /// <summary>Takes the first of the two looks at the posed bones. See AnimationSampleSeconds.</summary>
+    private static void SampleAnimation()
+    {
+        playAnimationBones = PosedBones();
+        playAnimationBefore = new List<Vector3>(playAnimationBones.Count);
+        foreach (Transform bone in playAnimationBones)
+        {
+            playAnimationBefore.Add(bone.position);
+        }
+
+        playAnimationClockBefore = AnimatorClocks();
+        playAnimationSampledAt = EditorApplication.timeSinceStartup;
+    }
+
+    /// <summary>
+    /// The clip each switched-on animator is in, and how far its clock is into it. This is the animator
+    /// speaking for itself, where the bone positions are the result.
+    /// </summary>
+    private static string AnimatorClocks()
+    {
+        StringBuilder clocks = new StringBuilder();
+        foreach (Animator animator in SceneObjects<Animator>())
+        {
+            if (animator == null || !animator.gameObject.activeInHierarchy ||
+                animator.runtimeAnimatorController == null)
+            {
+                continue;
+            }
+
+            if (clocks.Length > 0)
+            {
+                clocks.Append(", ");
+            }
+
+            AnimatorStateInfo state = animator.GetCurrentAnimatorStateInfo(0);
+            AnimatorClipInfo[] clips = animator.GetCurrentAnimatorClipInfo(0);
+            clocks.Append(string.Format("{0}: {1} at normalizedTime {2:F3}", animator.name,
+                clips.Length == 0 || clips[0].clip == null ? "no clip" : "\"" + clips[0].clip.name + "\"",
+                state.normalizedTime));
+        }
+
+        return clocks.Length == 0 ? "no animator is running a clip" : clocks.ToString();
+    }
+
+    /// <summary>Reports how far the bones moved between the two samples.</summary>
+    private static string AnimationAdvance()
+    {
+        int bodyMoved = 0;
+        int bodyBones = 0;
+        int hairMoved = 0;
+        int hairBones = 0;
+        string furthest = "none";
+        float far = 0f;
+        for (int i = 0; i < playAnimationBones.Count && i < playAnimationBefore.Count; i++)
+        {
+            Transform bone = playAnimationBones[i];
+            if (bone == null)
+            {
+                continue;
+            }
+
+            bool body = IsBodyBone(bone);
+            float distance = Vector3.Distance(bone.position, playAnimationBefore[i]);
+            bool moved = distance > 0.0001f;
+            if (body)
+            {
+                bodyBones++;
+                if (moved)
+                {
+                    bodyMoved++;
+                }
+            }
+            else
+            {
+                hairBones++;
+                if (moved)
+                {
+                    hairMoved++;
+                }
+            }
+
+            if (distance > far)
+            {
+                far = distance;
+                furthest = bone.name;
+            }
+        }
+
+        return string.Format(
+            "{0} bones sampled {1:F2} s apart: body {2}/{3} moved, hair joints {4}/{5} moved, furthest {6} by {7:F4} m",
+            playAnimationBones.Count, EditorApplication.timeSinceStartup - playAnimationSampledAt,
+            bodyMoved, bodyBones, hairMoved, hairBones, furthest, far);
+    }
+
+    /// <summary>
+    /// The animation state, and whether it is running.
+    ///
+    /// A posed body can be a still frame: the scene stores a whole sequence of clips, one of them is
+    /// played, and a rebuild that plays none of them draws the scene's pose once and stops. The scene's
+    /// stored sequence is what plays - RestoreFromJSON plays animationSequence.First - so the clip the
+    /// animator is actually in and the bone advance over time have to be read together: the clip says
+    /// what the game chose, the clock and the bones say whether it is running.
+    ///
+    /// "animationSelection" is deliberately printed next to them: it is the entry the scene author had
+    /// highlighted in the clip picker, it is stored in the scene, and it is never read by any code - it
+    /// is only handed to the AddAnimationToSequence action as that action's argument. A scene whose
+    /// selection and sequence name different clips is therefore not a contradiction.
+    /// </summary>
+    private static string AnimationReport()
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- animation -----");
+
+        List<UnityAnimatorControl> controls = SceneObjects<UnityAnimatorControl>();
+        report.AppendLine(string.Format("UnityAnimatorControl components in the scene: {0}", controls.Count));
+        for (int i = 0; i < controls.Count && i < 3; i++)
+        {
+            UnityAnimatorControl control = controls[i];
+            report.AppendLine(string.Format("  {0}: active={1}, animatorEnabled={2}, animatorSpeed={3}, currentAnimationName={4}",
+                TransformPath(control.transform), control.gameObject.activeInHierarchy,
+                Flag(control, "_animatorEnabled"), Flag(control, "_animatorSpeed"),
+                Flag(control, "_currentAnimationName")));
+            report.AppendLine(string.Format("    selection stored in the scene: {0}",
+                Flag(control, "_animationSelection")));
+        }
+
+        int running = 0;
+        foreach (Animator animator in SceneObjects<Animator>())
+        {
+            if (animator == null || !animator.gameObject.activeInHierarchy ||
+                animator.runtimeAnimatorController == null)
+            {
+                continue;
+            }
+
+            running++;
+            AnimatorStateInfo state = animator.GetCurrentAnimatorStateInfo(0);
+            report.AppendLine(string.Format(
+                "  {0}: controller={1}, speed={2:F2}, state hash={3}, length={4:F2} s, normalizedTime={5:F3}",
+                TransformPath(animator.transform), Describe(animator.runtimeAnimatorController), animator.speed,
+                state.shortNameHash.ToString("X8"), state.length, state.normalizedTime));
+            AnimatorClipInfo[] clips = animator.GetCurrentAnimatorClipInfo(0);
+            for (int c = 0; c < clips.Length && c < 4; c++)
+            {
+                report.AppendLine(string.Format("    clip: {0} ({1:F2} s), weight {2:F2}",
+                    clips[c].clip == null ? "NULL" : clips[c].clip.name,
+                    clips[c].clip == null ? 0f : clips[c].clip.length, clips[c].weight));
+            }
+        }
+
+        report.AppendLine(string.Format("animators with a controller and switched on: {0}", running));
+        report.AppendLine(string.Format("animator clock: {0}", AnimatorClocks()));
+        report.AppendLine(string.Format("animator clock, the earlier sample: {0}", playAnimationClockBefore == null ? "not sampled" : playAnimationClockBefore));
+        report.AppendLine(string.Format("bone advance: {0}",
+            playAnimationAdvance == null ? "not sampled" : playAnimationAdvance));
+        return report.ToString();
+    }
+
+    /// <summary>
     /// Groups every DAZBone in the scene into the skeleton it belongs to, by walking up to the topmost
     /// bone of the chain. A DAZ character carries one such skeleton, and an item worn by that character
     /// carries another: hair embeds a full copy of the joint hierarchy (hip, chest, head, Ponytail01...)
@@ -1834,8 +2071,7 @@ public static class RebuildGate
             // for those to be idle - one line each. A skin that owns a mesh is a skin that has to reach
             // the screen, so those get every flag that decides whether it does.
             List<string> idleSkins = new List<string>();
-            DAZSkinV2 subject = null;
-            int subjectVertices = 0;
+            DAZSkinV2 subject = CharacterSkin();
             foreach (DAZSkinV2 skin in skins)
             {
                 Mesh mesh = skin.GetMesh();
@@ -1846,12 +2082,6 @@ public static class RebuildGate
                         Describe(skin.GPUSkinner),
                         skin.root == null ? "NULL" : TransformPath(skin.root.transform)));
                     continue;
-                }
-
-                if (skin.gameObject.activeInHierarchy && mesh.vertexCount > subjectVertices)
-                {
-                    subject = skin;
-                    subjectVertices = mesh.vertexCount;
                 }
 
                 MeshRenderer ownRenderer = skin.GetComponent<MeshRenderer>();
@@ -1965,6 +2195,7 @@ public static class RebuildGate
             }
 
             report.AppendLine(SkeletonReport(subject));
+            report.Append(AnimationReport());
 
             List<SkinnedMeshRenderer> skinnedRenderers = SceneObjects<SkinnedMeshRenderer>();
             List<MeshRenderer> meshRenderers = SceneObjects<MeshRenderer>();
