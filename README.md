@@ -21,7 +21,7 @@ the rest of [`docs/`](docs/).
 | `VaM_Rebuild\Assets\Editor\RebuildGate.cs` | the only code written by hand: a batch gate that boots the game and prints a verdict |
 | `VaM_Rebuild\ProjectSettings`, `VaM_Rebuild\Packages` | Unity project settings, including the .NET 4.x scripting runtime the decompiled code needs |
 | `scripts\` | the pipeline: project setup, compilation gate, smoke runs, log comparison |
-| `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs) |
+| `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison) |
 | `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity |
 
 ## Requirements

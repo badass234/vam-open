@@ -115,6 +115,39 @@ its numbers are replaced with `<n>`; without that the original's `Avg. FPS: 313.
 batch mode does not (`EditorUpdateCheck`, `TrimDiskCacheJob`, `IsTimeToCheckForNewEditor`, ...), so
 those patterns are filtered as well.
 
+### 5. Visual comparison - `tools\compare_view.py`
+
+A rebuild has to be compared against the original game rather than against memory. A reference frame
+can come from two places: the preview image VaM stores inside a scene package (a `.var` is a zip, so
+`Saves/scene/.../<name>.jpg` can simply be extracted), or a screenshot of a running `VaM.exe`. Only the
+second one is a fair comparison for a given camera - a shipped preview is rendered by a dedicated
+screenshot camera (`SuperController.screenshotCamera`, `loResScreenShotCameraFOV`, default 40) from a
+vantage of its own, not through the camera the player sees.
+
+```
+python tools\compare_view.py <reference> <capture> [--crop x,y,w,h] [--out DIR] [--min-zncc X]
+```
+
+The reference is scaled to the capture's height and both are then centre-cropped to the smaller width,
+so nothing in the comparison is invented and the report states the geometry it had to reconcile. What
+it measures: mean RGB, mean level, the share of near-black and of bright pixels, the mean RGB of the
+nine zones, the dominant colours at 16 levels per channel, and the alignment - the coarse 32x32
+correlation at zero offset, the offset that maximises it within +-4 cells, that offset in pixels, and
+the mean difference once aligned. `compare.png` is written next to the capture: the reference, the
+aligned reference, the capture, the difference after alignment and both luminance maps.
+
+The correlation is the number that carries weight: the same content from the same camera scores above
+roughly `+0.8` even when the tonemapping differs, while two different vantages of one scene sit near
+zero. A spatial match is a claim that can be checked, unlike "it looks the same".
+
+*Current state*: **part one done.** Against the shipped preview of `CyberDemoAlt`
+(`artifacts\reference\CyberDemoAlt.jpg`, 512x512, a different vantage and aspect) the best correlation
+is `+0.010`, so the preview cannot settle the palette question - it is a different view. What it does
+show objectively is that the saturated violet mass in our game view has a counterpart of the same
+relative size in the preview (`33.2%` of the frame height against `33.2%`), which makes it a scene
+object rather than a broken material. The capture of the original from the same camera is what is
+still missing.
+
 ## When a gate lies
 
 Both failure modes below have already happened once, and each of them produced a red verdict that had
@@ -212,10 +245,20 @@ Both of these looked like defects and are not. They are recorded so they are not
 
 ## Still open
 
-- **Visual comparison.** Nothing has been compared against a running `VaM.exe` yet: models, lighting,
-  materials, shaders. Shaders from the AssetRipper export are the most likely place for a difference.
-- **A loaded scene.** Four atoms is a successful boot, not proof that a scene with content loads and
-  animates. Loaded meshes, animation and physics on an actual character are untested.
+- **Visual comparison.** Against a running `VaM.exe`: models, lighting, materials, shaders. The tool is
+  ready (`tools\compare_view.py`, section 5) and the target is a capture of the original on
+  `CyberDemoAlt` through the camera the player actually sees, which is the desktop monitor rig -
+  `SceneAtoms/CoreControl/WorldScaleAdjust/NavRig/[CameraRig]/HeightOffset/MonitorRig` at
+  `(-3.96, 1.48, -3.82)`, depth 2, framed 16:9. Shaders from the AssetRipper export remain the most
+  likely place for a difference.
+- **The hair skeleton.** In the same run the `NSFB` hair item does not follow the body: of its 20 bones,
+  10 share a name with the body and all 10 are rotated differently, and the hair `hip` sits `4.18 m`
+  from the body's. That is the hair asset rather than the body, and it needs the item's own diagnosis.
+- **Animation, physics and UI.** `CyberDemoAlt` loads and its character is drawn and skinned, but the
+  animation, physics and UI systems have not been exercised: the reference scenarios are the
+  `* Benchmark.bat` files in the installation root. One cheap question belongs here - the scene's
+  `animationSelection` names `Dance - Hip Hop 3` while `sequence[0]` names `Idle - Lying 3`, and the
+  rebuild plays the sequence, hence a body that lies down.
 - **Runtime plugin discovery.** `ConvexDecompositionDll.dll` is not referenced by any managed code, and
   ZFBrowser locates the CEF payload by scanning directories rather than by `DllImport`, so neither has
   been exercised.
