@@ -106,11 +106,30 @@ compiles because the library falls back to that property's documented default.
 `shader-src\VamGpuSkinning.cginc` holds the whole shading model: the two vertex stages (skinned
 forward pass, shadow caster), the surface fetch, the ambient/IBL terms, the specular response, the
 fragment stages and the shadow-caster fragment. It is a transcription of the body shader's bytecode,
-with three cosmetic deviations listed in its header - a linear reflection mip ramp instead of the
-original `exp()` curve, sheen/subdermis added in the fragment stage instead of folded into the
-per-vertex colour, and the lightmap indirection reduced to a plain ambient scale because the rebuilt
-project bakes no lightmaps. Pose, silhouette, normals, diffuse/specular response, shadow coordinates
-and alpha cutoff are direct.
+with the deviations listed in its header and repeated here: lightmap indirection is not transcribed
+(the 3-D LUT lookup, the probe-volume path and Unity's baked-occlusion dot are replaced by Unity's own
+lightmap / screen-space shadow macros), the per-vertex emissive term is omitted because the vertex
+program hard-codes that interpolator to zero, and the additive pass keeps a plain Lambert diffuse
+until its own DXBC blob is transcribed. Everything that decides the pose, the silhouette, the surface
+response and the base shading - the structured-buffer skinning, the normals, the Fresnel curve, the
+gloss-driven highlight and reflection mip, the two-source SH ambient, the shadow coordinates and the
+alpha cutoff - is a direct transcription, register for register.
+
+The body pixel shader is the interesting one, and three of its registers are worth writing down
+because a "sensible" rewrite of any of them changes the look:
+
+- **Two perturbed normals, two jobs.** The bump map is applied twice, with `_DiffuseBumpiness` and
+  `_SpecularBumpiness`, and the split is not diffuse/specular as the names suggest: the *specular*
+  normal drives the Fresnel, the reflection and the ambient, while the *diffuse* normal drives the
+  direct light only.
+- **`_SpecInt` is bounded, not multiplied.** The specular scalar enters through a curve that passes
+  `1 -> f0 -> f0^3` on `_Fresnel`, then has a square root taken out of it (`0.922444` is a literal
+  from the bytecode) so grazing angles cannot blow the highlight out.
+- **Gloss curves score twice.** One value, `2g - g^2`, is what the material really stores: it picks
+  the reflection mip *and* grows the Blinn-Phong exponent exponentially with `_Shininess`, which is
+  what lets VaM's 0..10 range produce specular that tight.
+
+The bump map's alpha masks the X slope only - another quirk that is reproduced rather than fixed.
 
 Two Unity macro contracts cost real debugging, because they differ per keyword variant and neither
 is visible in a single-pass compile:
@@ -257,7 +276,7 @@ python tools\check_shaders.py GlossNMCull # one family
 `tools\check_shaders.py` lifts every `CGPROGRAM` block out of the generated files and hands it to the
 Windows SDK's `fxc.exe` with the profile the pragmas ask for, once per entry point *and once per
 keyword set*. Compiling with one keyword set hides exactly the bugs above; with ten of them the sweep
-runs **3851/3851 programs, 0 failures**.
+runs **4659/4659 programs, 0 failures**.
 
 That is a pre-flight, not a verdict: fxc knows nothing about ShaderLab, and it is not Unity's
 compiler. The verdict comes from a real run, which must report no shader errors at all:

@@ -1092,6 +1092,245 @@ public static class RebuildGate
         return false;
     }
 
+    private static bool IsCharacterShader(string name)
+    {
+        return name.IndexOf("Subsurface", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               name.StartsWith("Marmoset", StringComparison.OrdinalIgnoreCase) ||
+               name.StartsWith("Custom/Hair", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void RecordMaterial(Dictionary<string, Material> representatives,
+                                       Dictionary<string, int> counts, Material material)
+    {
+        if (material == null || material.shader == null || !IsCharacterShader(material.shader.name))
+        {
+            return;
+        }
+
+        string shaderName = material.shader.name;
+        counts[shaderName] = counts.ContainsKey(shaderName) ? counts[shaderName] + 1 : 1;
+        if (!representatives.ContainsKey(shaderName))
+        {
+            representatives[shaderName] = material;
+        }
+    }
+
+    /// <summary>Name, size and format of the texture a material binds to one of its sampler properties.</summary>
+    private static void DumpTexture(StringBuilder text, Material material, string property)
+    {
+        Texture texture = material.GetTexture(property);
+        if (texture == null)
+        {
+            text.AppendLine(string.Format("    {0} = NONE (a white texture is what the shader samples)", property));
+            return;
+        }
+
+        Cubemap cube = texture as Cubemap;
+        if (cube != null)
+        {
+            text.AppendLine(string.Format("    {0} = cubemap {1} ({2}px, {3})",
+                property, cube.name, cube.width, cube.format));
+            return;
+        }
+
+        Texture2D flat = texture as Texture2D;
+        if (flat == null)
+        {
+            text.AppendLine(string.Format("    {0} = {1} {2}", property, texture.GetType().Name, texture.name));
+            return;
+        }
+
+        // The size matters as much as the presence: a map bound at the wrong resolution for its UV set
+        // is what smears, and a texture whose name is a shared default is a texture nobody replaced.
+        text.AppendLine(string.Format("    {0} = {1} ({2}x{3}, {4})",
+            property, flat.name, flat.width, flat.height, flat.format));
+    }
+
+    /// <summary>
+    /// One material per character shader, with every texture it samples and the numbers that shape the
+    /// shading. A texture that is not listed as bound is one the shader reads as its default - white for
+    /// a gloss or specular map, which is exactly a plastic sheen - and a texture bound at the wrong size
+    /// or format is what turns a material hard-edged where the UV island ends.
+    /// </summary>
+    private static string MaterialDump()
+    {
+        Dictionary<string, Material> representatives = new Dictionary<string, Material>();
+        Dictionary<string, int> counts = new Dictionary<string, int>();
+
+        List<Renderer> renderers = new List<Renderer>();
+        renderers.AddRange(SceneObjects<SkinnedMeshRenderer>());
+        renderers.AddRange(SceneObjects<MeshRenderer>());
+
+        foreach (Renderer renderer in renderers)
+        {
+            foreach (Material material in renderer.sharedMaterials)
+            {
+                RecordMaterial(representatives, counts, material);
+            }
+        }
+
+        // The merged body is not drawn through a renderer's material list: DAZSkinV2 keeps the list it
+        // gpu-skins from, and that is the one the body actually renders with.
+        foreach (DAZSkinV2 skin in SceneObjects<DAZSkinV2>())
+        {
+            if (skin.GPUmaterials == null)
+            {
+                continue;
+            }
+
+            foreach (Material material in skin.GPUmaterials)
+            {
+                RecordMaterial(representatives, counts, material);
+            }
+        }
+
+        StringBuilder text = new StringBuilder("material dump (one material per character shader):");
+        if (representatives.Count == 0)
+        {
+            return text.Append(" none - no character shader is on a renderer in the scene").ToString();
+        }
+
+        List<string> shaderNames = new List<string>(representatives.Keys);
+        shaderNames.Sort(string.CompareOrdinal);
+
+        const int dumpLimit = 32;
+        for (int i = 0; i < shaderNames.Count && i < dumpLimit; i++)
+        {
+            Material material = representatives[shaderNames[i]];
+            text.AppendLine();
+            text.AppendLine(string.Format("  {0}: {1} material(s), supported={2}, queue={3}, keywords={4}",
+                shaderNames[i], counts[shaderNames[i]], material.shader.isSupported, material.renderQueue,
+                material.shaderKeywords == null || material.shaderKeywords.Length == 0
+                    ? "none"
+                    : string.Join(" ", material.shaderKeywords)));
+
+            // Which object the material draws with decides where a wrong pixel comes from: a project
+            // shader is a reconstruction of ours, a name Shader.Find resolves out of a bundle is not.
+            Shader found = Shader.Find(shaderNames[i]);
+            text.AppendLine(string.Format("    source: material={0}, Shader.Find={1}, same object={2}",
+                ShaderSource(material.shader), ShaderSource(found), found == material.shader));
+
+            // ShaderUtil is the only way to ask a shader what it declares in this Unity: Material has no
+            // GetTexturePropertyNames before 2019.2, and Shader has no GetPropertyCount. A texture the
+            // shader declares and the material does not bind is read as white.
+            int propertyCount = ShaderUtil.GetPropertyCount(material.shader);
+            for (int p = 0; p < propertyCount; p++)
+            {
+                string property = ShaderUtil.GetPropertyName(material.shader, p);
+                switch (ShaderUtil.GetPropertyType(material.shader, p))
+                {
+                    case ShaderUtil.ShaderPropertyType.TexEnv:
+                        DumpTexture(text, material, property);
+                        break;
+
+                    case ShaderUtil.ShaderPropertyType.Float:
+                    case ShaderUtil.ShaderPropertyType.Range:
+                        text.AppendLine(string.Format("    {0} = {1:F4}", property, material.GetFloat(property)));
+                        break;
+
+                    case ShaderUtil.ShaderPropertyType.Color:
+                        Color colour = material.GetColor(property);
+                        text.AppendLine(string.Format("    {0} = ({1:F3}, {2:F3}, {3:F3}, {4:F3})",
+                            property, colour.r, colour.g, colour.b, colour.a));
+                        break;
+
+                    case ShaderUtil.ShaderPropertyType.Vector:
+                        Vector4 vector = material.GetVector(property);
+                        text.AppendLine(string.Format("    {0} = ({1:F3}, {2:F3}, {3:F3}, {4:F3})",
+                            property, vector.x, vector.y, vector.z, vector.w));
+                        break;
+                }
+            }
+        }
+
+        if (shaderNames.Count > dumpLimit)
+        {
+            text.AppendLine(string.Format("  ... {0} more character shaders", shaderNames.Count - dumpLimit));
+        }
+
+        EnvironmentDump(text);
+        return text.ToString();
+    }
+
+    /// <summary>A shader the project owns has an asset path; one Unity resolved out of a bundle has none.</summary>
+    private static string ShaderSource(Shader shader)
+    {
+        if (shader == null)
+        {
+            return "NONE";
+        }
+
+        string path = AssetDatabase.GetAssetPath(shader);
+        return string.IsNullOrEmpty(path) ? "no project asset" : Path.GetFileName(path);
+    }
+
+    /// <summary>
+    /// What the character shaders read instead of their own properties: the cube they take their
+    /// indirect light from, the ambient Unity adds on top of it, and the sky object that is meant to
+    /// be feeding both. A black cube and nothing in `_ExposureIBL` is the difference between a body lit
+    /// by the scene and a body lit by its two point lights, which is what a hard-edged, glossy
+    /// character in a soft scene looks like.
+    /// </summary>
+    private static void EnvironmentDump(StringBuilder text)
+    {
+        text.AppendLine();
+        text.AppendLine("environment:");
+        text.AppendLine(string.Format("  ambient: mode={0}, light=({1:F3}, {2:F3}, {3:F3}), intensity={4:F3}, skybox={5}",
+            RenderSettings.ambientMode, RenderSettings.ambientLight.r, RenderSettings.ambientLight.g,
+            RenderSettings.ambientLight.b, RenderSettings.ambientIntensity,
+            RenderSettings.skybox == null ? "NONE" : RenderSettings.skybox.name));
+        text.AppendLine(string.Format("  reflection: intensity={0:F3}, mode={1}",
+            RenderSettings.reflectionIntensity, RenderSettings.defaultReflectionMode));
+        text.AppendLine(string.Format("  global _SpecCubeIBL: {0}", DescribeTexture(Shader.GetGlobalTexture("_SpecCubeIBL"))));
+        text.AppendLine(string.Format("  global _SkyCubeIBL : {0}", DescribeTexture(Shader.GetGlobalTexture("_SkyCubeIBL"))));
+
+        Vector4 exposures = Shader.GetGlobalVector("_ExposureIBL");
+        Vector4 skyMin = Shader.GetGlobalVector("_SkyMin");
+        Vector4 skyMax = Shader.GetGlobalVector("_SkyMax");
+        text.AppendLine(string.Format("  global _ExposureIBL=({0:F3}, {1:F3}, {2:F3}, {3:F3})",
+            exposures.x, exposures.y, exposures.z, exposures.w));
+        text.AppendLine(string.Format("  global _SkyMin=({0:F2}, {1:F2}, {2:F2}, {3:F2}), _SkyMax=({4:F2}, {5:F2}, {6:F2}, {7:F2})",
+            skyMin.x, skyMin.y, skyMin.z, skyMin.w, skyMax.x, skyMax.y, skyMax.z, skyMax.w));
+
+        List<SkyshopLightController> controllers = SceneObjects<SkyshopLightController>();
+        if (controllers.Count == 0)
+        {
+            text.AppendLine("  SkyshopLightController: none in the scene - no skyName is applied");
+        }
+
+        for (int i = 0; i < controllers.Count; i++)
+        {
+            SkyshopLightController controller = controllers[i];
+            text.AppendLine(string.Format("  SkyshopLightController on {0}: skyName={1}, skies={2}, customSky={3}",
+                controller.name, string.IsNullOrEmpty(controller.skyName) ? "NONE" : controller.skyName,
+                controller.skies == null ? "NULL" : controller.skies.Length.ToString(),
+                Describe(controller.customSky)));
+        }
+
+        mset.SkyManager manager = mset.SkyManager.Get();
+        text.AppendLine(string.Format("  SkyManager: {0}, globalSky={1}, showSkybox={2}",
+            Describe(manager), manager == null ? "n/a" : Describe(manager.GlobalSky),
+            manager == null ? "n/a" : manager.ShowSkybox.ToString()));
+
+        List<mset.Sky> skies = SceneObjects<mset.Sky>();
+        text.AppendLine(string.Format("  Sky objects: {0}", skies.Count));
+        for (int i = 0; i < skies.Count && i < 8; i++)
+        {
+            mset.Sky sky = skies[i];
+            text.AppendLine(string.Format("    {0}: active={1}, enabled={2}, specCube={3}, skyboxCube={4}, masterIntensity={5:F3}, specIntensity={6:F3}",
+                sky.name, sky.gameObject.activeInHierarchy, sky.enabled,
+                DescribeTexture(sky.SpecularCube), DescribeTexture(sky.SkyboxCube),
+                sky.MasterIntensity, sky.SpecIntensity));
+        }
+    }
+
+    private static string DescribeTexture(Texture texture)
+    {
+        return texture == null
+            ? "NONE"
+            : string.Format("{0} ({1}, {2})", texture.name, texture.GetType().Name, texture.dimension);
+    }
+
     /// <summary>Reads a vertex array field by name, protected or not. Null when the field is missing.</summary>
     private static Vector3[] VectorField(object target, string name)
     {
@@ -2159,6 +2398,7 @@ public static class RebuildGate
             }
 
             report.AppendLine(DrawReport(subject));
+            report.AppendLine(MaterialDump());
             report.AppendLine(CaptureSkin(subject));
             report.AppendLine(CaptureView());
             if (subject != null)
