@@ -3096,11 +3096,6 @@ public class DAZCharacterSelector : JSONStorable
 				}
 				value2.isDynamicRuntimeLoaded = true;
 				value2.dynamicRuntimeLoadPath = item.Uid;
-				// TEMP DIAGNOSTIC - remove once the Custom hair store-path defect is fixed.
-				if (item.Uid != null && item.Uid.Contains("Simone"))
-				{
-					SuperController.LogError(string.Concat("[DIAG SyncCustomItems] type=", item.GetType().Name, " uid=[", item.Uid, "] path=[", item.Path, "] slash=[", item.SlashPath, "]"));
-				}
 			}
 			catch (Exception ex2)
 			{

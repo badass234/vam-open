@@ -353,7 +353,12 @@ namespace MeshVR
 					string directoryName = Path.GetDirectoryName(text6);
 					if (directoryName != null && directoryName != string.Empty)
 					{
-						string text7 = Regex.Replace(directoryName, "^" + GetStoreRootPath(false), string.Empty);
+						// Path.GetDirectoryName returns Windows separators while the store root is written
+						// with forward slashes; unnormalised the strip never matched, the fully rooted
+						// directory was kept as the folder name, and GetStoreFolderPath doubled the root
+						// into a path that does not exist.
+						string storeRootPath = GetStoreRootPath(false);
+						string text7 = Regex.Replace(directoryName.Replace('\\', '/'), "^" + (storeRootPath == null ? string.Empty : Regex.Escape(storeRootPath)), string.Empty);
 						if (text7.Contains("/"))
 						{
 							text3 = Regex.Replace(text7, "/.*", string.Empty);
@@ -376,11 +381,6 @@ namespace MeshVR
 			creatorName = array[1];
 			storeName = array[2];
 			package = array[3];
-			// TEMP DIAGNOSTIC - remove once the Custom hair store-path defect is fixed.
-			if (path != null && (path.Contains("Simone") || path.Contains("\\")))
-			{
-				UnityEngine.Debug.LogError(string.Concat("[DIAG SetNamesFromPath] in=[", path, "] backslash=", path.Contains("\\"), " root=[", GetStoreRootPath(false), "] -> folder=[", storeFolderName, "] creator=[", creatorName, "] name=[", storeName, "] pkg=[", package, "] itemType=[", itemType, "]"), this);
-			}
 		}
 
 		public string GetStoreFolderPath(bool includePackage = true)

@@ -167,11 +167,6 @@ public class DAZHairGroup : DAZDynamicItem
 			}
 			if (dynamicRuntimeLoadPath != null && dynamicRuntimeLoadPath != string.Empty)
 			{
-				// TEMP DIAGNOSTIC - remove once the Custom hair store-path defect is fixed.
-				if (dynamicRuntimeLoadPath.Contains("Simone"))
-				{
-					UnityEngine.Debug.LogError(string.Concat("[DIAG InitInstance] path=[", dynamicRuntimeLoadPath, "] backslash=", dynamicRuntimeLoadPath.Contains("\\"), " folder=[", componentInChildren.storeFolderName, "] creator=[", componentInChildren.creatorName, "] name=[", componentInChildren.storeName, "]"), this);
-				}
 				componentInChildren.SetNamesFromPath(dynamicRuntimeLoadPath);
 				componentInChildren.Load();
 			}
