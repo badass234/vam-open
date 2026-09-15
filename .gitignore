@@ -55,6 +55,9 @@ work/ripped-core/
 work/downloads/
 work/Assets/
 work/ExportedProject/
+# generated copy of shader-src/VamGpuSkinning.cginc (Unity can only include
+# files that live under Assets); the tracked original is shader-src/
+VaM_Rebuild/Assets/VaMShaders/
 
 # --- toolchain: .NET SDK, ilspycmd, AssetRipper (downloaded by the setup scripts) ---------------
 .tools/

@@ -18,11 +18,12 @@ the rest of [`docs/`](docs/).
 | `src\Assembly-CSharp` | the game's code as ilspycmd decompiled it, ~2800 `.cs` files |
 | `src\Assembly-UnityScript` | the game's second assembly (13 files) |
 | `src\RTTypeModel` | the type model the decompiler needs |
+| `shader-src\VamGpuSkinning.cginc` | the reconstructed GPU-skinning shading library (see [`docs/shader-reconstruction.md`](docs/shader-reconstruction.md)) |
 | `VaM_Rebuild\Assets\Editor\RebuildGate.cs` | the only code written by hand: a batch gate that boots the game and prints a verdict |
 | `VaM_Rebuild\ProjectSettings`, `VaM_Rebuild\Packages` | Unity project settings, including the .NET 4.x scripting runtime the decompiled code needs |
-| `scripts\` | the pipeline: project setup, compilation gate, smoke runs, log comparison |
-| `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison) |
-| `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity |
+| `scripts\` | the pipeline: project setup, shader extraction and generation, compilation gate, smoke runs, log comparison |
+| `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison, shader pre-flight) |
+| `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity, shader reconstruction |
 
 ## Requirements
 
@@ -59,12 +60,18 @@ scripts\Setup-RebuildProject.ps1
 # 2. the decompiled sources must compile through the editor: 0 errors
 scripts\Invoke-CompileGate.ps1
 
-# 3. boot the game and read the gate's verdict
+# 3. the ComputeBuff shaders: extract the shipped bytecode, generate the shaders,
+#    pre-flight them with fxc (docs\shader-reconstruction.md)
+python scripts\Extract-VaMShaders.py --out artifacts\shader-blobs
+python scripts\New-VaMShaders.py
+python tools\check_shaders.py
+
+# 4. boot the game and read the gate's verdict
 scripts\Invoke-SmokeTest.ps1 -Method Report                    # cheap: assemblies, scenes, diagnostic probes
 scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 150         # load a scene, report, exit by itself
 scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 150 -Visible # the same, with a visible editor window
 
-# 4. compare our boot log with the original game's
+# 5. compare our boot log with the original game's
 scripts\Compare-BootLogs.ps1
 ```
 
@@ -93,6 +100,9 @@ they investigate is fixed.
   ([`docs/parity-report.md`](docs/parity-report.md)).
 - Booting: the game loads, `SuperController` is alive, `isLoading` falls back to false, and the boot
   log matches the original's line for line ([`docs/verification.md`](docs/verification.md)).
-- Open: a hair item under `Custom\Hair\Female\...` fails `CheckReadyForLoad` because its path is put
-  together rooted and with backslashes. Under investigation.
+- Scenes and animation: `CyberDemoAlt` loads with all 17 atoms present and 1883 MonoBehaviours, and
+  the character's 84-bone animation drives the skeleton.
+- Shaders: the 51 `*ComputeBuff` shaders that GPU-skinning needs are rebuilt from the shipped DXBC
+  ([`docs/shader-reconstruction.md`](docs/shader-reconstruction.md)); Unity compiles all 148 passes
+  with 0 shader errors.
 - Next: visual comparison and system checks, then the refactoring pass towards readable code.

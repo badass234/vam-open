@@ -286,6 +286,27 @@ if ($python -and (Test-Path -LiteralPath $guidCheck)) {
     Write-Warning 'Python not found; skipped the asset GUID check.'
 }
 
+# ------------------------------------------------------- 5. GPU skinning shaders
+# AssetRipper exports the *ComputeBuff shaders as placeholders - a POSITION-only vertex stage and a
+# flat fragment stage - and a body drawn with one of those loses both its pose and its lighting. The
+# real shaders survive only as compiled DXBC in the player build, so they are regenerated over the
+# placeholders here. See docs\shader-reconstruction.md.
+$shaderGen = Join-Path $PSScriptRoot 'New-VaMShaders.py'
+$shaderBlobs = Join-Path $PSScriptRoot '..\artifacts\shader-blobs'
+if ($python -and (Test-Path -LiteralPath $shaderGen)) {
+    if (Test-Path -LiteralPath $shaderBlobs) {
+        Write-Host ''
+        & $python.Source $shaderGen
+        if ($LASTEXITCODE -ne 0) { throw 'Shader generation failed' }
+    } else {
+        Write-Warning ("No extracted shader bytecode at $shaderBlobs; Assets\Shader keeps the " +
+                       "AssetRipper placeholders and characters will lose their pose. Run: " +
+                       'scripts\Extract-VaMShaders.py --out artifacts\shader-blobs')
+    }
+} else {
+    Write-Warning 'Python not found; skipped the ComputeBuff shader generation.'
+}
+
 Write-Host ''
 Write-Host "Project ready: $TargetDir"
 Get-ChildItem -LiteralPath $TargetDir | ForEach-Object { "  $($_.Name)" }
