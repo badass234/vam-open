@@ -1430,6 +1430,12 @@ public static class RebuildGate
     ///
     /// So the copies are matched bone by bone by name and their local rotations compared: a driven copy
     /// agrees with the body, an undriven one keeps the rest rotations and disagrees.
+    ///
+    /// Only skeletons that are switched on are compared. A hair slot the scene does not use stays in the
+    /// scene with its own copy of the joints, switched off and left in the rest pose it was built with,
+    /// so comparing it with the live body finds a whole skeleton rotated and metres away and reads as a
+    /// defect when it is a disabled slot. Every skeleton is still listed, with its state printed next to
+    /// it, so the harmless case is visible rather than absent.
     /// </summary>
     private static string SkeletonReport(DAZSkinV2 subject)
     {
@@ -1496,9 +1502,11 @@ public static class RebuildGate
             Bounds box;
             PointsBounds(points, points.Length, out box);
             bool isReference = entry.Key == referenceTop;
+            bool isActive = entry.Key != null && entry.Key.gameObject.activeInHierarchy;
             report.AppendLine(string.Format("  skeleton {0}: {1} bones, world {2}{3}",
                 entry.Key == null ? "(no parent)" : TransformPath(entry.Key), chain.Count,
-                BoxText(true, box), isReference ? " <- the body" : string.Empty));
+                BoxText(true, box),
+                isReference ? " <- the body" : isActive ? string.Empty : " <- inactive in the hierarchy"));
 
             if (isReference)
             {
@@ -1508,6 +1516,14 @@ public static class RebuildGate
 
             if (referenceTop == null)
             {
+                continue;
+            }
+
+            if (!isActive)
+            {
+                report.AppendLine(
+                    "    not compared: the slot is switched off, so its bones keep the rest pose they were built with");
+                report.AppendLine(AncestorChain(entry.Key));
                 continue;
             }
 
@@ -1921,21 +1937,31 @@ public static class RebuildGate
             }
 
             List<DAZBone> bones = SceneObjects<DAZBone>();
+            int activeBones = 0;
             int rotated = 0;
+            List<DAZBone> posed = new List<DAZBone>();
             foreach (DAZBone bone in bones)
             {
+                if (!bone.gameObject.activeInHierarchy)
+                {
+                    continue;
+                }
+
+                activeBones++;
                 if (Quaternion.Angle(bone.transform.localRotation, Quaternion.identity) > 1f)
                 {
                     rotated++;
+                    posed.Add(bone);
                 }
             }
 
-            report.AppendLine(string.Format("DAZBone components in the scene: {0}, rotated away from identity: {1}",
-                                            bones.Count, rotated));
-            for (int i = 0; i < bones.Count && i < 5; i++)
+            report.AppendLine(string.Format(
+                "DAZBone components in the scene: {0}, in active objects: {1}, of those rotated away from identity: {2}",
+                bones.Count, activeBones, rotated));
+            for (int i = 0; i < posed.Count && i < 5; i++)
             {
                 report.AppendLine(string.Format("  {0}: localRotation {1}",
-                    TransformPath(bones[i].transform), bones[i].transform.localRotation.eulerAngles.ToString("F1")));
+                    TransformPath(posed[i].transform), posed[i].transform.localRotation.eulerAngles.ToString("F1")));
             }
 
             report.AppendLine(SkeletonReport(subject));
