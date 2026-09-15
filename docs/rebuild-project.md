@@ -305,3 +305,18 @@ ends without a device, so `-nographics` also silences the benchmark line.
 lets `RebuildGate.Play` bring the Game view to the front before entering play mode; the run, the
 report and the self-exit are otherwise the same.
 
+## Shaders are placeholders
+
+The one part of the game that did not come across in a usable form. All 128 `.shader` files under
+`Assets` are AssetRipper placeholders carrying `//DummyShaderTextExporter`: no `StructuredBuffer`, no
+lighting, `_Color` only, and positions taken from the mesh's own `POSITION` attribute. The export
+produced them despite `ShaderExportMode = Decompile` (`docs\asset-export.md:48`), because VaM ships
+shader bytecode rather than source and the export holds no shader blobs to decompile.
+
+Consequences worth knowing before reading any visual result: the compute shaders *are* real
+(`Assets\Resources\compute\*.asset`, 140 of them, with real DXBC blobs) so the GPU skinning, cloth and
+collider systems run; but anything drawn through one of the placeholders renders flat and, in the
+character's case, in its bind pose - the character's body deforms correctly on the GPU and then has
+that result bound into a shader with no vertex buffer to receive it. See *The body defect* in
+`docs\verification.md` for the evidence and the routes out.
+

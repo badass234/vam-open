@@ -235,6 +235,17 @@ verdict:
 The consequence is the rule to work by: **a gate always ends in a verdict, never in an exception.** If a
 run reports `FAILED`, that verdict came from a report the gate wrote, not from a timeout or a crash.
 
+**Failure mode C - the gate measures a buffer nothing draws.** A green line that is true of the wrong
+object is the most expensive kind, because it sends the search in a direction the rebuild cannot
+satisfy. The body defect below is the worked example: `SkinReport()` read `skin.rawVertsBuffer` and
+printed the posed bounds, which is a *correct* statement about that buffer and a false one about the
+screen - `DAZSkinV2.DrawMeshGPU()` picks the vertices it actually draws from `_useSmoothing`, so a
+smoothed skin's material reads `smoothedVertsBuffer` (`DAZSkinV2.cs:4751`), and the skin in the scene
+smooths. The report now prints the buffer the material consumes, names the shader that receives it,
+and states whether that shader could be found at all, so the sentence on screen is about the pixels.
+When a report disagrees with your eyes, this is the class of bug to suspect first: the numbers are
+probably right about the wrong buffer.
+
 ## What the harness cannot show
 
 **The `Benchmark complete` line needs a rendering device but not a window.** `MeshVR\PerfMon.cs` prints
@@ -285,6 +296,63 @@ All three of these looked like defects and are not. They are recorded so they ar
   and copies the user-prefs folder (the editor writes to it), and the rebuild now prints
   `Scanned 9 packages` like the original.
 
+## The body defect: a stub shader where the skinned vertices go
+
+**What the eye sees.** The character is on screen in the right place, but the body is a static,
+unlit, fullbright shell standing in the *bind pose* while the hair moves with the skeleton and is
+lit. It reads as a body cut out of the scene, or as a skin hanging detached from an invisible model -
+the two descriptions of one picture.
+
+**What is not the cause.** Not the skeleton, and not the binding. Every live skin reports
+`root=<character>/PhysicsModel/Genesis2Female`, `skin=True`, `draw=True`, `method=GPU`, against the
+same skeleton the report measures - 86 bones under the root, from 108 `DAZBone` components of which
+84 are in active objects - and no bone name fails to resolve. The scene does
+carry a second `Genesis2Female` copy, and `DAZSkinV2.InitBones` is fed by
+`DAZCharacter.rootBonesForSkinning`, which comes from `DAZCharacterSelector.rootBones` - a serialized
+prefab field no code assigns. All of that is true, and all of it is a dead end: the skin follows the
+skeleton it was given, correctly. The `Genesis2Female.Shape` `SkinnedMeshRenderer` (24 119 verts, 80
+bones) sits in the hierarchy switched off and is not drawn at all, so nothing there can be the
+detached skin either.
+
+**The cause.** `DAZSkinV2` deforms the body on the GPU and hands the result to a material -
+`GPUmaterials[i].SetBuffer("verts", rawVertsBuffer)` (`DAZSkinV2.cs:4751`), then
+`Graphics.DrawMesh(mesh, ..., GPUmaterials[i], ...)` (`:4778`) - with the ordinary `MeshRenderer`
+switched off so nothing else draws the body. `SkinMeshGPUMaterialInit()` (`:1901`) prepares that
+material by swapping its shader for `Shader.Find(shader.name + "ComputeBuff")` (`:1929`). Those
+materials exist and are named in the report:
+
+```
+GPUmaterials=30: Custom/Subsurface/GlossNMTessMappedFixedComputeBuff, ...
+```
+
+but **all 128 `.shader` files in the project are AssetRipper placeholders**. Every one carries
+`//DummyShaderTextExporter`, not one declares a `StructuredBuffer`, and not one has a `verts`
+property - so `SetBuffer` binds to nothing, silently, because a `Material` accepts any property name.
+The stub's vertex shader transforms the mesh's *own* `POSITION` attribute and returns `_Color` with no
+lighting code. The body on screen is therefore the bind-pose mesh, flat. The hair escapes the problem
+because it is drawn from meshes that already sit in their root's frame, so it moves rigidly with the
+skeleton rather than being deformed by a shader that ignores its input.
+
+**Why it cannot simply be fixed by editing something.** VaM ships shader *bytecode*, not source.
+`ShaderExportMode = Decompile` (`docs\asset-export.md:48`) was chosen over the default and still
+produced these stubs; the export carries no shader blobs and a text search for `DXBC`,
+`m_SubPrograms` and `m_CompileInfo` across `ExportedProject` returns nothing. The compute shaders that
+*do* work survive because they are different objects - `Assets\Resources\compute\*.asset` holds 140
+real serialised `ComputeShader` assets with real DXBC blobs. Nothing equivalent for the draw shaders
+came across.
+
+**The three routes out**, all of them a decision rather than a detail:
+
+| Route | What it means | Cost and fidelity |
+|---|---|---|
+| Replace the `*ComputeBuff` shaders | ~12 variants that read `verts`/`normals`/`tangents` from `StructuredBuffer`s by vertex id and re-implement the subsurface/marmoset look | Faithful movement, approximate look; real shader authoring with no reference |
+| Recover the original bytecode | The `Shader` objects in `VaM_Data\resources.assets` and `globalgamemanagers.assets` still hold their compiled DXBC: extract, decompile, rebuild | Most faithful; needs DXBC tooling, heaviest |
+| Use Unity's own skinning | Enable the existing `Genesis2Female.Shape` `SkinnedMeshRenderer` with its 80 bones and stop VaM's GPU draw for the body | Minutes; the body moves and is lit, without the morph/UV-morph pipeline - coarse, but enough to finish stage-5 verification |
+
+Until one is chosen, the visual comparison below is bounded by this: **movement, lighting and
+material response on the body cannot be verified against the original**, because the rebuild does not
+currently possess the machinery that produces them.
+
 ## Still open
 
 - **Visual comparison.** Against a running `VaM.exe`: models, lighting, materials, shaders. The tool is
@@ -297,12 +365,17 @@ All three of these looked like defects and are not. They are recorded so they ar
   recorded `(-3.96, 1.48, -3.82)` for the same rig; that reading does not reproduce and is superseded -
   give the run enough time past the load for `simulation resetting` to go `False` (`-Seconds 150` with
   `-WarmupSeconds 15`) before capturing anything.
-  Shaders from the AssetRipper export remain the most likely place for a difference.
-- **Animation, physics and UI.** `CyberDemoAlt` loads and its character is drawn and skinned, but the
-  animation, physics and UI systems have not been exercised: the reference scenarios are the
-  `* Benchmark.bat` files in the installation root. One cheap question belongs here - the scene's
+  The shader suspicion recorded here earlier is now confirmed and has its own section above: the
+  exported shaders are stubs, so the difference on the body is not subtle and no camera will make it
+  go away. The comparison is still worth running for everything else - scene layout, props,
+  lighting, the character's placement and scale.
+- **Animation, physics and UI.** `CyberDemoAlt` loads and its character is on screen, but the
+  animation, physics and UI systems have not been exercised end to end: the reference scenarios are
+  the `* Benchmark.bat` files in the installation root. One cheap question belongs here - the scene's
   `animationSelection` names `Dance - Hip Hop 3` while `sequence[0]` names `Idle - Lying 3`, and the
-  rebuild plays the sequence, hence a body that lies down.
+  rebuild plays the sequence, hence a body that lies down. Note that the animation *is* proven to run
+  by bone motion (84 of 84 bones moving, clock advancing) even while the body's own mesh does not show
+  it - see the body defect above.
 - **Runtime plugin discovery.** `ConvexDecompositionDll.dll` is not referenced by any managed code, and
   ZFBrowser locates the CEF payload by scanning directories rather than by `DllImport`, so neither has
   been exercised.
