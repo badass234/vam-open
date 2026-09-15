@@ -376,6 +376,10 @@ public class VaMInspector : EditorWindow
             text.AppendLine(string.Format(CultureInfo.InvariantCulture,
                 "  root={0} ({1})", rootPath == null ? "NULL" : rootPath,
                 rootPath == null ? "no skeleton - skinning cannot run" : (animated.Contains(rootPath) ? "ANIMATED" : "STATIC")));
+            text.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                "  skin={0}, draw={1}, smoothing={2}, drawOffset={3}",
+                Field(skin, "skin"), Field(skin, "draw"), skin.useSmoothing, Vector(skin.drawOffset)));
+            text.AppendLine(Skinning(skin));
             text.AppendLine("  motion: " + Describe(Lookup("skin:" + path)));
         }
 
@@ -484,6 +488,94 @@ public class VaMInspector : EditorWindow
         }
 
         return text.ToString();
+    }
+
+    /// <summary>
+    /// What a skin will actually put on screen, which is not always what its skinning buffer holds.
+    /// A material of a smoothed skin reads smoothedVertsBuffer, so the bind pose, the skinned result
+    /// and the smoothed result are measured apart: a body standing in the bind pose on screen while
+    /// rawVertsBuffer already holds the posed verts means the fault is in the step between the two,
+    /// and from the outside those two faults look identical.
+    /// </summary>
+    private static string Skinning(DAZSkinV2 skin)
+    {
+        MeshRenderer renderer = Field(skin, "meshRenderer") as MeshRenderer;
+        if (renderer == null)
+        {
+            renderer = skin.GetComponent<MeshRenderer>();
+        }
+
+        int shaders = 0;
+        bool declaresVerts = false;
+        string first = "NONE";
+        if (renderer != null)
+        {
+            Material[] materials = renderer.sharedMaterials;
+            for (int i = 0; i < materials.Length; i++)
+            {
+                if (materials[i] == null)
+                {
+                    continue;
+                }
+
+                if (shaders == 0)
+                {
+                    first = materials[i].shader == null ? "NONE" : materials[i].shader.name;
+                    declaresVerts = materials[i].HasProperty("verts");
+                }
+
+                shaders++;
+            }
+        }
+
+        StringBuilder text = new StringBuilder();
+        text.AppendFormat(CultureInfo.InvariantCulture,
+            "  compute: GPUSkinner={0}, GPUMeshCompute={1}",
+            skin.GPUSkinner == null ? "NULL" : "assigned",
+            skin.GPUMeshCompute == null ? "NULL" : "assigned");
+        text.AppendLine();
+        text.AppendLine(string.Format(CultureInfo.InvariantCulture,
+            "  renderer: {0}, submeshes with a material={1}, first shader={2} (declares a verts buffer: {3})",
+            renderer == null ? "NONE" : (renderer.enabled ? "enabled" : "DISABLED"), shaders, first, declaresVerts));
+        text.AppendLine(string.Format(CultureInfo.InvariantCulture,
+            "  verts on the GPU - bind (startVertsBuffer): {0}", BufferSpace(skin, "startVertsBuffer")));
+        text.AppendLine(string.Format(CultureInfo.InvariantCulture,
+            "  verts on the GPU - skinned (rawVertsBuffer): {0}", BufferSpace(skin, "rawVertsBuffer")));
+        text.AppendLine(string.Format(CultureInfo.InvariantCulture,
+            "  verts on the GPU - smoothed (smoothedVertsBuffer): {0}, and this is the one a smoothed material draws",
+            BufferSpace(skin, "smoothedVertsBuffer")));
+        return text.ToString();
+    }
+
+    /// <summary>The world space extent of a vertex buffer, or why it could not be measured.</summary>
+    private static string BufferSpace(DAZSkinV2 skin, string name)
+    {
+        ComputeBuffer buffer = Field(skin, name) as ComputeBuffer;
+        if (buffer == null)
+        {
+            return "not allocated";
+        }
+
+        if (buffer.count == 0)
+        {
+            return "empty";
+        }
+
+        Vector3[] points = new Vector3[buffer.count];
+        buffer.GetData(points);
+        if (points.Length == 0 || points[0] == Vector3.zero && points[points.Length - 1] == Vector3.zero)
+        {
+            return "zeroes";
+        }
+
+        Bounds bounds = new Bounds(points[0], Vector3.zero);
+        for (int i = 0; i < points.Length; i++)
+        {
+            bounds.Encapsulate(points[i]);
+        }
+
+        return string.Format(CultureInfo.InvariantCulture, "center ({0:F2}, {1:F2}, {2:F2}) size ({3:F2}, {4:F2}, {5:F2})",
+            bounds.center.x, bounds.center.y, bounds.center.z, bounds.size.x, bounds.size.y, bounds.size.z);
     }
 
     /// <summary>Every skeleton whose bones have been seen to move, by transform path.</summary>
