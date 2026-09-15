@@ -502,16 +502,28 @@ float3 VamLightResponse(vam_surface s, float3 V, float3 L, float3 subdermis,
     return diffuse + highlight;
 }
 
-// Everything gloss drives.  A single value, 2g - g^2, is what VaM's material
-// really curves: it picks the reflection mip, and it grows the Blinn-Phong
-// exponent *exponentially* with _Shininess -- which is what lets VaM's 0..10
-// range produce specular that tight.  specScale normalises the highlight so its
-// energy tracks the exponent instead of collapsing as the lobe narrows.
+// Everything gloss drives.  One value, a = 1 - (1-g)^2 = 2g - g^2 (g = 1 - the
+// saturated gloss sample), is what VaM's material really curves: it picks the
+// reflection mip and it grows the Blinn-Phong exponent *exponentially* with
+// _Shininess -- which is what lets VaM's 2..8 range produce specular that tight.
+// The listing computes the pair (1 - g^2, 8 - g^2) and then
+//
+//     mip = (8 - g^2) - _Shininess * (1 - g^2),
+//
+// which is 7 + a * (1 - _Shininess) once `a = 1 - g^2` is substituted: the mip
+// lands in 0..7, the last level of the cube the reflection is sampled from.  The
+// exponent is 8 - mip fed to DXBC's `exp`, and that instruction is **base 2** --
+// HLSL `exp(x)` is lowered to `mul r,x,l(1.442695)` *plus* `exp`, while `exp2(x)`
+// compiles to a bare `exp`, so the bytecode's `exp` is `exp2` in HLSL.  Reading it
+// as the natural exponential narrows and over-brightens the lobe.  specScale
+// normalises the highlight so its energy tracks the exponent instead of collapsing
+// as the lobe narrows, and it multiplies the highlight *only*: the bytecode never
+// lets it near the reflection.
 void VamGlossTerms(float gloss, out float mip, out float exponent,
                    out float specScale) {
     float gg = gloss * (2.0 - gloss);
-    mip = 8.0 - gg - VAM_Shininess * gg;
-    exponent = exp(gg * (1.0 + VAM_Shininess));
+    mip = 7.0 + gg * (1.0 - VAM_Shininess);
+    exponent = exp2(1.0 + gg * (VAM_Shininess - 1.0));
     specScale = exponent * 0.159155 + 0.318310;
 }
 
@@ -532,7 +544,7 @@ float3 VamShade(vam_v2f i, vam_surface s, float3 V) {
     float4 ibl = VAM_SAMPLE_IBL(R, max(mip, 0.0));
     float polish = dot(float3(0.465336, 25.012255, 49.174381),
                        float3(ibl.w, ibl.w * ibl.w, ibl.w * ibl.w * ibl.w));
-    float3 reflection = ibl.rgb * polish * specTerm * specScale * _ExposureIBL.y;
+    float3 reflection = ibl.rgb * polish * specTerm * _ExposureIBL.y;
 
     // ---- Ambient -------------------------------------------------------------
     // Two sources: VaM's own sky SH, evaluated in sky space, and Unity's

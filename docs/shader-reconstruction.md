@@ -115,7 +115,7 @@ response and the base shading - the structured-buffer skinning, the normals, the
 gloss-driven highlight and reflection mip, the two-source SH ambient, the shadow coordinates and the
 alpha cutoff - is a direct transcription, register for register.
 
-The body pixel shader is the interesting one, and three of its registers are worth writing down
+The body pixel shader is the interesting one, and four of its registers are worth writing down
 because a "sensible" rewrite of any of them changes the look:
 
 - **Two perturbed normals, two jobs.** The bump map is applied twice, with `_DiffuseBumpiness` and
@@ -125,9 +125,24 @@ because a "sensible" rewrite of any of them changes the look:
 - **`_SpecInt` is bounded, not multiplied.** The specular scalar enters through a curve that passes
   `1 -> f0 -> f0^3` on `_Fresnel`, then has a square root taken out of it (`0.922444` is a literal
   from the bytecode) so grazing angles cannot blow the highlight out.
-- **Gloss curves score twice.** One value, `2g - g^2`, is what the material really stores: it picks
-  the reflection mip *and* grows the Blinn-Phong exponent exponentially with `_Shininess`, which is
-  what lets VaM's 0..10 range produce specular that tight.
+- **Gloss curves score twice, and the curve is not the obvious one.** The material feeds one value into
+  both the reflection mip and the highlight's exponent. Writing `s = saturate(glossMap + _GlossOffset)`
+  for that input, the listing forms `a = 1 - (1-s)^2 = 2s - s^2`, then `mip = 7 + a * (1 - _Shininess)`
+  and `power = 2^(1 + a * (_Shininess - 1))`. The mip lands in `0..7` (7, the last level of the
+  reflection cube, at zero gloss) and the power in `2..256` at `_Shininess = 8`, which is what lets
+  VaM's 2..8 range produce specular that tight. Two traps sit in those five instructions. The listing
+  never writes `a` down: it computes the pair `(1 - g^2, 8 - g^2)` from `g = 1 - s` and then
+  `mip = (8 - g^2) - _Shininess * (1 - g^2)`, which is `7 + a * (1 - _Shininess)` only after the
+  substitution (`1 - g^2 = a`, `8 - g^2 = 7 + a`); reading it as `8 - _Shininess * a` is off by `1 - 2a`.
+  And the exponential is **base 2**: DXBC's `exp` is `2^x` (fxc compiles HLSL `exp` to `mul 1.442695` +
+  `exp` and HLSL `exp2` to a bare `exp`), so the natural-exponential reading shifts the curve rather
+  than only brightening it. The exponent normalisation `power * 0.159155 + 0.318310` scales the
+  **highlight only** - it never reaches the reflection, and letting it (the first port did) multiplies
+  the reflection by roughly 3 to 30, which is a gloss that reads as polished plastic.
+- **Exposure is one knob over the whole result.** `_ExposureIBL` is a single `float4`: `.x` scales the
+  sky SH, `.y` the image-based reflection, `.w` everything. There is no `.z` use in this pass, and the
+  two branches do not escape the master scale - the indirect term reaches the output as `ibl * .w`,
+  while each direct-light term is pre-multiplied by the same `.w` inside the pass.
 
 The bump map's alpha masks the X slope only - another quirk that is reproduced rather than fixed.
 
