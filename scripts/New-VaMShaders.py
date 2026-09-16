@@ -181,9 +181,11 @@ def render_state(pas: dict) -> list:
     dst = BLEND.get(int(blend["destBlend"]["val"]), "Zero")
     if (src, dst) != ("One", "Zero"):
         out.append(f"Blend {src} {dst}")
+    # Unity's ColorWriteMask is Alpha=1, Blue=2, Green=4, Red=8 (All=15), so 14
+    # -- what the game's SeparatelyAlpha passes serialise -- means RGB.
     if int(blend.get("colMask", {}).get("val", 15)) != 15:
         mask = int(blend["colMask"]["val"])
-        out.append("ColorMask " + "".join(c for b, c in ((1, "R"), (2, "G"), (4, "B"), (8, "A"))
+        out.append("ColorMask " + "".join(c for b, c in ((8, "R"), (4, "G"), (2, "B"), (1, "A"))
                                           if mask & b))
     if int(st.get("alphaToMask", {}).get("val", 0)):
         out.append("AlphaToMask On")
