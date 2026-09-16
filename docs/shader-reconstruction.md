@@ -35,12 +35,12 @@ the compiled Direct3D 11 bytecode, so the shaders are reconstructed from that.
 **261 `Shader` objects under 260 unique names** (counted by walking the bundle with UnityPy), and
 listed as a dependency of 217 other bundles. Because
 VaM ships a Direct3D 11 player, the bundle carries the compiled bytecode of every one of them -
-including all 57 names this project reconstructs, together with the plain half of every pair.
+including all 88 names this project reconstructs, and the plain half of 41 of the 55 twins.
 
 That looks like it makes the reconstruction unnecessary. It does not, because `Shader.Find` **does
 not see shaders that live inside an AssetBundle**. Measured by moving the whole
-`VaM_Rebuild\Assets\Shader\` directory aside and re-running the smoke test (then 88 `.shader` files,
-now 82):
+`VaM_Rebuild\Assets\Shader\` directory aside and re-running the smoke test (that run found 88
+`.shader` files there; the directory holds 113 today):
 
 | | project shaders present | project shaders removed |
 |---|---|---|
@@ -81,12 +81,12 @@ The two swappers call it instead of `Shader.Find`: `DAZSkinV2.SkinMeshGPUMateria
 A material therefore reaches its `ComputeBuff` twin whether the project generated it or the game
 shipped it:
 
-the family table]:
+so the only question left is which name gets drawn:
 
 | family | served by |
 |---|---|
-| `Custom/Subsurface/*`, `Custom/Hair/*`, `Custom/DebugNormals`, `Custom/Subsurface/Classic`, ... | this project, 57 shaders |
-| `Marmoset/*`, `GPUTools/MeshedVR/Hair*` and the rest of the 78 pending contracts | `z_sha`, verbatim |
+| `Custom/Subsurface/*`, `Custom/Hair/*`, `Custom/DebugNormals`, ... | this project, 88 shaders |
+| `Marmoset/*`, `GPUTools/MeshedVR/Hair*` and the rest of the 229 pending contracts | `z_sha`, verbatim |
 
 `New-VaMShaders.py` names the second of those families in `UNTRANSCRIBED_FAMILIES`, so the generator
 stops claiming it, and its generated files were removed with that change. Shading the Marmoset IBL
@@ -99,14 +99,24 @@ The hair was the one family that looked like a second shading model and was not:
 the same three buffers, its passes use the same light modes, and the library already carried the
 whole model it needs. What was missing was five uniforms in three mechanisms, and a pass's cutoff
 selected by evidence rather than by position - see *What the hair needed*. The plain `Custom/Hair/*`
-twins are the pair the table does not cover: no contract of theirs was ever extracted, so there is
-nothing to reconstruct them from, and nothing asks for them (every lookup appends `ComputeBuff`).
+twins are the pair that never goes through the `ComputeBuff` lookup: `DAZHairMesh` skins its meshes on
+the CPU and draws them under the plain name, so all 15 of them are reconstructed from the bundle
+rather than borrowed - see *The plain twins*.
 
 ## Extraction
 
 ```powershell
 python scripts\Extract-VaMShaders.py --out artifacts\shader-blobs     # artifacts\ is not committed
+python scripts\Extract-VaMShaders.py --out artifacts\zsha-blobs `
+    "$env:VAM_INSTALL\VaM_Data\StreamingAssets\z_sha"
 ```
+
+There are **two contract sources** and both are needed. The first command reads the named data files
+(`globalgamemanagers.assets`, `resources.assets`, `sharedassets7.assets`); the second reads the
+shipped shader bundle, which is the only source for the plain half of most twins - the engine data
+files carry no `Custom/Hair/*` at all. Between them VaM ships **317 distinct shader names, 56
+`*ComputeBuff` and 261 plain**, none of them in both sources, and `New-VaMShaders.py` reads the two
+output directories in that order, first writer winning per name.
 
 For each of the 135 shaders in the player data this writes a directory holding
 
@@ -117,8 +127,9 @@ For each of the 135 shaders in the player data this writes a directory holding
 - one `.dxbc` per compiled program, named
   `kShaderCompPlatformD3D11_<blobIndex>_<type>_<KEYWORDS>.dxbc`.
 
-The run yields **58 748 programs**; the ones that matter here are the 45 `*ComputeBuff` shaders this
-project reconstructs, out of the 51 that exist.
+The run yields **58 748 programs**; the ones that matter here are the `*ComputeBuff` shaders this
+project reconstructs - 47 of the 56 that exist, the other 9 being 7 `Marmoset/` families and the two
+`Custom/Debug*` names whose passes read no compute buffer.
 `register_slot` inside a constant buffer is a raw byte offset (`index / 16`, then `/4` for the
 component), which is how every uniform below was tied to the register its bytecode reads.
 
@@ -135,8 +146,14 @@ z-test, z-write, the blend factors, the per-pass alpha cutoff), and the pragmas 
 pass's keyword set. It then copies `shader-src\VamGpuSkinning.cginc` next to the shaders so the
 `#include "../VaMShaders/VamGpuSkinning.cginc"` resolves.
 
-Result: **57 shaders, 168 passes** (15 of them tessellated), with 1-26 non-`STEREO` keyword variants
-per pass in the contracts. `--list` prints the same inventory without writing anything. The `META`, `DEFERRED`,
+Result: **88 shaders, 256 passes** (15 of them tessellated), with 1-26 non-`STEREO` keyword variants
+per pass in the contracts. `--list` prints the same inventory, followed by what did *not* become a
+shader - currently `88 reconstructed, 229 pending (no shading model yet)`. A name can be claimed and
+still produce nothing: `classify()` claims a family from its `*ComputeBuff` twin, and if no pass of
+that contract reads the compute buffers there is no pass to emit. Such a name is left pending, and a
+file written under it in an earlier run is deleted, because a ShaderLab file with no `SubShader` at
+all would **shadow** the shipped copy that `VamShaderProvider` falls back to - which is exactly what
+`Custom/DebugTangentsComputeBuff` and `Custom/DebugUVsComputeBuff` did until that was fixed. The `META`, `DEFERRED`,
 `PREPASSBASE` and `PREPASSFINAL` passes are not generated - `SKIP_LIGHTMODES` - because the rebuilt
 project uses forward rendering only and those entry points would need a deferred/lightmap pipeline
 that does not exist yet.
@@ -163,7 +180,7 @@ clips only if it is opaque (`zWrite == 1`) or additive (`LightMode == FORWARDADD
 pass reads `_Cutoff` and any later one `_Pass1Cutoff`; families that publish `_Cutoff1` / `_Cutoff2`
 are matched by name order too; a `SHADOWCASTER` pass inherits whichever name its opaque pass resolved
 to", with a hand-written `CUTOFF_IN_TRANSPARENT_PASS` list for the passes that discard while blended.
-Measured over the 136 emitted passes of the 45 reconstructed families, against "does the pass's own
+Measured at the time over the 136 passes the generator then emitted, against "does the pass's own
 fragment contain a `discard`":
 
 - the opaque-or-additive premise asks for a cutoff on **44 passes that never discard**, so the
@@ -174,10 +191,11 @@ fragment contain a `discard`":
 - a whitelist could only paper those 6 over by shader *and pass index*, which is a list that dies the
   moment a family is regenerated - and pass indices are not comparable between families anyway.
 
-The reflection rule, measured the same way over every non-`STEREO` variant of every emitted pass:
+The reflection rule, measured the same way over every non-`STEREO` variant of every emitted pass -
+**256 passes, 3119 fragment programs**, every one of them disassembled by `fxc` with 0 refusals:
 
-- **80 passes discard and exactly those 80 are given a cutoff - 0 disagreements**, and no pass reads
-  a cutoff it does not test;
+- **157 passes discard and exactly those 157 are given a cutoff, and the other 99 do neither
+  - 0 disagreements**, and no pass reads a cutoff it does not test;
 - **0 passes read more than one** of the four names, so a per-pass answer exists at all;
 - **0 keyword variants of a pass disagree**, so one `VAM_PASS_CUTOFF` per pass is enough and a pass
   needs no keyword-dependent cutoff.
@@ -194,10 +212,12 @@ does bind `verts` and `normals`, so it would be reconstructable the day somethin
 ### What the hair needed
 
 The hair is the family that looked like a second shading model and is not, and the way that was
-established is worth stating, because the usual tool cannot answer it. `tools\verify_twins.py`
-compares a plain contract against its `ComputeBuff` twin, and the hair has **no plain contract**: all
-14 are the `ComputeBuff` half, while the plain `Custom/Hair/Main` and its relatives produced no blob
-and have no entry in `z_sha` either. The evidence is therefore the uniform set, read per pass from the
+established is worth stating, because the usual tool cannot answer it as directly as it sounds.
+`tools\verify_twins.py` compares a plain contract against its `ComputeBuff` twin, and for the hair
+the two halves come from **different builds**: the 15 plain `Custom/Hair/*` shaders exist only in
+`z_sha`, and the bundle strips a different variant list than the player data does, so a difference
+between the halves is expected and does not mean a different shading model. The evidence is therefore
+the uniform set, read per pass from the
 reflection:
 
 - the fragment globals the hair binds that the body family never binds are the four window uniforms
@@ -333,12 +353,26 @@ is visible in a single-pass compile:
 ## The plain twins
 
 The `ComputeBuff` name suffix is not decoration and it is not universal. `DAZSkinV2` appends it only
-when it swaps a material it is going to skin; every other material keeps the ordinary shader. The
-extracted set reflects that: **135 contracts, of which 51 are `*ComputeBuff` and 84 are plain**. Of
-the 51, **45 are reconstructed here** - 31 of the body family and 14 of the hair - and the remaining
-6 are Marmoset IBL families left to the shipped library, because they are not this library's shading
-model. Of the 84 plain contracts, 12 turned
-out to be the *same program* as a `ComputeBuff` twin, so only the vertex data source had to change.
+when it swaps a material it is going to skin; every other material keeps the ordinary shader, and the
+hair never goes through the swap at all - `DAZHairMesh` skins its meshes on the CPU and draws them
+with `Graphics.DrawMesh` under the plain name. The extracted set reflects that: **317 names across
+both sources, 56 `*ComputeBuff` and 261 plain**, and 55 of the 56 have a plain twin. Of the 56, **47
+are reconstructed here** - 31 of the body family, all 15 of the hair, and `Custom/DebugNormals` - and
+the 9 that are not are 7 `Marmoset/` IBL families left to the shipped library, because they are not
+this library's shading model, plus the two `Custom/Debug*` names whose passes read no compute buffer.
+Of the 261 plain names, **41 are reconstructed** - 26 `Custom/Subsurface/*` and all 15
+`Custom/Hair/*` - and the rest are either a name nothing looks up or the plain half of a family that
+is held back. Where a plain name was reconstructed, its pixel programs turned
+out to be the *same program* as the `ComputeBuff` twin, so only the vertex data source had to change.
+
+Defining a name and *using* it are two different things, and today only the first is true. A material
+loaded from a bundle holds its shader **by pointer**, so a plain-named hair material still draws with
+the bundle's copy while the project defines one of its own: the smoke test's census counts 84 material
+slots on a bundle copy - 16 of them on the character - and reads `origin=bundle (project defines one)`
+for them, where it used to read `bundle only (not in project)`. The skin is not in that state, because
+it goes through the `ComputeBuff` swap: 48 of the run's 49 swaps resolve to this project, and the one
+that does not is the untranscribed `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`.
+Redirecting a plain-named material the same way is what is left of this thread.
 
 ### How that was established, and not guessed
 
@@ -356,7 +390,7 @@ python tools\dump_dxbc.py GlossNMCull --stage fragment --all-variants
   has both an `_088_` and a `_280_` pass - and pairing across those two invented 50 differences
   that are not twin differences at all (`dcl_constantbuffer CB0[74]` against `CB0[95]`, a
   `texture3d` against a `texturecube`). `blob_index` is the pass's index into the shader's pass
-  table, and every one of the 51 twin families enumerates the same `blob_index` and keyword layout
+  table, and every one of the 55 twin families enumerates the same `blob_index` and keyword layout
   as its sibling, so it is a sound key.
 - Reducing the two encodings to a common form is not enough on its own, because the two
   compilations allocate temporary registers differently and allocate them in a different order.
@@ -376,14 +410,18 @@ python tools\dump_dxbc.py GlossNMCull --stage fragment --all-variants
   an earlier version grepped a register for reads and reported `dp3 r4.x, r4.xyzx, r4.xyzx` as
   differing when that exact line is present in **both** programs. A heuristic over operands reports
   differences that are not differences.
-  Full sweep: 580 passes compared - **474 identical, 32 `canonical`, 60 `mask_only`, 14
-  `lane_assignment`, 0 `operand_diff`, 0 `opcode_diff`, 0 `layout_mismatch`**, so 566 of 580 are
-  proven the same instruction stream up to renaming and the remaining 14 agree once which lane a
-  component sits in is ignored. The 14 were also checked by hand against the raw `fxc` output; they
-  are real lane renamings, not an artefact of the comparison.
+  Full sweep: **55 twin families - 18 with both halves in one file, 37 pairing a plain half from
+  `z_sha` with a `*ComputeBuff` half from the player data** - and 646 programs classified:
+  **451 `identical`, 69 `canonical`, 84 `mask_only`, 38 `lane_assignment`, 2 `operand_diff`, 2
+  `opcode_diff`, 0 `layout_mismatch`**. So 604 are the same instruction stream up to register
+  allocation and the write mask of a sample, 38 more agree once which lane a component sits in is
+  ignored, and the remaining 4 are lane rotations of the kind quoted above, which the tool reports as
+  two-build evidence rather than as a failure. Raising the per-family cap widens the sweep to 1657
+  keyword-set buckets and 2027 programs - `1417 / 122 / 314 / 156 / 8 / 10` - and every difference it
+  finds beyond the default run is again between the two builds of a hair shader.
   ```powershell
-  python tools\verify_twins.py                 # a sample of every family
-  python tools\verify_twins.py --pairs-per-family 0 --show 5   # all 580 passes
+  python tools\verify_twins.py                                 # a sample of every family
+  python tools\verify_twins.py --pairs-per-family 0 --show 5   # every pair, with examples
   ```
   It exits non-zero if any pass falls into one of the last three classes.
 - The **vertex** programs are *not* the same instructions, and they are not supposed to be: the
@@ -404,7 +442,9 @@ code) by writing into the material instance. A per-character tint cannot be skin
 structured buffer, so these materials were never candidates for the `ComputeBuff` path - which is
 exactly what the bytecode says. `MESH_FAMILY_PREFIXES` in `New-VaMShaders.py` encodes that prefix,
 but the real gate is `classify()`: the twin must exist in the contract set **and** no rendered pass
-of the plain shader may bind `verts`, `normals` or `tangents`. `Custom/Subsurface/EmissiveGlow` has a
+of the plain shader may bind `verts`, `normals` or `tangents`, or tessellate (the hull and domain this
+project reconstructs read the compute buffers, so a tessellated plain twin has no vertex path here).
+`Custom/Subsurface/EmissiveGlow` has a
 contract but **no `ComputeBuff` twin at all** - no contract, no file, and no entry in `z_sha` - so
 `classify()` leaves it alone, and the `EmissiveGlow` on disk is still the AssetRipper stub. It stays
 that way on purpose: being batch-tinted is a property of the material, not of the pairing, and
@@ -415,7 +455,7 @@ are held back: their shading model is not the body's, so `VamShaderProvider` ser
 `ComputeBuff` name out of `z_sha` instead. The other four `Marmoset/*ComputeBuff` contracts are held
 back for the same reason - the generator used to shade all of them with `VamGpuSkinning.cginc`, and
 that was wrong. This also settles the open lightmap question those twins carried: it is not the body
-library's question to answer. The 14 `Custom/Hair/*ComputeBuff` shaders were held back on that same
+library's question to answer. The `Custom/Hair/*ComputeBuff` shaders were held back on that same
 suspicion and are **not** held back any more: measured against the bytecode, they are the body's
 model with fewer inputs - see *What the hair needed*.
 
@@ -434,17 +474,25 @@ model with fewer inputs - see *What the hair needed*.
 buffer set against the family it chose, and prints the shaders it left behind. Current output:
 
 ```
-wrote 57 shaders (168 passes, 15 tessellated)
+wrote 88 shaders (256 passes, 15 tessellated)
 ```
 
-- **45 `skin`** - 31 of the body's `*ComputeBuff` family and the 14 hair ones. Four of them do not
-  shade in every pass: the hair's three layer-0 passes and `Custom/Subsurface/AlphaMaskComputeBuff`
+- **47 `skin`** - 31 of the body's `*ComputeBuff` family, all 15 hair ones and `Custom/DebugNormals`.
+  Four of them do not shade in every pass: the hair's three layer-0 passes and
+  `Custom/Subsurface/AlphaMaskComputeBuff`
   are `skin` for their vertex path but are given the mask-only fragment, selected per pass by
   `mask_only()`. The classification answers which vertex path a contract needs, not which fragment.
-- **12 `mesh`** - `Custom/Subsurface/` `Cull`, `NoCull`, `GlossCull`, `GlossNoCull`, `GlossNMCull`,
-  `GlossNMNoCull`, `CutoutSeparateAlpha`, `TransparentCutoutSeparateAlpha`,
-  `TransparentGlossSeparateAlpha`, `TransparentGlossNoCullSeparateAlpha`,
-  `TransparentGlossNMSeparateAlpha`, `TransparentGlossNMNoCullSeparateAlpha`.
+- **41 `mesh`** - the plain half of every family whose `ComputeBuff` sibling is reconstructed: all 15
+  `Custom/Hair/*`, and 26 of the 31 `Custom/Subsurface/*`. The five missing ones are exactly the
+  `TessMapped` families - `TessMappedFixed`, `GlossTessMappedFixed`, `GlossNMDetailTessMapped`,
+  `GlossNMTessMappedFixed`, `SSSTessMappedFixed` - whose plain twins are not in the bundle. The body
+  ones are `Custom/Subsurface/` `AlphaMask`, `Cull`, `NoCull`, `Cutout`, `CutoutNoCull`,
+  `CutoutSeparateAlpha`, `CutoutSeparateAlphaNoCull`, `GlossCull`, `GlossNoCull`, `GlossCutoutCull`,
+  `GlossCutoutSeparateAlphaCull`, `GlossNMCull`, `GlossNMNoCull`, `GlossNMDetailCull`,
+  `GlossNMCutoutSeparateAlphaCull`, `SSS`, `Transparent`, `TransparentSeparateAlpha`,
+  `TransparentCutoutSeparateAlpha`, `TransparentGloss`, `TransparentGlossSeparateAlpha`,
+  `TransparentGlossNoCull`, `TransparentGlossNoCullSeparateAlpha`, `TransparentGlossNMSeparateAlpha`,
+  `TransparentGlossNMNoCullSeparateAlpha` and `TransparentGlossNMDetailNoCullSeparateAlpha`.
 - **25 AssetRipper stubs** left untouched - *plus* the stub of every family the generator claims:
   the stub and the rebuilt sibling are two files for the same family name, and the sibling is what
   Unity compiles, because it carries the same name and is the one in the compiled set. The 25 are
@@ -456,37 +504,42 @@ wrote 57 shaders (168 passes, 15 tessellated)
   those from `z_sha`.
 
 So `Assets\Shader\` holds two file families for many names. Counting the leftovers as "25 stubs"
-hides the interesting half of that: 12 plain contracts that used to be stubs are now rebuilt
-shaders, and `VaM_Rebuild\Assets\Shader\` reveals it as 82 files = 45 rebuilt `*ComputeBuff` + 12
-rebuilt plain + 25 stubs.
+hides the interesting half of that: 41 plain contracts now have a rebuilt shader of their own, and
+`VaM_Rebuild\Assets\Shader\` reads as 113 files = 47 rebuilt `*ComputeBuff` + 41 rebuilt plain + 25
+stubs.
 
 ## Verification
 
 ```powershell
-python tools\check_shaders.py             # all 57 shaders
+python tools\check_shaders.py             # all 88 shaders
 python tools\check_shaders.py GlossNMCull # one family
 ```
 
 `tools\check_shaders.py` lifts every `CGPROGRAM` block out of the generated files and hands it to the
 Windows SDK's `fxc.exe` with the profile the pragmas ask for, once per entry point *and once per
 keyword set*. Compiling with one keyword set hides exactly the bugs above; with ten of them the sweep
-runs **4414/4414 programs, 0 failures**. A pass that declares `VamFragment` is also compiled once as
+runs **6805/6805 programs, 0 failures**. A pass that declares `VamFragment` is also compiled once as
 `VamFragmentAdd` and vice versa, so an ordinary forward pass is counted twice per keyword set; a mask
-pass declares `VamFragmentMask` and is counted once, which is why the mask fix moved the total 4444 ->
-4414.
+pass declares `VamFragmentMask` and is counted once.
 
 That is a pre-flight, not a verdict: fxc knows nothing about ShaderLab, and it is not Unity's
 compiler. The verdict comes from a real run, which must report no shader errors at all:
 
 ```powershell
 scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 60 -WarmupSeconds 20 `
-    -Scene "MeshedVR.DemoScenes.2:/Saves/scene/MeshedVR/DemoScenes/Cyber/CyberDemoAlt.json"
-Select-String -LiteralPath artifacts\smoke-play.log -Pattern 'Shader error'
+    -Scene Saves/scene/MeshedVR/default.json -LogFile artifacts\play.log
+Select-String -LiteralPath artifacts\play.log -Pattern 'Shader error','compute buffer swap'
 ```
+
+The scene must be given explicitly: without `-Scene` the run loads `NewStart.unity`, which never arms
+the gate, so the run reports neither a scene load nor a verdict.
 
 ## Regenerating from scratch
 
 1. `python scripts\Extract-VaMShaders.py --out artifacts\shader-blobs` - needs the install's player data.
-2. `python scripts\New-VaMShaders.py` - needs nothing but the blobs.
-3. `python tools\check_shaders.py`.
-4. `scripts\Invoke-SmokeTest.ps1 -Method Play ...` and check the log for shader errors.
+2. `python scripts\Extract-VaMShaders.py --out artifacts\zsha-blobs <install>\VaM_Data\StreamingAssets\z_sha` -
+   the shipped bundle, which carries the plain twins the player data does not.
+3. `python scripts\New-VaMShaders.py` - needs nothing but those two directories.
+4. `python tools\check_shaders.py`.
+5. `scripts\Invoke-SmokeTest.ps1 -Method Play -Scene Saves/scene/MeshedVR/default.json ...` and check
+   the log for shader errors.
