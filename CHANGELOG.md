@@ -6,6 +6,42 @@ Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html). The 
 so the minor number moves with each round of user-visible work and only the major/minor pair is
 meant to be read as stable.
 
+## Unreleased
+
+The eye and the lashes now draw with the original's own masks. Both were the shared include shading a
+surface the original had a small dedicated program for.
+
+### What works
+
+- **Lashes** - the cards render as strands instead of solid dark planes. The alpha was built from
+  `_MainTex.a`, which these materials stub to white, and the mask was added on top of it, so
+  `_AlphaTex` could never win; behind that the mask was read from `.r` instead of `.a` and sampled on
+  the diffuse map's UV set. The shipped fragment is `saturate(_AlphaTex.a + _AlphaAdjust)` on the
+  mask's own `_AlphaTex_ST`, with the colour premultiplied before the cutoff - and all 27 families
+  that declare `_AlphaTex` read `.a` with `_AlphaAdjust` in an add, so it is family behaviour rather
+  than a lash quirk.
+- **Eyes** - `Custom/Subsurface/AlphaMaskComputeBuff` no longer shades. Its shipped fragment is three
+  instructions: sample `_MainTex`, `mad_sat` the alpha against `_Color.a` and `_AlphaAdjust`, write
+  black to RGB. Ours ran the full shading model through the first pass's `SrcAlpha` blend and then
+  added a second lit colour under `One One`, which is why the eye read over-bright. Nothing in the
+  contract distinguishes the family - its three properties are as few as a diffuse IBL family's, and
+  its render state is an ordinary transparent pair - so the entry point is chosen by name, as the
+  cutoffs are.
+- **Clipping** - which passes discard is now read from the shipped programs instead of the render
+  state. The old zWrite-and-opaque rule had no false positives but missed 10 passes, one of them the
+  lash's own base pass; widening it leaves 4, and the states that differ only in the original source
+  are named in the generator.
+
+### Measurements re-run
+
+- `python tools\check_shaders.py` - `3003/3003 programs compiled, 0 failed`, 43 shaders, 113 passes,
+  15 of them tessellated. That is 20 below 0.1.1-alpha's number because the eye family's two passes
+  are no longer compiled as the shared fragment as well as their own entry point.
+- `python tools\verify_twins.py` - 112 pixel passes of the 14 twin families, all the same instruction
+  stream up to renaming, 0 differing (`python tools\verify_twins.py --pairs-per-family 0` covers 580).
+
+*Defect 3* in [`docs/verification.md`](docs/verification.md) carries the detail.
+
 ## 0.1.1-alpha - 2026-09-16
 
 Clothing now renders with its own colour, and transparent where the original is transparent. The
