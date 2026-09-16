@@ -48,10 +48,13 @@
 //      by Unity's own lightmap/screen-space shadow macros, which the rebuilt
 //      project drives instead;
 //    * the per-vertex emissive term the original adds as `albedo * TEXCOORD6`
-//      is omitted -- the vertex program hard-codes that interpolator to zero,
-//      so it contributes nothing;
-//    * the additive pass keeps a plain Lambert diffuse: its DXBC blob (a
-//      separate program for point/spot lights) has not been transcribed yet.
+//      is omitted -- that interpolator is masked to zero by the vertex program
+//      (`mov o4.x, l(0)` with the domain shader emitting `o7.xyz` as
+//      `and r0.xyzx, vicp[0][4].xxxx`), so it contributes nothing;
+//    * the additive pass keeps a plain Lambert diffuse plus the same highlight
+//      lobe as the base pass: its DXBC blob is a separate program for
+//      point/spot lights, so the response is derived rather than transcribed
+//      (the two were then compared instruction by instruction and agree).
 //  Everything that decides the pose, the silhouette, the surface response and
 //  the base shading -- the structured-buffer skinning, the normals, the
 //  Fresnel/highlight/reflection curves, the SH ambient, the shadow coordinates
@@ -695,10 +698,14 @@ float3 VamShade(vam_v2f i, vam_surface s, float3 V) {
 
     // ---- Composite -----------------------------------------------------------
     // _IBLFilter scales the whole indirect term, including how much albedo
-    // feeds into it, and _ExposureIBL.w is a master exposure over the result.
+    // feeds into it.  _ExposureIBL.w is the master exposure on the *indirect*
+    // half only: the shipped blob multiplies the accumulated reflection and
+    // ambient by it and then adds the untouched direct term
+    // (`mad o0.xyz, r2.xyzx, cb0[74].wwww, r0.xyzx`, the last arithmetic
+    // instruction before `mov o0.w, l(1)`).
     float indirect = 1.0 - VAM_IBLFilter;
     float3 iblPass = reflection * indirect + ambient * (indirect * s.albedo);
-    return (iblPass + direct) * _ExposureIBL.w;
+    return iblPass * _ExposureIBL.w + direct;
 }
 
 fixed4 VamFragment(vam_v2f i) : SV_Target {
@@ -715,10 +722,12 @@ fixed4 VamFragment(vam_v2f i) : SV_Target {
 
 // Additive pass for every light after the main one.  Same surface and the same
 // per-light response as the base pass -- only the light's own colour and
-// attenuation come from the current Unity light.  The indirect terms are skipped
-// so the ambient is not added once per light.  (The original's additive blob is
-// a separate DXBC program that has not been transcribed yet, so its response is
-// derived from the base pass rather than being a transcription.)
+// attenuation come from the current Unity light.  The indirect terms are
+// skipped, as the original's additive blob skips them too: it re-derives the
+// whole surface (albedo, albedo override, tangent frame, specular, gloss) and
+// then has nothing but the diffuse and highlight lobes.  (The blob is a
+// separate DXBC program, so this response is derived from the base pass, but it
+// was verified equivalent to `..._268` instruction by instruction.)
 fixed4 VamFragmentAdd(vam_v2f i) : SV_Target {
     vam_surface s = VamSurface(i);
     float3 V = normalize(i.posWS - _WorldSpaceCameraPos);
@@ -733,7 +742,7 @@ fixed4 VamFragmentAdd(vam_v2f i) : SV_Target {
     float3 col = VamLightResponse(s, V, L, VAM_SubdermisColor.rgb, fres, exponent,
                                   specScale);
     col = col * _LightColor0.rgb * atten * _ExposureIBL.w;
-    return fixed4(col, s.alpha);
+    return fixed4(col, 1.0);
 }
 
 // -----------------------------------------------------------------------------

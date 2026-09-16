@@ -6,17 +6,24 @@ Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html). The 
 so the minor number moves with each round of user-visible work and only the major/minor pair is
 meant to be read as stable.
 
-## Unreleased
+## 0.2.0-alpha - 2026-09-17
 
-Three rounds are in this section. The first transcribed the hair, and the whole hair family now renders
+Four rounds are in this release. The first transcribed the hair, and the whole hair family now renders
 from this project's code. The second reconstructed the plain twins - the half of every family that no
 `ComputeBuff` lookup reaches - and closed a defect that was silently disabling two of the game's own
 shaders. The third makes the game's own materials use those twins instead of the shipped bundle's copy.
+The fourth reads the body shader back out of the shipped bytecode instruction by instruction and finds
+the one place the reconstruction had been shading the frame differently.
 
 The hair is the body's shading model with fewer inputs, and one pass of every hair family does not
 shade at all: it writes black and keeps the texel's alpha. The eye and the lashes had already started
 drawing with the original's own masks; the hair carries the same kind of mask pass, and it is now read
 from each pass's own fragment rather than from a name table.
+
+**This is the release that closes the "basic functionality" milestone**: the boot scene loads, the
+character, the skin, the hair, the clothing and the eyes draw from this project's own code, and the
+shading model of the drawn body has been verified against the shipped programs rather than against a
+reading of them. What is deliberately left for later is named under *Known issues*.
 
 ### Round 1 - the hair, and a pass that does not shade
 
@@ -233,6 +240,83 @@ redirection, and then measures what it moved rather than what it could move.
   still the missing check before defect 1's height-dependent brightness is re-measured.
 - 21 materials are still `bundle only (not in project)`: the untranscribed `Marmoset/` set, the
   overlay helpers and `Unlit/UnlitOverlayShader`.
+
+### Round 4 - the base pass, read back out of the shipped bytecode
+
+The three rounds before this one all ended the same way: a hand run, a chart of what looked right, and
+one complaint left over. The complaint is that the characters shine slightly more than the original
+does. That is a *shading* difference, and the shading had until now been ported by reading the
+disassembly, not by comparing against it - so this round disassembles the drawn body's own programs,
+compiles this project's HLSL for the same sequences, and puts the two instruction streams side by side
+until the divergence is either located or excluded.
+
+#### What works
+
+- **The base pass is compared instruction by instruction, and agrees everywhere but one line.** The
+  shipped `..._064` blob (`DIRECTIONAL-MARMO_LINEAR`, the ForwardBase variant of
+  `Custom/Subsurface/GlossNMTessMappedFixedComputeBuff`) was disassembled with `fxc`, this project's
+  HLSL was compiled to the same profile with the same include path, and the two were walked together:
+  the tangent frame, the normal-map decode, the albedo override blend, the `_DiffOffset`/`_SpecOffset`/
+  `_GlossOffset` adds, the gloss mip and exponent curve (`0.159155 * exp(x) + 0.318310`), the Fresnel
+  curve, the `_IBLFilter` split, the L1 and L2 SH ambient, the subdermis warp and the shadow
+  coordinates are the same arithmetic in the same order.
+- **One divergence found: `_ExposureIBL.w` is applied to the indirect half only, and ours was applied
+  to the sum.** The shipped blob's last arithmetic instruction is
+  `mad o0.xyz, r2.xyzx, cb0[74].wwww, r0.xyzx` - the accumulated ambient and reflection times the
+  master exposure, then the direct term added untouched. We multiplied the joined result, which is
+  only equal while the exposure is one. The census reads the drawn scene's global as
+  `_ExposureIBL = (0.100, 0.100, 1.000, 1.000)`, so today's frame does not change: the fix removes a
+  hidden dependency on a scene value rather than a visible error.
+- **The one instruction we omit is now proved to be dead rather than assumed to be.** The shipped
+  fragment adds `r3.xyz * v7.xyz` into the colour before that exposure line. The source comment
+  claimed the interpolator "hard-codes to zero"; it does not, and that claim was re-verified from the
+  vertex program: `vs_000.asm` ends `mov o4.x, l(0)`, the domain shader emits that same control point
+  as `and o7.xyz, r0.xyzx, vicp[0][4].xxxx`, and the bitwise and against the zeroed mask makes
+  `v7.xyz` exactly zero for every vertex the tessellated pipeline produces. The term contributes
+  nothing, and the comment now says how that was established.
+- **The additive pass is verified equivalent too, and its blob is a lit one.** The body's forward-add
+  program (`..._268`) is a separate DXBC blob for point and spot lights, and our additive pass was
+  derived from the base pass rather than transcribed. It re-derives the whole surface - albedo, the
+  override blend `albedo * (1 - a) + texel.rgb * a` on the same `_SpecTex.w`, the tangent frame, the
+  specular map with `_SpecOffset`, the gloss map with `_GlossOffset` - and then has nothing but the
+  diffuse and highlight lobes: no cube, no SH, no ambient. Ours does the same, and the exposure it
+  applies to both of its lobes on the way out is arithmetically the same place. The pass also skips
+  `_ExposureIBL.w` for the *sum* in the shipped program (two separate multiplies), so the additive
+  side needed no change.
+- **The comments now carry the evidence.** Every deviation listed at the top of
+  `shader-src\VamGpuSkinning.cginc` names the instruction it was decided from, so the next reader can
+  start from a proof instead of from the previous reader's confidence.
+
+#### Measurements re-run
+
+- `python tools\check_shaders.py` - `6805/6805 programs compiled, 0 failed`, 88 shaders, 168 passes,
+  15 of them tessellated, unchanged by this round except in the composite it compiles.
+- `scripts\Invoke-CompileGate.ps1` - `verdict: OK`, 0 unique errors, `Assembly-CSharp.dll`
+  6 172 160 B, `VaMUnityScript.dll` 16 896 B.
+
+#### Known issues - what the gloss difference is *not*
+
+The reported over-gloss is **not** a wrong term in the fragment program. The base pass, the additive
+pass, the ambient, the reflection, the Fresnel curve, the highlight exponent and the composite have all
+now been compared against the shipped bytecode and agree, and the two candidate arithmetic differences
+that were left (`_ExposureIBL.w` and the masked `v7` term) are both either inert or dead. What is left
+lives outside the shader, and the next round starts from this list:
+
+- the specular IBL cube's *import* colour space. `_SpecCubeIBL` is a cube VaM builds at load
+  (`Sky.SpecularCube`), and the two cubes we import (`museum_SPEC`, `untitled_SPEC1`) are pulled in as
+  sRGB with trilinear filtering while the two fallbacks (`cube`, `blackCube`) are sRGB with bilinear.
+  `CubeBuffer`/`SkyProbe` do their own gamma, so which of the two conversions the original applied to
+  the stored texels has to be settled before the cube can be blamed or cleared.
+- the material's own `_SpecInt`/`_Shininess`/`_Fresnel` values as the game pushes them, against what
+  the material asset holds - the shader reads the slots correctly, which says nothing about the numbers
+  in them.
+- bloom: `BloomComponent` thresholds in linear space, so a threshold that survives the rebuild
+  differently would read as a sheen over every character at once.
+
+#### Not done
+
+- No visible change is claimed for this round. The character's shading is *proved* to match the shipped
+  programs, which is the precondition for the next round's search to skip the shader entirely.
 
 ## 0.1.1-alpha - 2026-09-16
 

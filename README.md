@@ -1,4 +1,4 @@
-# VAMOpen 0.1.1-alpha
+# VAMOpen 0.2.0-alpha
 
 Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
 developers just keep taking money and releasing tiny fixes for years.
@@ -19,9 +19,18 @@ contains the recovered code and the pipeline, and you point it at your own insta
 - Some shaders
 - Post-processing
 
+Also, the shading model of the drawn body has been compared with the released build's own shader
+bytecode, instruction by instruction, and matches it: the tangent frame, the normal map, the albedo
+override, the gloss and bump offsets, the highlight exponent and Fresnel curves, the SH ambient, the
+reflection, the direct light and the final composite. That is what 0.2.0 adds over 0.1.1 - not a new
+feature, but the ground the next rounds stand on.
+
 ## What's still in progress
 
-- Minor character material defects.
+- Minor character material defects: characters still shine a little more than the original does.
+  The shipped bytecode rules the shader out, so the next round looks at what is bound to it - the
+  specular IBL cube's import colour space, the specular/fresnel values the material carries, and the
+  bloom threshold. The list is in `CHANGELOG.md` under *Round 4*.
 - Many shaders not ported yet.
 - Some shaders
 - Code is partially readable but needs refactoring.
