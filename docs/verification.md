@@ -482,10 +482,64 @@ Two facts, and only the second one explains a scalp that is visible at all:
 
 Verdict: **mixed.** Two of the three parts are ours; the third is the original shader.
 
-- `Eyelashes-1` is on the project `Custom/Subsurface/TransparentGlossNoCullSeparateAlphaComputeBuff`
-  (2 passes) with `_AlphaTex=Olympia6EyelashesTr`. Wrongly applied lashes are a transcription defect.
+#### The lash alpha mask - **fixed** (cause found, pending a visible run)
+
+*Symptom:* the lashes render as **solid black cards** - the whole fringe is an opaque shape instead of
+separate strands.
+
+*Cause:* the shared include built the surface alpha out of the **diffuse map** and then **added** the
+alpha mask on top of it, instead of letting the mask *replace* it:
+
+```hlsl
+alpha += tex2D(_AlphaTex, i.uvMain).r + VAM_AlphaAdjust;   // before
+```
+
+`Eyelashes-1` (census line 799) has `_MainTex=None`, which the generator stubs to `float4(1,1,1,1)`, so
+that line evaluated `1 * 1 + mask.r + 0` and saturated to a constant `1`: the mask was read but could
+never win. Two further errors hid behind it - the mask was read from the **`.r`** channel and sampled
+with the **diffuse map's** UV set, while the shipped code reads **`.a`** at the mask's **own** `_ST`.
+
+*What the shipped bytecode does* (obtained by disassembling the lash's `DIRECTIONAL` + `MARMO_LINEAR`
+fragment; `_AlphaAdjust=cb0[68].x`, `_Cutoff=cb0[100].x`):
+
+```hlsl
+sample _MainTex  -> sample _AlphaTex at its own UV
+add_sat r3.w, r3.w, cb0[68].x        ; saturate(_AlphaTex.a + _AlphaAdjust)
+mul     r2.xyz, r2.xyzx, r3.wwww     ; premultiply RGB by alpha
+add     r1.w, r3.w, -cb0[100].x      ; - _Cutoff
+lt / discard_nz
+mov     r5.w, l(0)                   ; o0.w = 0
+```
+
+So the mask **replaces** the diffuse alpha (no `_Color.a * _MainTex.a` term at all), it is read from
+`.a`, from its own UV set, the RGB is **premultiplied** by it, and the written alpha is forced to `0`.
+That is not a lash quirk: **all 27 families that declare `_AlphaTex` read `.a`/`.w` and combine it with
+`_AlphaAdjust` via `add_sat`**, and every one of them premultiplies in a discarding pass.
+
+*The fix* is four edits to the one git-tracked place a shader fix belongs,
+`shader-src\VamGpuSkinning.cginc`, behind the existing per-property macros so no other family changes
+behaviour:
+
+- a `VAM_SAMPLE_ALPHA(uv)` / `VAM_UV_ALPHA(uv)` macro pair under `VAM_HAS__AlphaTex`, with `0.0` / `uv`
+  stubs in the `#else`;
+- `float2 uvAlpha : TEXCOORD9` in `vam_v2f` (with `UNITY_SHADOW_COORDS` bumped to `10`), filled by
+  `VamPack`;
+- the alpha block in `VamSurface` rewritten to the shipped formula, including the premultiply;
+- the no-mask path keeps `VAM_Color.a * diffuseTex.a`, now also `+ VAM_AlphaAdjust` - which is what the
+  shipped `Custom/Hair/MainAlternate*` and `Custom/Subsurface/AlphaMask*` families do.
+
+*Verification so far:* `python tools\check_shaders.py` compiles all **3023/3023** programs, and the
+lash fragment we emit now disassembles to the shipped instruction sequence - `_AlphaTex` is sampled at
+its own UV (`v3.zw`, previously the diffuse `v1`), and the `add_sat` / premultiply / `discard` chain is
+present. The sampler register numbers differ from the shipped side and always will, because ours are
+laid out by the generator; only `contract.json` names them. **A visible run is still outstanding.**
+
+#### The other two parts
+
 - `Cornea` is on the project `Custom/Subsurface/AlphaMaskComputeBuff` (2 passes), which is the likely
-  source of an over-bright eye.
+  source of an over-bright eye. It needs no change beyond the same visible run: the shipped pass forces
+  RGB black, takes alpha as `saturate(_MainTex.a * _Color.a + _AlphaAdjust)` and sets `colMask 15`, and
+  the generator's `ColorMask A` path already reproduces that.
 - `EyeReflection-1` is on the bundle-only `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`
   with 6 passes, i.e. the original game shader, so its intensity is not a porting gap; it depends on
   the environment the scene sets (`_SpecCubeIBL=SkyCyber2SPEC`, `_ExposureIBL=(0.1, 0.02, 0.002, 1)`)

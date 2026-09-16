@@ -194,28 +194,63 @@ def render_state(pas: dict) -> list:
     return out
 
 
-def cutoff_for(pas: dict, lightmode: str, names: set, opaque_fb_index: int):
+# Passes whose original program discards although the render state says the pass
+# neither writes depth nor is opaque.  The original shader sources were written
+# per family, and these cut their alpha in a pass that a state-only reading
+# would draw with no cutoff at all.  They were read out of the shipped programs
+# (see docs/Development.md); no state tells them apart from the hair layer-0
+# passes, which must not clip.  Keyed by shader name and the contract's own pass
+# index, so which ones are reconstructable does not change the answer.
+CUTOFF_IN_TRANSPARENT_PASS = {
+    "Custom/Hair/ScalpComputeBuff": {0},
+    "Custom/Hair/ScalpSeparateAlphaComputeBuff": {0},
+    "Custom/Hair/MainSeparateAlphaLayerScalpComputeBuff": {1},
+    "Custom/Hair/MainAlternateComputeBuff": {3},
+    "Custom/Subsurface/TransparentCutoutSeparateAlpha": {0},
+    "Custom/Subsurface/TransparentCutoutSeparateAlphaComputeBuff": {0},
+    "Custom/Subsurface/TransparentGlossNoCullComputeBuff": {0},
+}
+
+
+def cutoff_order(opaque_fb_index: int):
+    """The cutoffs to look for, most likely first, for the n-th opaque pass.
+
+    A two-layer shader tests its second opaque layer against _Pass1Cutoff rather
+    than _Cutoff, so the order flips once an opaque forward-base pass has been
+    seen.
+    """
+    if opaque_fb_index == 0:
+        return ("_Cutoff", "_Pass1Cutoff", "_Cutoff1", "_Cutoff2")
+    return ("_Pass1Cutoff", "_Cutoff", "_Cutoff2", "_Cutoff1")
+
+
+def cutoff_for(pas: dict, lightmode: str, names: set, opaque_fb_index: int,
+               shader_name: str, pass_index: int):
     """Which alpha cutoff this pass tests against, if any.
 
-    A shader with two opaque layers carries _Pass1Cutoff for the second one,
-    which is why the index of the opaque forward-base pass matters.
+    Two things decide it.  The property list says whether the pass has a cutoff
+    at all, and -- for a shader with two opaque layers -- which of the two it
+    is: the second layer's pass carries _Pass1Cutoff, so the index of the opaque
+    forward-base pass picks the order to look in.  (_Cutoff1/_Cutoff2 are the
+    same idea under the names Custom/Hair/MainAlternate* uses.)
+
+    Whether the pass tests it is a property of the original source, not of the
+    render state: the shipped programs cut their alpha in some transparent
+    passes and not in others that look identical from the state alone.  Reading
+    the state gets every pass that draws depth or that adds light right; the
+    transparent passes it cannot call are listed in CUTOFF_IN_TRANSPARENT_PASS.
     """
-    if lightmode == "FORWARDADD":
+    if not {"_Cutoff", "_Pass1Cutoff", "_Cutoff1", "_Cutoff2"} & names:
         return None
-    z_opaque = bool(pas["state"]["zWrite"]["val"])
-    blend = pas["state"]["rtBlend0"]
-    blend_opaque = (int(blend["srcBlend"]["val"]), int(blend["destBlend"]["val"])) == (1, 0)
+    cutoff = next((c for c in cutoff_order(opaque_fb_index) if c in names), None)
+    if cutoff is None:
+        return None
     if lightmode == "SHADOWCASTER":
-        for cand in ("_Cutoff", "_Pass1Cutoff"):
-            if cand in names:
-                return cand
-        return None
-    if not (z_opaque and blend_opaque):
-        return None
-    order = ("_Cutoff", "_Pass1Cutoff") if opaque_fb_index == 0 else ("_Pass1Cutoff", "_Cutoff")
-    for cand in order:
-        if cand in names:
-            return cand
+        return cutoff
+    if pass_index in CUTOFF_IN_TRANSPARENT_PASS.get(shader_name, ()):
+        return cutoff
+    if pas["state"]["zWrite"]["val"] or lightmode == "FORWARDADD":
+        return cutoff
     return None
 
 
@@ -260,7 +295,7 @@ def entry_points(lightmode: str, tess: bool = False):
 
 
 def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
-              family: str) -> str:
+              family: str, shader_name: str, pass_index: int) -> str:
     bufs = pass_buffers(pas)
     if family == "skin" and not {"verts", "normals"} <= bufs:
         raise ValueError(f"pass {lightmode or '<untagged>'} binds {sorted(bufs)}, "
@@ -291,7 +326,7 @@ def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
     elif "tangents" not in bufs:
         body.append("// hair meshes are bound without a tangent buffer")
         body.append("#define VAM_NO_TANGENTS")
-    cutoff = cutoff_for(pas, lightmode, names, opaque_fb_index)
+    cutoff = cutoff_for(pas, lightmode, names, opaque_fb_index, shader_name, pass_index)
     if cutoff:
         body.append("#define VAM_PASS_CUTOFF " + cutoff)
     body.append(f"#pragma vertex {vert}")
@@ -401,7 +436,7 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
     passes = 0
     tess_passes = 0
     opaque_fb = 0
-    for pas in sub["passes"]:
+    for pass_index, pas in enumerate(sub["passes"]):
         lm = pass_lightmode(pas)
         if lm in SKIP_LIGHTMODES:
             skipped.append((name, lm, "rendering path not used by this project"))
@@ -413,7 +448,7 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
         if not skin and bufs:
             skipped.append((name, lm or "<untagged>", "pass reads the compute buffers"))
             continue
-        lines.append(emit_pass(pas, lm, props, opaque_fb, family))
+        lines.append(emit_pass(pas, lm, props, opaque_fb, family, name, pass_index))
         lines.append("")
         passes += 1
         if pass_tessellates(pas):

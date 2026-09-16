@@ -135,6 +135,30 @@ Every uniform is declared by the generated shader, in the family that published 
 provide are `_LightColor0` and `_SpecColor`, so a shader for a family that lacks, say, `_SubdermisColor`
 compiles because the library falls back to that property's documented default.
 
+### Which passes clip
+
+The per-pass alpha cutoff (the last item in that render-state list) is not decidable from the state the
+contract records, so `cutoff_for()` in `New-VaMShaders.py` infers it and the inference was re-derived
+from the bytecode rather than guessed:
+
+- A pass clips only if it is **opaque** (`zWrite == 1`) **or** it is the additive pass
+  (`LightMode == FORWARDADD`), and the cutoff name differs by position: the **first** opaque pass reads
+  `_Cutoff` and any later one reads `_Pass1Cutoff`. Families that publish `_Cutoff1` / `_Cutoff2`
+  instead - `Custom/Hair/MainAlternate*` - are matched by name order as well, and a
+  `SHADOWCASTER` pass inherits whichever name its opaque pass resolved to.
+- `zWrite` alone is not enough. A handful of passes discard while blended, which no render state
+  predicts, so `CUTOFF_IN_TRANSPARENT_PASS` lists them explicitly by shader and pass index (the scalp
+  families, the two `TransparentCutoutSeparateAlpha*` families, `TransparentGlossNoCullComputeBuff`, and
+  `Custom/Hair/MainAlternateComputeBuff`, whose family is not reconstructed yet so the entry is inert).
+
+Measured against the shipped blobs - "does this pass contain a `discard`" in its `DIRECTIONAL` +
+`MARMO_LINEAR` program - the rule is **0 false positives and 4 false negatives over 228 passes**, down
+from 10 false negatives under the earlier `zWrite == 1 AND blend == (1,0)` form. The four survivors are
+`Battlehub/RTHandles/VertexColorClip`, `Custom/Discard` and `Oculus/OVRMRCameraFrame`, which clip
+against hard-coded literals and are third-party utility shaders rather than materials, and the pending
+`MainAlternate` family. Do not widen the gate to reach them: admitting `blend == (5,10)` adds eight
+false positives on the hair layer-0 passes, which renders hair transparent.
+
 ## The library
 
 `shader-src\VamGpuSkinning.cginc` holds the whole shading model: the two vertex stages (skinned
@@ -179,6 +203,15 @@ because a "sensible" rewrite of any of them changes the look:
   while each direct-light term is pre-multiplied by the same `.w` inside the pass.
 
 The bump map's alpha masks the X slope only - another quirk that is reproduced rather than fixed.
+
+**`_AlphaTex` replaces the diffuse alpha, it does not add to it.** Twenty-seven of the families declare
+an alpha mask, and every one of them reads it from the **`.a`** channel with its **own** `_ST`, combines
+it through `add_sat(mask.a + _AlphaAdjust)`, premultiplies the RGB by that result in discarding passes,
+and writes an output alpha of `0`. So the family macro pair
+`VAM_SAMPLE_ALPHA` / `VAM_UV_ALPHA` - `0.0` / `uv` when the family has no mask - **substitutes** for the
+`_Color.a * _MainTex.a` product rather than joining it. Families with no mask keep that product, plus
+`_AlphaAdjust`. Getting this wrong is what made the eyelashes render as solid cards: see
+`verification.md`, defect 3.
 
 Two Unity macro contracts cost real debugging, because they differ per keyword variant and neither
 is visible in a single-pass compile:

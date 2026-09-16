@@ -270,6 +270,17 @@ float4 _SH6;  float4 _SH7;  float4 _SH8;
     #define VAM_UV_DECAL(uv) uv
 #endif
 
+// Alpha mask.  Where a family carries this property it takes its whole alpha
+// from it (see VamSurface), and the mask lives in the map's own alpha channel,
+// not in red -- the contracts label it "Alpha(A)" for that reason.
+#ifdef VAM_HAS__AlphaTex
+    #define VAM_SAMPLE_ALPHA(uv) tex2D(_AlphaTex, uv).a
+    #define VAM_UV_ALPHA(uv) TRANSFORM_TEX(uv, _AlphaTex)
+#else
+    #define VAM_SAMPLE_ALPHA(uv) 0.0
+    #define VAM_UV_ALPHA(uv) uv
+#endif
+
 #ifdef VAM_HAS__SpecCubeIBL
     #define VAM_SAMPLE_IBL(dir, mip) texCUBElod(_SpecCubeIBL, float4(dir, mip))
 #else
@@ -304,7 +315,8 @@ struct vam_v2f {
     float3 nrmWS   : TEXCOORD6;
     float3 tanWS   : TEXCOORD7;
     float3 bitWS   : TEXCOORD8;
-    UNITY_SHADOW_COORDS(9)
+    float2 uvAlpha : TEXCOORD9;
+    UNITY_SHADOW_COORDS(10)
 };
 
 struct vam_skinned {
@@ -407,6 +419,7 @@ vam_v2f VamPack(float3 posWS, float3 nrmWS, float3 tanWS, float tanSign, float2 
     o.uvGloss = VAM_UV_GLOSS(uv);
     o.uvBump  = VAM_UV_BUMP(uv);
     o.uvDecal = VAM_UV_DECAL(uv);
+    o.uvAlpha = VAM_UV_ALPHA(uv);
 
     // Light coordinates are not transferred: AutoLight's 5.6+ helpers derive
     // them in the fragment shader from the world position, which is exactly
@@ -498,11 +511,19 @@ vam_surface VamSurface(vam_v2f i) {
     s.spec   = saturate(VAM_SAMPLE_SPEC(i.uvSpec) + VAM_SpecOffset) * VAM_SpecColor.rgb;
     s.gloss  = saturate(VAM_SAMPLE_GLOSS(i.uvGloss) + VAM_GlossOffset);
 
-    float alpha = VAM_Color.a * diffuseTex.a;
+    // Without an alpha mask texture it is the diffuse map's own alpha that
+    // carries the shape, scaled by the material's own _Color alpha --
+    // Custom/Hair/MainAlternate* and Custom/Subsurface/AlphaMask* both do
+    // exactly this on the shipped side.
+    float alpha = VAM_Color.a * diffuseTex.a + VAM_AlphaAdjust;
 #ifdef VAM_HAS__AlphaTex
-    // _AlphaAdjust is a signed offset that shifts the whole alpha mask, so it
-    // is added rather than multiplied.
-    alpha += tex2D(_AlphaTex, i.uvMain).r + VAM_AlphaAdjust;
+    // A family that carries _AlphaTex takes *all* of its alpha from that map
+    // and premultiplies what it shades with it: the diffuse map's own alpha is
+    // not part of the sum.  _AlphaAdjust is a signed offset that shifts the
+    // whole mask, so it is added rather than multiplied.
+    alpha = saturate(VAM_SAMPLE_ALPHA(i.uvAlpha) + VAM_AlphaAdjust);
+    s.albedo *= alpha;
+    s.spec   *= alpha;
 #endif
     s.alpha = saturate(alpha);
     return s;
