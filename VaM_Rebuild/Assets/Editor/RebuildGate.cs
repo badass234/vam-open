@@ -2550,6 +2550,219 @@ public static class RebuildGate
         return report.ToString();
     }
 
+    /// <summary>
+    /// Every wrap in the scene, with the state that decides whether its garment reaches the screen.
+    ///
+    /// A DAZSkinWrap needs no renderer: it draws itself with Graphics.DrawMesh, so a MeshRenderer that
+    /// sits next to it switched off says nothing about the garment. What decides the picture is the
+    /// wrap's own draw flag, which of its two material lists the GPU draw takes - GPUmaterials is a copy
+    /// retargeted at the "*ComputeBuff" shader, and it stays all NULL until the mesh is uploaded - and
+    /// whether those copies ever received the textures the item assigned to the originals.
+    /// </summary>
+    private static string WrapReport()
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- skin wraps -----");
+
+        List<DAZSkinWrap> wraps = SceneObjects<DAZSkinWrap>();
+        report.AppendLine(string.Format("DAZSkinWrap components: {0}, staticDraw={1}", wraps.Count, DAZSkinWrap.staticDraw));
+        if (wraps.Count == 0)
+        {
+            return report.ToString();
+        }
+
+        foreach (DAZSkinWrap wrap in wraps)
+        {
+            report.AppendLine(string.Format(
+                "  {0}: enabled={1}, active={2}, draw={3}, gpuAutoSwap={4}, onlyUpdateEnabled={5}, suspend={6}, wrapping={7}, status={8}",
+                TransformPath(wrap.transform), wrap.enabled, wrap.gameObject.activeInHierarchy, wrap.draw,
+                wrap.GPUAutoSwapShader, wrap.onlyUpdateEnabledMaterials,
+                Flag(wrap, "_renderSuspend"), wrap.IsWrapping, wrap.WrapStatus));
+
+            report.AppendLine(string.Format(
+                "      skin={0}, dazMesh={1}, uvs={2}, wrapStore={3}, GPUSkinWrapper={4}, GPUMeshCompute={5}, useSimple={6}, mesh={7}",
+                wrap.skin == null ? "NULL" : TransformPath(wrap.skin.transform),
+                wrap.dazMesh == null ? "NULL" : "set",
+                wrap.dazMesh == null ? -1 : wrap.dazMesh.numUVVertices,
+                wrap.wrapStore == null ? "none" : "set",
+                Describe(wrap.GPUSkinWrapper), Describe(wrap.GPUMeshCompute), wrap.GPUuseSimpleMaterial,
+                MeshField(wrap, "mesh")));
+
+            report.AppendLine(string.Format(
+                "      buffers: drawVerts={0}, wrapVerts={1}, vertices1={2}, matrices={3}, delayedVerts={4}",
+                Flag(wrap, "_drawVerticesBuffer"), Flag(wrap, "_wrapVerticesBuffer"), Flag(wrap, "_verticesBuffer1"),
+                Flag(wrap, "_matricesBuffer"), Flag(wrap, "_delayedVertsBuffer")));
+
+            AppendWrapMaterials(report, "dazMesh.materials", wrap.dazMesh == null ? null : wrap.dazMesh.materials,
+                                wrap.dazMesh == null ? null : wrap.dazMesh.materialsEnabled);
+            AppendWrapMaterials(report, "GPUmaterials", wrap.GPUmaterials, wrap.materialsEnabled);
+        }
+
+        AppendWrapTextures(report, wraps);
+        return report.ToString();
+    }
+
+    /// <summary>
+    /// The distinct maps the wraps draw with, averaged on the GPU. A bundle texture is not readable
+    /// from script, so the average has to come from a blit - and it is the measurement that separates
+    /// "the reconstructed shader shades the garment wrong" from "the garment map arrived empty", which
+    /// look the same in a screenshot. The normal maps are in here as the control: an intact bump map
+    /// averages near (0.5, 0.5, 1).
+    /// </summary>
+    private static void AppendWrapTextures(StringBuilder report, List<DAZSkinWrap> wraps)
+    {
+        report.AppendLine("      maps the wraps draw with, averaged on the GPU:");
+        HashSet<int> seen = new HashSet<int>();
+        string[] properties = { "_MainTex", "_DetailMap", "_GlossTex", "_BumpMap" };
+        foreach (DAZSkinWrap wrap in wraps)
+        {
+            if (wrap.GPUmaterials == null)
+            {
+                continue;
+            }
+
+            foreach (Material material in wrap.GPUmaterials)
+            {
+                if (material == null)
+                {
+                    continue;
+                }
+
+                foreach (string property in properties)
+                {
+                    if (!material.HasProperty(property))
+                    {
+                        continue;
+                    }
+
+                    Texture texture = material.GetTexture(property);
+                    if (texture == null || !seen.Add(texture.GetInstanceID()))
+                    {
+                        continue;
+                    }
+
+                    report.AppendLine(string.Format("        {0} {1}: {2}",
+                                                    material.name, property, TextureAverage(texture)));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Draws a texture into a four by four target and reads it back, which is the only way to see the
+    /// pixels of a texture that was loaded from a bundle with `isReadable` off.
+    /// </summary>
+    private static string TextureAverage(Texture texture)
+    {
+        Texture2D plain = texture as Texture2D;
+        string head = string.Format("{0} {1}x{2} {3}", texture.name, texture.width, texture.height,
+                                    plain == null ? texture.GetType().Name : plain.format.ToString());
+        RenderTexture target = null;
+        RenderTexture previous = RenderTexture.active;
+        try
+        {
+            target = RenderTexture.GetTemporary(4, 4, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            Graphics.Blit(texture, target);
+            RenderTexture.active = target;
+            Texture2D read = new Texture2D(4, 4, TextureFormat.RGBA32, false);
+            read.ReadPixels(new Rect(0, 0, 4, 4), 0, 0);
+            read.Apply();
+
+            Color[] pixels = read.GetPixels();
+            float r = 0, g = 0, b = 0, a = 0;
+            foreach (Color pixel in pixels)
+            {
+                r += pixel.r;
+                g += pixel.g;
+                b += pixel.b;
+                a += pixel.a;
+            }
+
+            UnityEngine.Object.DestroyImmediate(read);
+            int count = pixels.Length;
+            return string.Format("{0} avg=({1:F2}, {2:F2}, {3:F2}, {4:F2})",
+                                 head, r / count, g / count, b / count, a / count);
+        }
+        catch (Exception error)
+        {
+            return head + " avg=unreadable (" + error.GetType().Name + ")";
+        }
+        finally
+        {
+            RenderTexture.active = previous;
+            if (target != null)
+            {
+                RenderTexture.ReleaseTemporary(target);
+            }
+        }
+    }
+
+    /// <summary>The vertex count behind a protected Mesh field, read without running the init that fills it.</summary>
+    private static string MeshField(object target, string name)
+    {
+        FieldInfo field = target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        Mesh mesh = field == null ? null : field.GetValue(target) as Mesh;
+        return mesh == null ? "NULL" : string.Format("{0} verts, \"{1}\"", mesh.vertexCount, mesh.name);
+    }
+
+    /// <summary>
+    /// The two material lists of a wrap side by side: the originals the item assigned to the mesh, and
+    /// the copies the GPU path draws. A copy taken before the item's textures arrived carries no
+    /// diffuse map, and that is what "the clothing is transparent and its colour is wrong" looks like
+    /// from the inside.
+    /// </summary>
+    private static void AppendWrapMaterials(StringBuilder report, string label, Material[] materials, bool[] enabled)
+    {
+        if (materials == null)
+        {
+            report.AppendLine(string.Format("      {0}=NULL", label));
+            return;
+        }
+
+        for (int i = 0; i < materials.Length; i++)
+        {
+            string slot = enabled == null || i >= enabled.Length ? "?" : (enabled[i] ? "on" : "off");
+            Material material = materials[i];
+            if (material == null)
+            {
+                report.AppendLine(string.Format("      {0}[{1}] slot={2}: NULL", label, i, slot));
+                continue;
+            }
+
+            Shader shader = material.shader;
+            report.AppendLine(string.Format(
+                "      {0}[{1}] slot={2}: {3} | shader={4} ({5}) | queue={6}, passes={7} | {8}",
+                label, i, slot, material.name,
+                shader == null ? NoShaderName : shader.name,
+                shader == null ? "none" : ShaderOrigin(shader),
+                material.renderQueue, material.passCount, WrapMaterialProperties(material)));
+        }
+    }
+
+    private static string WrapMaterialProperties(Material material)
+    {
+        StringBuilder text = new StringBuilder();
+        if (material.HasProperty("_Color"))
+        {
+            Color colour = material.GetColor("_Color");
+            text.Append(string.Format("_Color=({0:F2}, {1:F2}, {2:F2}, {3:F2})", colour.r, colour.g, colour.b, colour.a));
+        }
+
+        string[] textures = { "_MainTex", "_AlphaTex", "_SpecTex", "_GlossTex", "_BumpMap", "_DetailMap" };
+        foreach (string property in textures)
+        {
+            if (!material.HasProperty(property))
+            {
+                continue;
+            }
+
+            Texture texture = material.GetTexture(property);
+            text.Append(string.Format("; {0}={1}", property, texture == null ? "None" : texture.name));
+        }
+
+        return text.ToString();
+    }
+
     private static string SkinReport()
     {
         StringBuilder report = new StringBuilder();
@@ -2571,6 +2784,7 @@ public static class RebuildGate
 
             report.AppendLine(HairReport());
             report.AppendLine(DazMeshDrawReport());
+            report.AppendLine(WrapReport());
 
             List<DAZSkinV2> skins = SceneObjects<DAZSkinV2>();
             report.AppendLine(string.Format(
@@ -3009,6 +3223,7 @@ public static class RebuildGate
                 CountWhere(drawn, delegate (MaterialUse u) { return u.origin == "project"; })));
 
             AppendDrawMeshList(report, drawn);
+            AppendTransparencyProbe(report, materialsBySeverity);
             AppendShaderFamilies(report, byShader, true);
             AppendMaterialList(report, materialsBySeverity);
             AppendShaderFamilies(report, byShader, false);
@@ -3099,6 +3314,122 @@ public static class RebuildGate
                 report.AppendLine("      on " + owner);
             }
         }
+    }
+
+    /// <summary>
+    /// The names of the families that carry their own transparency, either through a `SeparateAlpha`
+    /// map or through a blend mode. Defect 4 is reported as "the clothing is transparent and its
+    /// colour is inverted", and both halves are decided by the state this probe prints: which shader
+    /// the material ended up on, and whether the alpha map the family reads is there at all.
+    /// </summary>
+    private static bool LooksTranslucent(string shaderName)
+    {
+        if (string.IsNullOrEmpty(shaderName) || shaderName == NoShaderName)
+        {
+            return false;
+        }
+
+        return shaderName.IndexOf("Transparent", StringComparison.OrdinalIgnoreCase) >= 0
+            || shaderName.IndexOf("SeparateAlpha", StringComparison.OrdinalIgnoreCase) >= 0
+            || shaderName.IndexOf("Cutout", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static void AppendTransparencyProbe(StringBuilder report, List<MaterialUse> uses)
+    {
+        report.AppendLine("materials on a transparent, cutout or separate-alpha family (defect 4 target):");
+        int shown = 0;
+        int withoutAlphaTex = 0;
+        foreach (MaterialUse use in uses)
+        {
+            if (!LooksTranslucent(use.shaderName))
+            {
+                continue;
+            }
+
+            Shader swap = MeshVR.VamShaderProvider.FindComputeBuff(use.shaderName);
+            report.AppendLine(string.Format(
+                "  [{0}] {1} : shader {2} | origin={3} | swap={4} | queue={5} | passes={6}",
+                ShaderRankName(use), use.material.name, use.shaderName, use.origin,
+                swap == null ? "none" : swap.name, use.material.renderQueue, use.material.passCount));
+            foreach (string owner in use.owners)
+            {
+                report.AppendLine("      on " + owner);
+            }
+
+            Shader shader = use.material.shader;
+            if (shader == null)
+            {
+                report.AppendLine("      no shader object at all - Unity's fallback draws this material");
+                shown++;
+                continue;
+            }
+
+            int properties = ShaderUtil.GetPropertyCount(shader);
+            string alphaTex = null;
+            for (int i = 0; i < properties; i++)
+            {
+                string property = ShaderUtil.GetPropertyName(shader, i);
+                ShaderUtil.ShaderPropertyType type = ShaderUtil.GetPropertyType(shader, i);
+                if (type == ShaderUtil.ShaderPropertyType.TexEnv)
+                {
+                    Texture texture = use.material.GetTexture(property);
+                    if (property == "_AlphaTex")
+                    {
+                        alphaTex = texture == null ? "None" : texture.name;
+                    }
+
+                    report.AppendLine(string.Format("      map {0}: {1}", property,
+                        texture == null
+                            ? "None"
+                            : string.Format("{0} ({1}x{2}, {3})", texture.name, texture.width,
+                                texture.height, texture.GetType().Name)));
+                }
+                else if (type == ShaderUtil.ShaderPropertyType.Color)
+                {
+                    Color color = use.material.GetColor(property);
+                    report.AppendLine(string.Format("      {0} = {1}", property,
+                        Components(color.r, color.g, color.b, color.a)));
+                }
+                else if (type == ShaderUtil.ShaderPropertyType.Range
+                    || type == ShaderUtil.ShaderPropertyType.Float)
+                {
+                    report.AppendLine(string.Format("      {0} = {1}", property,
+                        use.material.GetFloat(property).ToString("F4", CultureInfo.InvariantCulture)));
+                }
+                else
+                {
+                    Vector4 vector = use.material.GetVector(property);
+                    report.AppendLine(string.Format("      {0} = {1}", property,
+                        Components(vector.x, vector.y, vector.z, vector.w)));
+                }
+            }
+
+            if (alphaTex == null)
+            {
+                report.AppendLine("      this shader has no _AlphaTex property");
+            }
+            else if (alphaTex == "None")
+            {
+                withoutAlphaTex++;
+                report.AppendLine(
+                    "      _AlphaTex is None - a family that reads its alpha from a map draws nothing here");
+            }
+
+            shown++;
+            if (shown >= 60)
+            {
+                report.AppendLine(string.Format("  ... {0} more", uses.Count - shown));
+                break;
+            }
+        }
+
+        report.AppendLine(string.Format(
+            "  {0} material(s) probed, {1} of them with an empty _AlphaTex", shown, withoutAlphaTex));
+    }
+
+    private static string Components(float a, float b, float c, float d)
+    {
+        return string.Format(CultureInfo.InvariantCulture, "({0:F4}, {1:F4}, {2:F4}, {3:F4})", a, b, c, d);
     }
 
     private static int ShaderRank(MaterialUse use)
