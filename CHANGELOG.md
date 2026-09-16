@@ -8,11 +8,25 @@ meant to be read as stable.
 
 ## Unreleased
 
-The eye and the lashes now draw with the original's own masks. Both were the shared include shading a
-surface the original had a small dedicated program for.
+The hair is transcribed, and one pass of every hair family turned out not to shade at all. The eye and
+the lashes had already started drawing with the original's own masks; the hair carries the same kind of
+mask pass, and it is now read from each pass's own fragment rather than from a name table.
 
 ### What works
 
+- **Hair** - the 14 `Custom/Hair/*ComputeBuff` families are reconstructed like the body's. They were
+  held back for two rounds on the suspicion of being a second shading model, and they are not: the
+  fragment globals they add are the four `_uvXMin`/`_uvXMax`/`_uvYMin`/`_uvYMax` window uniforms and
+  the `_Cutoff1`/`_Cutoff2`/`_Pass1Cutoff` names, their buffers are the body's minus `tangents`, and
+  their light modes are the body's three. Four mechanisms carry the difference - the uv window, the
+  per-pass vertex normal offset, `VAM_NO_TANGENTS`, and the cutoff - and the two thicken families use
+  the first two.
+- **The hair's under-layer pass** - pass 0 of `MainComputeBuff`, `MainThickenComputeBuff` and
+  `MainThickenSeparateAlphaComputeBuff` writes black and keeps the texel's alpha; it lays a dark layer
+  down for a later pass to draw over. We were emitting the shared shading model for it, so it wrote a
+  second fully lit layer. The render state cannot reveal this - every hair pass serialises
+  `colMask = 14`, RGB masked off, so the shipped `mov o0.xyz, l(0,0,0,0)` is dropped and the pass is
+  visible only as coverage. It is found by what the fragment reads instead.
 - **Lashes** - the cards render as strands instead of solid dark planes. The alpha was built from
   `_MainTex.a`, which these materials stub to white, and the mask was added on top of it, so
   `_AlphaTex` could never win; behind that the mask was read from `.r` instead of `.a` and sampled on
@@ -20,13 +34,13 @@ surface the original had a small dedicated program for.
   mask's own `_AlphaTex_ST`, with the colour premultiplied before the cutoff - and all 27 families
   that declare `_AlphaTex` read `.a` with `_AlphaAdjust` in an add, so it is family behaviour rather
   than a lash quirk.
-- **Eyes** - `Custom/Subsurface/AlphaMaskComputeBuff` no longer shades. Its shipped fragment is three
-  instructions: sample `_MainTex`, `mad_sat` the alpha against `_Color.a` and `_AlphaAdjust`, write
-  black to RGB. Ours ran the full shading model through the first pass's `SrcAlpha` blend and then
-  added a second lit colour under `One One`, which is why the eye read over-bright. Nothing in the
-  contract distinguishes the family - its three properties are as few as a diffuse IBL family's, and
-  its render state is an ordinary transparent pair - so the entry point is chosen by name, as the
-  cutoffs are.
+- **Eyes** - the same rule now covers `Custom/Subsurface/AlphaMaskComputeBuff`, which the previous
+  round had pinned by name. Its shipped fragment is three instructions: sample `_MainTex`, `mad_sat`
+  the alpha against `_Color.a` and `_AlphaAdjust`, write black to RGB. Ours ran the full shading model
+  through the first pass's `SrcAlpha` blend and then added a second lit colour under `One One`, which
+  is why the eye read over-bright. A pass is a mask when its `LightMode` is a lit one and its
+  `$Globals` are a subset of `{_Color, _AlphaAdjust}`; over the 136 emitted passes that selects exactly
+  5, all of them masks, against a nearest non-match of 29 globals.
 - **Clipping** - which passes discard is now read from the shipped programs instead of the render
   state. The old zWrite-and-opaque rule had no false positives but missed 10 passes, one of them the
   lash's own base pass; widening it leaves 4, and the states that differ only in the original source
@@ -34,9 +48,12 @@ surface the original had a small dedicated program for.
 
 ### Measurements re-run
 
-- `python tools\check_shaders.py` - `3003/3003 programs compiled, 0 failed`, 43 shaders, 113 passes,
-  15 of them tessellated. That is 20 below 0.1.1-alpha's number because the eye family's two passes
-  are no longer compiled as the shared fragment as well as their own entry point.
+- `scripts\Invoke-CompileGate.ps1` - `----- RebuildGate OK -----`, 0 errors, 0 unique errors,
+  `Assembly-CSharp.dll` 6 163 968 B.
+- `python tools\check_shaders.py` - `4414/4414 programs compiled, 0 failed`, 57 shaders, 168 passes,
+  15 of them tessellated. The hair is +14 shaders and +55 passes, and three of those passes now
+  compile as `VamFragmentMask` once per keyword set instead of twice as `VamFragment`/`VamFragmentAdd`,
+  which is where 4444 - 30 comes from.
 - `python tools\verify_twins.py` - 112 pixel passes of the 14 twin families, all the same instruction
   stream up to renaming, 0 differing (`python tools\verify_twins.py --pairs-per-family 0` covers 580).
 - The run's own report now carries two measurements defect 1 needed and did not have: the GPU average
@@ -61,9 +78,10 @@ With the shaders already refuted, the skin now has no remaining suspect. What th
 where the brightness comes from: the legs are the only band with no blown pixels and the only band
 whose colour is not clipped, and above them the white rises with height (hip 6.9 %, torso 11.2 %, head
 13.8 %) - additive, and not something a wrong map or a wrong tangent frame can do. The hair is the
-part of that which is not in the project: `Custom/Hair/MainSeparateAlphaLayer1` resolves as
-`origin=bundle only (not in project)`, since `New-VaMShaders.py` still lists `Custom/Hair/` and
-`Marmoset/` as untranscribed. Transcribing them is what a standalone build needs next.
+part of that which is not in the project: `Custom/Hair/MainSeparateAlphaLayer1` resolved as
+`origin=bundle only (not in project)` on that run, since `New-VaMShaders.py` then listed `Custom/Hair/`
+and `Marmoset/` as untranscribed. The hair is transcribed as of this entry, so that reading no longer
+holds and the over-brightness stands against the game's own hair shader rather than ours.
 
 ### Verified by hand
 

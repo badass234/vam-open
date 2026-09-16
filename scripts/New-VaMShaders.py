@@ -98,6 +98,11 @@ SKIP_LIGHTMODES = {"META", "DEFERRED", "PREPASSBASE", "PREPASSFINAL"}
 # check here, so that a plain shader of a *different* model -- one with no
 # compute-buffer twin at all, like Custom/Subsurface/EmissiveGlow -- is left
 # alone instead of being quietly shaded by the wrong library.
+#
+# The hair's plain twins are not listed: Custom/Hair/* ships no contract of its
+# own, so there is nothing here to reconstruct them from.  Nothing asks for them
+# either -- every lookup goes through VamShaderProvider.FindComputeBuff, which
+# appends the suffix -- and the game still resolves them from its own bundle.
 MESH_FAMILY_PREFIXES = ("Custom/Subsurface/",)
 
 # Declared by Unity's own include files, so the generated shader must not
@@ -106,10 +111,16 @@ UNITY_DECLARED = {"_SpecColor"}
 
 # Shading models this project has no reconstruction of.  Their "*ComputeBuff"
 # variants belong to the family's own source, not to the body one, so shading
-# them with VamGpuSkinning.cginc would render hair and the whole Marmoset IBL
-# set with the skin library.  They are left pending instead: the game ships them
-# verbatim in the z_sha bundle, and VamShaderProvider reads them from there.
-UNTRANSCRIBED_FAMILIES = ("Custom/Hair/", "Marmoset/")
+# them with VamGpuSkinning.cginc would render the whole Marmoset IBL set with
+# the skin library.  They are left pending instead: the game ships them verbatim
+# in the z_sha bundle, and VamShaderProvider reads them from there.
+#
+# The hair used to be listed here too.  It is not a different model: the same
+# library shades it, through the three knobs the hair alone declares -- the uv
+# window, the per-pass vertex offset a thicken pass adds, and the cutoffs under
+# its own names (_Cutoff1/_Cutoff2) -- all of which VamGpuSkinning.cginc now
+# carries (see docs/shader-reconstruction.md).
+UNTRANSCRIBED_FAMILIES = ("Marmoset/",)
 
 def num(v: float) -> str:
     """Shortest ShaderLab spelling of a contract default."""
@@ -194,77 +205,110 @@ def render_state(pas: dict) -> list:
     return out
 
 
-# Passes whose original program discards although the render state says the pass
-# neither writes depth nor is opaque.  The original shader sources were written
-# per family, and these cut their alpha in a pass that a state-only reading
-# would draw with no cutoff at all.  They were read out of the shipped programs
-# (see docs/Development.md); no state tells them apart from the hair layer-0
-# passes, which must not clip.  Keyed by shader name and the contract's own pass
-# index, so which ones are reconstructable does not change the answer.
-CUTOFF_IN_TRANSPARENT_PASS = {
-    "Custom/Hair/ScalpComputeBuff": {0},
-    "Custom/Hair/ScalpSeparateAlphaComputeBuff": {0},
-    "Custom/Hair/MainSeparateAlphaLayerScalpComputeBuff": {1},
-    "Custom/Hair/MainAlternateComputeBuff": {3},
-    "Custom/Subsurface/TransparentCutoutSeparateAlpha": {0},
-    "Custom/Subsurface/TransparentCutoutSeparateAlphaComputeBuff": {0},
-    "Custom/Subsurface/TransparentGlossNoCullComputeBuff": {0},
-}
+# The four names a VaM shader may give its alpha cutoff to.  A two-layer family
+# gives its second opaque layer _Pass1Cutoff rather than _Cutoff, and
+# Custom/Hair/MainAlternate gives each of its two layers _Cutoff1 and _Cutoff2.
+CUTOFF_NAMES = ("_Cutoff", "_Pass1Cutoff", "_Cutoff1", "_Cutoff2")
 
-# Shaders whose original fragment program is nothing but an alpha-mask write: it
-# samples _MainTex, keeps the texel's alpha and writes zero to every colour
-# channel.  They carry none of the shading inputs the shared model reads, so the
-# common fragment has nothing to work with and must not be used -- but the
-# property list alone cannot tell them from the diffuse IBL families, which are
-# equally short of inputs, and the render state cannot tell them from any other
-# transparent pass.  Read out of the shipped programs (see docs/verification.md);
-# the value is the set of pass indices whose fragment samples _MainTex at a
-# constant uv rather than at the interpolated one.
-MASK_ONLY_FAMILIES = {
+
+def stage_globals(pas: dict, stage: str) -> set:
+    """The $Globals names a pass's stage actually reads.
+
+    A vec4 property owns a constant-buffer slot whether or not the program loads
+    it, so neither the property list nor the render state can say which of a
+    shader's several cutoffs one pass tests.  The reflection can: a slot the
+    program never reads is not listed.  Unity compiles one program per keyword
+    set and per stage; the stereo variants are dropped because they read the same
+    slots as the mono ones.
+    """
+    found = set()
+    for variant in pas["stages"].get(stage) or []:
+        if "STEREO" in "".join(variant.get("keywords", [])):
+            continue
+        for buffer in variant.get("constant_buffers", []):
+            if buffer["name"] == "$Globals":
+                found |= {v["name"] for v in buffer["vectors"]}
+    return found
+
+
+def cutoff_for(pas: dict):
+    """Which alpha cutoff this pass tests against, or None if it tests none.
+
+    Read off the pass's own fragment program rather than inferred from its
+    position.  Inference gets the common case right but not the interesting
+    ones: the layer-0 passes of two-layer families are transparent, so counting
+    opaque forward-base passes to find the second layer misses it and hands both
+    of Custom/Hair/MainSeparateAlphaLayer3's layers _Cutoff, and MainAlternate's
+    second layer comes out as _Cutoff1.  Reading the program has no such
+    counterexample -- no pass in artifacts/shader-blobs loads more than one of
+    the four names, and the keyword variants of a pass agree on which one.
+    """
+    cutoffs = sorted(stage_globals(pas, "progFragment") & set(CUTOFF_NAMES))
+    if len(cutoffs) > 1:
+        raise ValueError(f"pass {pass_tags(pas).get('LIGHTMODE') or '<untagged>'} "
+                         f"reads more than one cutoff: {cutoffs}")
+    return cutoffs[0] if cutoffs else None
+
+
+UV_WINDOW_NAMES = ("_uvXMin", "_uvXMax", "_uvYMin", "_uvYMax")
+
+# The maps this project transforms per map, i.e. the ones a uv window cannot
+# serve: it hands every map the same uv.
+PER_MAP_TRANSFORMED = ("_BumpMap", "_DecalTex")
+
+
+def uv_window(props: list) -> bool:
+    """Whether this shader samples every one of its maps through a uv window.
+
+    Five of the hair families declare _uvXMin/_uvXMax/_uvYMin/_uvYMax and have
+    their fragment program remap the single uv their vertex stage interpolated --
+    which their vertex stage produced with _MainTex_ST and, unlike the other
+    families, with no other map's transform.  The reconstruction applies that
+    remap in the vertex stage instead (an affine remap and the interpolation
+    commute), so it is only equivalent while the uv the original interpolates is
+    _MainTex's and the shader has no second transformed map.
+    """
+    declared = {p["name"] for p in props}
+    present = [n for n in UV_WINDOW_NAMES if n in declared]
+    if not present:
+        return False
+    if len(present) != len(UV_WINDOW_NAMES):
+        raise ValueError(f"declares {sorted(present)} and not all of "
+                         f"{list(UV_WINDOW_NAMES)}; the window needs all four")
+    extra = sorted(declared & set(PER_MAP_TRANSFORMED))
+    if extra:
+        raise ValueError(f"declares a uv window and {extra}; the window gives every "
+                         "map the same uv and cannot transform others")
+    return True
+
+
+# Not every pass shades.  A mask pass's original fragment program samples
+# _MainTex, keeps the texel's alpha, writes zero to every colour channel and
+# reads nothing else, so the shared model has no input to work with and must not
+# be used for it -- but the property list cannot tell such a pass from the
+# diffuse IBL families, which are equally short of *properties*, and the render
+# state cannot tell it from any other transparent pass.  What can tell it apart
+# is what its own fragment program reads: a program that shades reads many
+# constants, a mask reads at most the colour tint and the alpha adjustment.  The
+# blend that hides the mask (its zeroes land, attenuated by the alpha) is why
+# this has to be measured rather than guessed; see docs/verification.md.
+MASK_LIGHTMODES = ("FORWARDBASE", "FORWARDADD")
+MASK_ONLY_GLOBALS = {"_Color", "_AlphaAdjust"}
+
+# One mask pass of one family samples _MainTex at a constant uv rather than at
+# the interpolated one, which only its disassembly shows.  Read out of the
+# shipped programs (see docs/verification.md); the value is the set of pass
+# indices that do it.
+MASK_CONSTANT_UV = {
     "Custom/Subsurface/AlphaMaskComputeBuff": {1},
 }
 
 
-def cutoff_order(opaque_fb_index: int):
-    """The cutoffs to look for, most likely first, for the n-th opaque pass.
-
-    A two-layer shader tests its second opaque layer against _Pass1Cutoff rather
-    than _Cutoff, so the order flips once an opaque forward-base pass has been
-    seen.
-    """
-    if opaque_fb_index == 0:
-        return ("_Cutoff", "_Pass1Cutoff", "_Cutoff1", "_Cutoff2")
-    return ("_Pass1Cutoff", "_Cutoff", "_Cutoff2", "_Cutoff1")
-
-
-def cutoff_for(pas: dict, lightmode: str, names: set, opaque_fb_index: int,
-               shader_name: str, pass_index: int):
-    """Which alpha cutoff this pass tests against, if any.
-
-    Two things decide it.  The property list says whether the pass has a cutoff
-    at all, and -- for a shader with two opaque layers -- which of the two it
-    is: the second layer's pass carries _Pass1Cutoff, so the index of the opaque
-    forward-base pass picks the order to look in.  (_Cutoff1/_Cutoff2 are the
-    same idea under the names Custom/Hair/MainAlternate* uses.)
-
-    Whether the pass tests it is a property of the original source, not of the
-    render state: the shipped programs cut their alpha in some transparent
-    passes and not in others that look identical from the state alone.  Reading
-    the state gets every pass that draws depth or that adds light right; the
-    transparent passes it cannot call are listed in CUTOFF_IN_TRANSPARENT_PASS.
-    """
-    if not {"_Cutoff", "_Pass1Cutoff", "_Cutoff1", "_Cutoff2"} & names:
-        return None
-    cutoff = next((c for c in cutoff_order(opaque_fb_index) if c in names), None)
-    if cutoff is None:
-        return None
-    if lightmode == "SHADOWCASTER":
-        return cutoff
-    if pass_index in CUTOFF_IN_TRANSPARENT_PASS.get(shader_name, ()):
-        return cutoff
-    if pas["state"]["zWrite"]["val"] or lightmode == "FORWARDADD":
-        return cutoff
-    return None
+def mask_only(pas: dict) -> bool:
+    """Whether this pass's original fragment is the alpha-mask program."""
+    if pass_lightmode(pas) not in MASK_LIGHTMODES:
+        return False
+    return stage_globals(pas, "progFragment") <= MASK_ONLY_GLOBALS
 
 
 def pass_tessellates(pas: dict) -> bool:
@@ -307,8 +351,8 @@ def entry_points(lightmode: str, tess: bool = False):
     return (tess_vert, frag, keywords, tess_domain)
 
 
-def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
-              family: str, shader_name: str, pass_index: int) -> str:
+def emit_pass(pas: dict, lightmode: str, props: list, family: str,
+              shader_name: str, pass_index: int) -> str:
     bufs = pass_buffers(pas)
     if family == "skin" and not {"verts", "normals"} <= bufs:
         raise ValueError(f"pass {lightmode or '<untagged>'} binds {sorted(bufs)}, "
@@ -339,14 +383,44 @@ def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
     elif "tangents" not in bufs:
         body.append("// bound without a tangent buffer (the hair and eye meshes)")
         body.append("#define VAM_NO_TANGENTS")
-    cutoff = cutoff_for(pas, lightmode, names, opaque_fb_index, shader_name, pass_index)
+    cutoff = cutoff_for(pas)
     if cutoff:
         body.append("#define VAM_PASS_CUTOFF " + cutoff)
-    mask_uv = MASK_ONLY_FAMILIES.get(shader_name)
-    if mask_uv is not None:
+    # Two hair families thicken the strands before they are lit: the vertex stage
+    # moves each vertex along its own normal, in object space and before the
+    # object transform, which is why it is a vertex-stage term and not a
+    # scale on the position.  Only the passes whose vertex program reads the
+    # offset get it, and each of the two families binds it in three of its
+    # passes -- forward, add and shadow of the layer it thickens -- and not in
+    # the others (see docs/shader-reconstruction.md).
+    if "_VertexNormalOffset" in stage_globals(pas, "progVertex"):
+        if "_VertexNormalOffset" not in names:
+            raise ValueError("the vertex program offsets along _VertexNormalOffset "
+                             "but the shader declares no such property")
+        body.append("#define VAM_PASS_VERTEX_OFFSET")
+    if uv_window(props):
+        # One uv, remapped by the window, is what every map samples -- so the
+        # original's vertex stage must transform _MainTex and nothing else.
+        vertex_st = sorted(n for n in stage_globals(pas, "progVertex") if n.endswith("_ST"))
+        if vertex_st != ["_MainTex_ST"]:
+            raise ValueError(f"pass {lightmode or '<untagged>'} lists a uv window but its "
+                             f"vertex program transforms {vertex_st}; the reconstruction "
+                             "windows _MainTex's uv and samples every map there")
+        body.append("// every map samples one windowed uv (see VAM_UV_WINDOW)")
+        body.append("#define VAM_UV_WINDOWED")
+    if mask_only(pas):
+        # The alpha a mask pass keeps is its own decision: most multiply the
+        # texel by the colour tint and add _AlphaAdjust, the separately-alpha
+        # ones keep the texel untouched.  Both are read from the program.
+        body.append("// alpha mask only: no shading inputs (see MASK_ONLY_GLOBALS)")
         body.append("#define VAM_MASK_ONLY")
-        if pass_index in mask_uv:
+        if pass_index in MASK_CONSTANT_UV.get(shader_name, ()):
             body.append("#define VAM_MASK_CONSTANT_UV float2(1.0, 0.0)")
+        frag_globals = stage_globals(pas, "progFragment")
+        if "_Color" in frag_globals:
+            body.append("#define VAM_MASK_COLOR")
+        if "_AlphaAdjust" in frag_globals:
+            body.append("#define VAM_MASK_ADJUST")
         frag = "VamFragmentMask"
     body.append(f"#pragma vertex {vert}")
     if tess:
@@ -384,12 +458,6 @@ BANNER = "// " + "-" * 78
 # the subdivision does not depend on the light.  Its control point program is the
 # vertex stage, so it is named by #pragma vertex.
 TESS_HULL = "VamTessHull"
-
-
-def is_opaque_pass(pas: dict) -> bool:
-    blend = pas["state"]["rtBlend0"]
-    return (bool(pas["state"]["zWrite"]["val"])
-            and (int(blend["srcBlend"]["val"]), int(blend["destBlend"]["val"])) == (1, 0))
 
 
 def classify(name: str, sub: dict, names: set):
@@ -454,7 +522,6 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
 
     passes = 0
     tess_passes = 0
-    opaque_fb = 0
     for pass_index, pas in enumerate(sub["passes"]):
         lm = pass_lightmode(pas)
         if lm in SKIP_LIGHTMODES:
@@ -467,13 +534,11 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
         if not skin and bufs:
             skipped.append((name, lm or "<untagged>", "pass reads the compute buffers"))
             continue
-        lines.append(emit_pass(pas, lm, props, opaque_fb, family, name, pass_index))
+        lines.append(emit_pass(pas, lm, props, family, name, pass_index))
         lines.append("")
         passes += 1
         if pass_tessellates(pas):
             tess_passes += 1
-        if lm == "FORWARDBASE" and is_opaque_pass(pas):
-            opaque_fb += 1
     lines.append("\t}")
     if contract.get("fallback"):
         lines.append(f'\tFallback "{contract["fallback"]}"')

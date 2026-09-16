@@ -287,6 +287,47 @@ float4 _SH6;  float4 _SH7;  float4 _SH8;
     #define VAM_SAMPLE_IBL(dir, mip) float4(0,0,0,1)
 #endif
 
+// UV window.  A hair layer declares a window as four scalars and its pixel
+// program remaps the uv it interpolates before *every* sample -- the first two
+// instructions of the forward-base fragment of
+// Custom/Hair/MainSeparateAlphaLayer1ComputeBuff:
+//
+//     uv = (uvMax - uvMin) * uv + uvMin
+//
+// with uvMin = (_uvXMin, _uvYMin) and uvMax = (_uvXMax, _uvYMax).  The uv it
+// remaps is the vertex stage's own single transformed uv: that stage reads the
+// mesh uv and _MainTex_ST and no other <map>_ST (`mad o1.xy, v2.xyxx,
+// cb0[97].xyxx, cb0[97].zwzz`), and the pixel stage samples _MainTex, _SpecTex,
+// _GlossTex and _AlphaTex all at the remapped value.  So for these families the
+// window is composed on top of the diffuse transform and VamPack hands the same
+// uv to every map, which is why the generator sets VAM_UV_WINDOWED only for the
+// five hair layers that declare the knobs and for the passes whose vertex
+// program transforms _MainTex alone.  Every other family interpolates one uv per
+// map and never reaches these macros.
+#ifdef VAM_UV_WINDOWED
+    #define VAM_UV_WINDOW(uv) ((uv) * float2(_uvXMax - _uvXMin, _uvYMax - _uvYMin) \
+                                + float2(_uvXMin, _uvYMin))
+#else
+    #define VAM_UV_WINDOW(uv) (uv)
+#endif
+
+// Object-space offset along the vertex normal.  A hair style's thicken pass
+// widens a card into the strand it draws, and the shipped vertex program adds
+// the offset to the compute buffer's own vertex before the object transform:
+//
+//     mad r0.xyz, r1.xyzx, cb0[72].xxxx, r0.xyzx   // verts + normals * offset
+//
+// It is a property of the pass, not of the shader: the thicken family's forward,
+// add and shadow programs read it and its depth and second-layer programs do
+// not, so the generator defines VAM_PASS_VERTEX_OFFSET for exactly the passes
+// whose vertex program binds the uniform.  Zero leaves the vertex where the
+// buffer put it, which is what every other pass wants.
+#ifdef VAM_PASS_VERTEX_OFFSET
+    #define VAM_VertexNormalOffset _VertexNormalOffset
+#else
+    #define VAM_VertexNormalOffset 0.0
+#endif
+
 // -----------------------------------------------------------------------------
 //  Vertex stage
 //
@@ -365,15 +406,17 @@ vam_skinned VamSkin(vam_appdata v) {
     // translation column scaled by POSITION.w -- the same per-vertex offset
     // term the compute-buffer path adds to the buffer's world position.  For
     // the w=1 meshes Unity actually feeds, both are the same point.
-    s.pos = mul(unity_ObjectToWorld, v.vertex).xyz;
+    s.pos = mul(unity_ObjectToWorld, v.vertex + float4(v.normal * VAM_VertexNormalOffset, 0)).xyz;
     nrmWS = UnityObjectToWorldNormal(v.normal);
     tanWS = UnityObjectToWorldDir(v.tangent.xyz);
     tanSign = v.tangent.w * unity_WorldTransformParams.w;
 #else
     // World-space position straight out of the compute buffer, plus the
     // per-vertex object-space offset the mesh's POSITION.w asks for.  The
-    // original adds it scaled by the translation column of the object matrix.
-    float3 posOS = verts[v.vid] + unity_ObjectToWorld._m03_m13_m23 * v.vertex.w;
+    // original adds it scaled by the translation column of the object matrix,
+    // and pushes the vertex along its own normal first if the family asks for it.
+    float3 posOS = verts[v.vid] + normals[v.vid] * VAM_VertexNormalOffset
+                 + unity_ObjectToWorld._m03_m13_m23 * v.vertex.w;
     float4 posWS = mul(unity_ObjectToWorld, float4(posOS, 1.0));
     s.pos = posWS.xyz;
 
@@ -414,12 +457,27 @@ vam_v2f VamPack(float3 posWS, float3 nrmWS, float3 tanWS, float tanSign, float2 
     o.tanWS   = tanWS;
     o.bitWS   = cross(nrmWS, tanWS) * tanSign;
 
+    // A family with a uv window samples every one of its maps at a single uv --
+    // the diffuse transform, then the window (see VAM_UV_WINDOW) -- so that uv
+    // is what all six interpolators carry.  Every other family interpolates one
+    // transformed uv per map.  Remapping here rather than in the pixel stage is
+    // the same arithmetic: an affine remap and the interpolation commute.
+#ifdef VAM_UV_WINDOWED
+    float2 uvSampled = VAM_UV_WINDOW(VAM_UV_MAIN(uv));
+    o.uvMain  = uvSampled;
+    o.uvSpec  = uvSampled;
+    o.uvGloss = uvSampled;
+    o.uvBump  = uvSampled;
+    o.uvDecal = uvSampled;
+    o.uvAlpha = uvSampled;
+#else
     o.uvMain  = VAM_UV_MAIN(uv);
     o.uvSpec  = VAM_UV_SPEC(uv);
     o.uvGloss = VAM_UV_GLOSS(uv);
     o.uvBump  = VAM_UV_BUMP(uv);
     o.uvDecal = VAM_UV_DECAL(uv);
     o.uvAlpha = VAM_UV_ALPHA(uv);
+#endif
 
     // Light coordinates are not transferred: AutoLight's 5.6+ helpers derive
     // them in the fragment shader from the world position, which is exactly
@@ -674,18 +732,21 @@ fixed4 VamFragmentAdd(vam_v2f i) : SV_Target {
 // -----------------------------------------------------------------------------
 //  Mask-only passes
 //
-//  Not every family shades.  The alpha mask family has no lighting at all: its
-//  shipped fragment samples _MainTex, keeps the texel's alpha and writes zero to
-//  every colour channel.  The pass exists to fill the framebuffer's alpha, so the
-//  colour it would otherwise write is not discarded -- it lands, through the
-//  pass's own blend.  Shading it instead is what turns this family's material
-//  into a glowing surface.
+//  Not every pass shades.  A mask pass has no lighting at all: its shipped
+//  fragment samples _MainTex, keeps the texel's alpha and writes zero to every
+//  colour channel.  The pass exists to fill the framebuffer's alpha -- or, in the
+//  hair, to lay a dark layer down before the lit one draws over it -- so the
+//  colour it would otherwise write is not discarded, it lands through the pass's
+//  own blend.  Shading it instead is what turns the mask family's material into a
+//  glowing surface and brightens the hair.
 //
-//  Which pass reads the texture where is the shipped program's decision: its base
-//  pass samples at the interpolated uv, its additive pass at a constant one, which
-//  the generator passes in VAM_MASK_CONSTANT_UV.  Both keep the shipped alpha
-//  formula, saturate(_MainTex.a * _Color.a + _AlphaAdjust), the same one the other
-//  _AlphaAdjust families use (see VAM_SAMPLE_ALPHA above).
+//  Which pass reads the texture where, and which terms its alpha keeps, are the
+//  shipped program's decisions: it may sample at the interpolated uv or at a
+//  constant one (VAM_MASK_CONSTANT_UV), and it may or may not multiply the texel
+//  by the colour tint (VAM_MASK_COLOR) or add _AlphaAdjust (VAM_MASK_ADJUST) --
+//  the separately-alpha hair keeps the texel untouched.  Where a term is present
+//  it is the same one the other _AlphaAdjust families use (see
+//  VAM_SAMPLE_ALPHA above).
 // -----------------------------------------------------------------------------
 #ifdef VAM_MASK_ONLY
 #ifndef VAM_MASK_CONSTANT_UV
@@ -695,9 +756,14 @@ fixed4 VamFragmentAdd(vam_v2f i) : SV_Target {
 #endif
 
 fixed4 VamFragmentMask(vam_v2f i) : SV_Target {
-    float alpha = saturate(tex2D(_MainTex, VAM_MASK_UV(i)).a * VAM_Color.a
-                           + VAM_AlphaAdjust);
-    return fixed4(0.0, 0.0, 0.0, alpha);
+    float alpha = tex2D(_MainTex, VAM_MASK_UV(i)).a;
+#ifdef VAM_MASK_COLOR
+    alpha *= VAM_Color.a;
+#endif
+#ifdef VAM_MASK_ADJUST
+    alpha += VAM_AlphaAdjust;
+#endif
+    return fixed4(0.0, 0.0, 0.0, saturate(alpha));
 }
 #endif
 

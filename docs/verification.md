@@ -23,8 +23,8 @@ group any errors by category.
 
 The runner repairs the one recoverable failure, and repeats the run once; see *When a gate lies* below.
 
-*Current state*: `----- RebuildGate OK -----`, 0 errors, `Assembly-CSharp.dll` 6 159 360 B,
-`VaMUnityScript.dll` 16 896 B, `Assembly-CSharp-Editor.dll` present.
+*Current state*: `----- RebuildGate OK -----`, 0 errors, 0 unique errors, `Assembly-CSharp.dll`
+6 163 968 B, `VaMUnityScript.dll` 16 896 B, `Assembly-CSharp-Editor.dll` present.
 
 ### 2. Scene integrity - `scripts\Invoke-SmokeTest.ps1 -Method InspectScene`
 
@@ -371,10 +371,14 @@ character: the body skin sits on **our** reconstructions while the hair and eye-
 on **bundle copies the project never defined**. The cloth only *names* a bundle family - it is drawn
 through our reconstructed `*ComputeBuff` twin, and that is where its defect turned out to live.
 
+The census predates the hair transcription, so its third column records where a family came from at
+the time of the run, not the present state; the hair has since moved to the project column, which is
+why the fixes below are in our generator rather than in a census entry.
+
 | Population | Families (slots) | Origin |
 |---|---|---|
 | body skin | `GlossNMTessMappedFixedComputeBuff` (14), `GlossNMCullComputeBuff` (26), `CullComputeBuff` (8), `GlossCullComputeBuff` (7), `AlphaMaskComputeBuff` (2), `Transparent{Gloss,}ComputeBuff` (3) | project |
-| hair item | `Custom/Hair/MainSeparateAlphaLayer1` (7), `..Layer2` (6), `..Layer3` (6) | bundle only |
+| hair item | `Custom/Hair/MainSeparateAlphaLayer1` (7), `..Layer2` (6), `..Layer3` (6) | bundle only then, **project** now |
 | cloth | `Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha` (10), swapped to our `…ComputeBuff` twin at draw time | bundle, drawn by project - see defect 4 |
 | eye reflection | `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff` (2, 6 passes) | bundle only |
 
@@ -526,10 +530,13 @@ submesh. The two things that grow with height are the garments (a near-white top
 [bundle] Scalp-1 : shader Custom/Hair/MainSeparateAlphaLayer1 | origin=bundle only (not in project) | passes=3
 ```
 
-`New-VaMShaders.py` carries `UNTRANSCRIBED_FAMILIES = ("Custom/Hair/", "Marmoset/")`, so the hair
-draws from the bundle's own shader and has no asset in the project at all - which is fine on a machine
-with the installation and is exactly what a standalone build would lose. That is the next step, not
-another pass over the skin maps.
+`New-VaMShaders.py` carried `UNTRANSCRIBED_FAMILIES = ("Custom/Hair/", "Marmoset/")` at the time of
+this run, so the hair drew from the bundle's own shader and had no asset in the project at all - fine
+on a machine with the installation, and exactly what a standalone build would lose. **Superseded:** the
+hair is transcribed now (`UNTRANSCRIBED_FAMILIES = ("Marmoset/",)`, 14 of its shaders generated), and
+it is the one family whose pass 0 turned out to be a mask - see *Found by reading the bytecode*. The
+original run's reading therefore stands only against the bundle shader, which is the game's own and
+cannot itself be the over-brightness.
 
 ### Defect 2 - the scalp patch floating in the air
 
@@ -602,7 +609,7 @@ behaviour:
   shipped `Custom/Hair/MainAlternate*` and `Custom/Subsurface/AlphaMask*` families do.
 
 *Verification so far:* `python tools\check_shaders.py` compiles every program it generates -
-**3003/3003**, 0 failed - and `python tools\verify_twins.py` still proves all **112** of the twin
+**4414/4414**, 0 failed - and `python tools\verify_twins.py` still proves all **112** of the twin
 families' pixel passes the same instruction stream up to renaming, 0 different. The lash fragment we
 emit now disassembles to the shipped instruction sequence - `_AlphaTex` is sampled at its own UV
 (`v3.zw`, previously the diffuse `v1`), and the `add_sat` / premultiply / `discard` chain is present.
@@ -634,12 +641,17 @@ nothing suppressed the shading our version produced: our pass 0 compiled to **74
 `mul o0.xyz, r0.xyzx, cb0[11].wwww` and the rest of the lighting stack, and pass 1 *added* a second
 shaded colour under `Blend One One`. That is the over-bright eye.
 
-*The fix* is a mask-only fragment in the same include, `VamFragmentMask`, selected per shader by a
-generator table (`MASK_ONLY_FAMILIES`) rather than by a property test: the render state cannot tell this
+*The fix* is a mask-only fragment in the same include, `VamFragmentMask`, chosen by `mask_only()` in
+the generator rather than by a property test or a name table. The render state cannot tell this
 family's passes from any other transparent pair, and the property list cannot tell it from the diffuse
-IBL families, which are equally short of inputs. It keeps the shipped formula,
+IBL families, which are equally short of inputs - but the pass's own fragment program can: a pass that
+shades reads many constants, a mask reads at most a colour tint and an alpha adjustment. The rule is
+therefore `LightMode in (FORWARDBASE, FORWARDADD)` and `$Globals ⊆ {_Color, _AlphaAdjust}`, measured
+over every emitted pass as selecting exactly **5 of 136** - this family's two passes and the hair's
+three, with the nearest non-match reading **29** globals. It keeps the shipped formula,
 `saturate(_MainTex.a * _Color.a + _AlphaAdjust)`, writes zero to RGB, and samples at the interpolated uv
-in the base pass and at `VAM_MASK_CONSTANT_UV` in the additive one.
+in the base pass and at `VAM_MASK_CONSTANT_UV` in the additive one. The rule found the hair's
+under-layer passes as a side effect; that is written up in *Found by reading the bytecode* below.
 
 *Verification so far:* both of the passes we now emit disassemble to the shipped sequence - `sample` /
 `mad_sat o0.w` / `mov o0.xyz, l(0,0,0,0)` - with pass 1 carrying the same literal
@@ -722,8 +734,55 @@ Diffuse,Specular,Bumped Specular} IBL` and `Marmoset/Beta/Skin IBL Soft` fail to
 cannot be responsible for anything on screen. Separately, the `fallback shader ... not found`
 warnings are real but belong to the transcription backlog: our generated `*ComputeBuff` shaders
 declare `Fallback "Marmoset/Specular IBL SoftComputeBuff"` and
-`"Marmoset/Specular IBL Soft NoCullComputeBuff"`, names faithful to the original that
-`transcribe-hair-marmoset` has not built yet.
+`"Marmoset/Specular IBL Soft NoCullComputeBuff"`, names faithful to the original that the pending
+Marmoset item has not built yet - that set is now the only entry in `UNTRANSCRIBED_FAMILIES`.
+
+### Found by reading the bytecode: the hair's under-layer drew a lit colour
+
+*Symptom:* none reported - this was found while establishing *why* a pass can need a different
+fragment than its family's, and it is recorded here because it is a real behavioural divergence, not
+because anything on screen pointed at it.
+
+*Cause:* each hair family's **pass 0** is not a lit pass. Its shipped fragment is 11 instructions -
+sample `_MainTex`, `mul o0.w, r0.x, cb0[68].w`, `mov o0.xyz, l(0,0,0,0)` - i.e. it lays down the
+texel's alpha times `_Color.a` and **black**, and the lit layer is drawn over it by a later pass. The
+generator was emitting the shared model for that pass, so the pass wrote a second fully lit layer
+where the game writes a dark one.
+
+What made this hard to see is the render state: every pass of every hair family serialises
+`colMask = 14`, which under the engine's `ColorWriteMask` (Alpha 1, Blue 2, Green 4, Red 8) means RGB
+masked **off**, alpha only. So the shipped pass's `mov o0.xyz, l(0,0,0,0)` is dropped by the colour
+mask, and the pass is visible only as coverage - a transparent `ZWrite Off` `SrcAlpha
+OneMinusSrcAlpha` pass that a lit colour would land through. Reading the state cannot therefore even
+reveal that the pass is a mask: `Custom/Subsurface/AlphaMaskComputeBuff`, the mask we already knew
+about, serialises `colMask = 15` (RGB written as zero) and only differs in that respect.
+
+The three hair mask passes and the two alpha-mask ones do not share a formula, which is why the
+generator emits the alpha terms per pass rather than the fragment hard-coding them (`VAM_MASK_COLOR`,
+`VAM_MASK_ADJUST`, both read from the pass's own `$Globals`):
+
+| pass | shipped alpha | disassembly | globals |
+|---|---|---|---|
+| `Custom/Hair/MainComputeBuff` p0 | `texel.a * _Color.a` | `mul o0.w, r0.x, cb0[68].w` | `_Color` |
+| `Custom/Hair/MainThickenComputeBuff` p0 | `texel.a * _Color.a` | byte-identical to the above | `_Color` |
+| `Custom/Hair/MainThickenSeparateAlphaComputeBuff` p0 | `texel.a` untouched | `mov o0.w, r0.w` | none |
+| `Custom/Subsurface/AlphaMaskComputeBuff` p0/p1 | `saturate(texel.a * _Color.a + _AlphaAdjust)` | `mad_sat o0.w, r0.w, cb0[69].w, cb0[68].x` | `_Color`, `_AlphaAdjust` |
+
+*The fix:* `mask_only()` replaced the name table the cornea fix had introduced. The old table mapped
+`shader name -> pass indices`, which cannot be defended: pass indices are not comparable across
+families - the opaque forward base is index 0 in `MainAlternateComputeBuff`, `Scalp` and
+`SimpleCutout`, and index 1 in `MainSeparateAlphaLayer*` and in `MainComputeBuff` - and the same
+structural shape kept reappearing in newly transcribed families. The replacement is
+`LightMode in (FORWARDBASE, FORWARDADD)` **and** `$Globals ⊆ {_Color, _AlphaAdjust}`.
+
+*Verification so far:* over all **136** emitted non-skipped passes of the reconstructed families the
+rule selects exactly **5**, all five intended, and the nearest pass it does not select reads **29**
+globals. The four affected fragments were disassembled and the three formulas above match the shipped
+programs. `python tools\check_shaders.py` reports **4414/4414 programs, 0 failed** (4444 before: a
+pass declaring `VamFragment` is also compiled once as `VamFragmentAdd`, so an ordinary pass costs two
+programs per keyword set, while a mask pass declares `VamFragmentMask` and costs one - 3 passes x 10
+keyword sets = the 30), and `scripts\Invoke-CompileGate.ps1` is green. **A visible run is
+outstanding**, as it is for the rest of this change set.
 
 ### The tessellation stages
 
@@ -772,9 +831,11 @@ Checked with the compile gate, which now compiles a tessellated pass as its four
 control point at `vs_5_0`, hull at `hs_5_0`, domain at `ds_5_0`, fragment at `ps_5_0` - with
 `SHADER_TARGET 50`, the model the original's hull and domain were built for:
 
-*Current state*: `3003/3003 programs compiled, 0 failed`, 43 shaders, 113 passes, 15 of them
+*Current state*: `4414/4414 programs compiled, 0 failed`, 57 shaders, 168 passes, 15 of them
 tessellated. The count was 3023 until the eye's alpha-mask family stopped being compiled as the
-shared fragment as well as its own.
+shared fragment as well as its own, and 4444 until the hair's three mask passes did the same - a pass
+that declares `VamFragment` is compiled a second time as `VamFragmentAdd`, so a mask pass declaring
+`VamFragmentMask` costs one program per keyword set instead of two.
 
 Two things a reader should not expect from this:
 

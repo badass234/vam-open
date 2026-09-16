@@ -12,7 +12,7 @@ namespace MeshVR
 	/// DAZSkinV2 skins a mesh on the GPU by swapping every material onto
 	/// "&lt;name&gt;ComputeBuff", and it looks that name up with Shader.Find, which only ever sees
 	/// the shaders the rebuilt project itself defines. AssetRipper wrote a stub for every one of
-	/// them, so a family this project has not transcribed yet - hair, the Marmoset IBL set - would
+	/// them, so a family this project has not transcribed yet - the Marmoset IBL set - would
 	/// be shaded by the wrong library instead. The originals still ship in z_sha, the bundle every
 	/// material in the game resolves its shaders from, so they are read from there instead.
 	/// </summary>
