@@ -999,6 +999,9 @@ public class DAZHairMesh : MonoBehaviour
 		if (!materialWasInit)
 		{
 			materialWasInit = true;
+			// The hair is drawn with the material left here rather than through the provider, so what
+			// it needs is the plain family - and the copy below inherits whatever this one carries.
+			MeshVR.VamShaderProvider.UseProjectShader(hairMaterial);
 			if (hairMaterial != null)
 			{
 				hairMaterialRuntime = new Material(hairMaterial);

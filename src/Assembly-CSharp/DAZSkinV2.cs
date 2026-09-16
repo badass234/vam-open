@@ -1546,6 +1546,11 @@ public class DAZSkinV2 : PreCalcMeshProvider, RenderSuspend
 				materialsShadowCastEnabled[i] = dazMesh.materialsShadowCastEnabled[i];
 				_materialNames[i] = dazMesh.materialNames[i];
 			}
+			// The materials only arrive here, which is after Awake and so after
+			// SkinMeshGPUMaterialInit: without this the hair of a loaded item keeps the bundle's
+			// copies of the plain families for the whole session. See VamShaderProvider.
+			MeshVR.VamShaderProvider.UseProjectShaders(GPUmaterials);
+			MeshVR.VamShaderProvider.UseProjectShader(GPUsimpleMaterial);
 		}
 	}
 
@@ -1900,6 +1905,12 @@ public class DAZSkinV2 : PreCalcMeshProvider, RenderSuspend
 
 	protected void SkinMeshGPUMaterialInit()
 	{
+		// Before the guard as well as before the swap: a component with GPUAutoSwapShader off keeps
+		// whatever materials it was handed, and those are the bundle's copies of the plain families -
+		// which is the path the hair mesh draws through. The swap below replaces the copies it touches
+		// with its own, so the two steps do not overlap.
+		MeshVR.VamShaderProvider.UseProjectShaders(GPUmaterials);
+		MeshVR.VamShaderProvider.UseProjectShader(GPUsimpleMaterial);
 		if (!GPUAutoSwapShader)
 		{
 			return;

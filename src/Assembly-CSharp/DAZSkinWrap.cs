@@ -943,6 +943,10 @@ public class DAZSkinWrap : PreCalcMeshProvider, IBinaryStorable, RenderSuspend
 				materialsEnabled[i] = dazMesh.materialsEnabled[i];
 				_materialNames[i] = dazMesh.materialNames[i];
 			}
+			// The same hook as DAZSkinV2.CopyMaterials: the materials are handed over after Awake,
+			// so the init-time redirection cannot see them.
+			MeshVR.VamShaderProvider.UseProjectShaders(GPUmaterials);
+			MeshVR.VamShaderProvider.UseProjectShader(GPUsimpleMaterial);
 		}
 	}
 
@@ -1052,6 +1056,11 @@ public class DAZSkinWrap : PreCalcMeshProvider, IBinaryStorable, RenderSuspend
 		_ToWorldMatricesBuffer = new GpuBuffer<Matrix4x4>(_matricesBuffer);
 		NormalsBuffer = new GpuBuffer<Vector3>(_normalsBuffer);
 		InitMaterials();
+		// As in DAZSkinV2: before the guard, because a wrap with GPUAutoSwapShader off keeps the
+		// bundle's copies of the plain families, and before the swap, which replaces the copies it
+		// touches with its own.
+		MeshVR.VamShaderProvider.UseProjectShaders(GPUmaterials);
+		MeshVR.VamShaderProvider.UseProjectShader(GPUsimpleMaterial);
 		if (!GPUAutoSwapShader)
 		{
 			return;

@@ -86,6 +86,113 @@ namespace MeshVR
 			return shader;
 		}
 
+		/// <summary>
+		/// Points a material at this project's shader of the same name, and answers whether it moved.
+		///
+		/// A material that came out of a bundle holds its shader as a serialized reference, so it
+		/// keeps the bundle's own copy of the family even once this project defines one - the census
+		/// reads those slots as "bundle (project defines one)", and they are what still makes the
+		/// shipped game data necessary for the character to look right. Shader.Find answers only
+		/// from the project's assets, so re-pointing the material is the whole fix.
+		///
+		/// Only a family <see cref="VamProjectShaders"/> lists is moved. Shader.Find answers with an
+		/// AssetRipper placeholder just as happily as with a reconstruction, and one of those draws
+		/// far less than the original does - the hair's optimised path is on GPUTools/MeshedVR/HairOpt,
+		/// which is a placeholder here - so a name that is not really reconstructed is left on the
+		/// bundle's copy, which is the shipped shader and correct.
+		/// </summary>
+		public static bool UseProjectShader(Material material)
+		{
+			if (material == null)
+			{
+				return false;
+			}
+			Shader current = material.shader;
+			if (current == null || !VamProjectShaders.Defines(current.name))
+			{
+				return false;
+			}
+			Shader project = Shader.Find(current.name);
+			if (project == null || project == current)
+			{
+				return false;
+			}
+			material.shader = project;
+			return true;
+		}
+
+		/// <summary>The same for a whole list, nulls included. Answers how many moved.</summary>
+		public static int UseProjectShaders(Material[] materials)
+		{
+			if (materials == null)
+			{
+				return 0;
+			}
+			int redirected = 0;
+			for (int i = 0; i < materials.Length; i++)
+			{
+				if (UseProjectShader(materials[i]))
+				{
+					redirected++;
+				}
+			}
+			return redirected;
+		}
+
+		/// <summary>Every material of every renderer under one object, and how many moved.</summary>
+		public static int UseProjectShaders(GameObject root)
+		{
+			if (root == null)
+			{
+				return 0;
+			}
+			Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+			int redirected = 0;
+			for (int i = 0; i < renderers.Length; i++)
+			{
+				redirected += Redirect(renderers[i]);
+			}
+			return redirected;
+		}
+
+		/// <summary>
+		/// The same for everything the loaded scenes are currently drawing.
+		///
+		/// The components that build their own materials hand them over from their own init, but most
+		/// of the census's "bundle (project defines one)" slots are materials that came straight out
+		/// of a scene or a bundle prefab and are never handed to any code at all: they simply sit on a
+		/// renderer holding the bundle's shader object. No init hook can reach those, so they are swept.
+		///
+		/// Scene objects only. FindObjectsOfTypeAll also answers with the project's own prefab and
+		/// material assets, and re-pointing one of those would edit what the editor has open rather
+		/// than what this session draws.
+		/// </summary>
+		public static int UseProjectShadersEverywhere()
+		{
+			Renderer[] renderers = Resources.FindObjectsOfTypeAll<Renderer>();
+			int redirected = 0;
+			for (int i = 0; i < renderers.Length; i++)
+			{
+				Renderer renderer = renderers[i];
+				if (renderer != null && renderer.gameObject.scene.IsValid())
+				{
+					redirected += Redirect(renderer);
+				}
+			}
+			return redirected;
+		}
+
+		private static int Redirect(Renderer renderer)
+		{
+			if (renderer == null)
+			{
+				return 0;
+			}
+			// sharedMaterials lets the material instance keep its properties and its per-renderer
+			// binding; the shader is the only thing that was wrong.
+			return UseProjectShaders(renderer.sharedMaterials);
+		}
+
 		private static Shader LookupBundle(string shaderName)
 		{
 			Dictionary<string, Shader> index = BundleIndex();

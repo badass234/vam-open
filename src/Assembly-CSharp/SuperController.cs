@@ -6212,6 +6212,9 @@ public class SuperController : MonoBehaviour
 		}
 		SyncVisibility();
 		hideWaitTransform = false;
+		// Last stop of a load: everything the scene brought with it is on a renderer by now, so the
+		// materials that no init hook ever sees can be moved onto this project's shaders here.
+		MeshVR.VamShaderProvider.UseProjectShadersEverywhere();
 		if (onSceneLoadedHandlers != null)
 		{
 			onSceneLoadedHandlers();
@@ -16617,6 +16620,9 @@ public class SuperController : MonoBehaviour
 					}
 				}
 			}
+			// An atom added after the load brought its own materials in with it, and nothing else
+			// sweeps them. Scoped to the atom: a whole-scene sweep belongs to the end of a load.
+			MeshVR.VamShaderProvider.UseProjectShaders(component.gameObject);
 			if (onAtomAddedHandlers != null)
 			{
 				onAtomAddedHandlers(component);

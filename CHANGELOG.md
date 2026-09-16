@@ -8,10 +8,10 @@ meant to be read as stable.
 
 ## Unreleased
 
-Two rounds are in this section. The first transcribed the hair, and the whole hair family now renders
+Three rounds are in this section. The first transcribed the hair, and the whole hair family now renders
 from this project's code. The second reconstructed the plain twins - the half of every family that no
 `ComputeBuff` lookup reaches - and closed a defect that was silently disabling two of the game's own
-shaders.
+shaders. The third makes the game's own materials use those twins instead of the shipped bundle's copy.
 
 The hair is the body's shading model with fewer inputs, and one pass of every hair family does not
 shade at all: it writes black and keeps the texel's alpha. The eye and the lashes had already started
@@ -169,6 +169,70 @@ carry no `Custom/Hair/*` contract, so nothing in the project could answer that n
   load, 18 of 18 atoms present, the scene loaded in 36.7 s, and **0 `Shader error` lines** in the log.
   48 of the 49 compute-buffer swaps name a project shader; the one that does not is the untranscribed
   `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`.
+
+### Round 3 - the game's own materials move onto the project's shaders
+
+Round 2 left the plain twins defined and unused: a material instantiated from the shipped bundle keeps
+the bundle's shader object, so the reconstruction was compiled and never asked for. This round adds the
+redirection, and then measures what it moved rather than what it could move.
+
+#### What works
+
+- **`VamShaderProvider` can redirect a material.** `UseProjectShader(Material)` replaces a material's
+  shader with the project's own copy of the same name and touches nothing else - properties, maps and
+  per-renderer bindings stay - and `UseProjectShaders(Material[])`, `UseProjectShaders(GameObject)` and
+  `UseProjectShadersEverywhere()` walk the collections the draw paths actually use.
+- **A gate that keeps it off the placeholders.** `New-VaMShaders.py` emits a third artefact,
+  `MeshVR\VamProjectShaders.cs` - the 88 names the run wrote, plus `Defines(name)` - generated from the
+  shaders that were produced rather than from the contracts that were found. Without it the redirect
+  would move a material onto an AssetRipper placeholder whenever a family is not reconstructed, and one
+  of those is the hair's optimised path (`GPUTools/MeshedVR/HairOpt`), whose naive takeover draws *less*
+  than the shipped shader it stands in for. Verified: none of the 88 written names collides with the
+  25 placeholders.
+- **Six call sites, at the moments the materials appear.** `SuperController` sweeps every live scene
+  renderer when the load coroutine returns and again per atom in `AddAtom`; `DAZSkinV2` sweeps the
+  `GPUmaterials` and the simple material it is about to draw with, in `SkinMeshGPUMaterialInit` and in
+  `CopyMaterials`, because `Awake` runs before the renderer's materials are handed over; `DAZSkinWrap`
+  does the same in its own `CopyMaterials` and swap; `DAZHairMesh` redirects `hairMaterial` before it
+  copies it into `hairMaterialRuntime`, which is the material its `Graphics.DrawMesh` draws with and the
+  one path that never goes through a renderer slot at all.
+- **Measured**: the census's `material(s) on a bundle copy` fell from 84 to 76, and the eight that
+  moved are the interaction rig's hand meshes (`Hands_Mat_01_MVR`, `Hands_Mat_02_MVR`), the equipped
+  clothing's simulation meshes (`hu_pty_body-1`, `hu_skt_body1/2-1`, `hu_skt_metal-1`, `hu_skt_str-1`)
+  and the hair tools (`HairTool`) - `Custom/Subsurface/GlossNMCull`, `TransparentSeparateAlpha`,
+  `TransparentGlossNMNoCullSeparateAlpha` and `TransparentGlossNMDetailNoCullSeparateAlpha` now draw
+  their original `*ComputeBuff` twin's plain half rather than the bundle's copy of it.
+- **The census stopped calling a built-in a family the project defines.** `ShaderOrigin` asked
+  `ProjectDefinesShader`, which accepts anything `Shader.Find` answers: Unity's own `Standard`,
+  `Unlit/Texture` and `GPUTools/Painter`, and every placeholder. 36 materials were counted as
+  take-overs waiting to happen; they are now reported as `bundle (only a stub or a built-in answers)`,
+  which is exactly the set the redirection has to leave alone.
+- **A new line accounts for what is left on a skin.** `skins still holding a bundle shader` reports
+  each `DAZSkinV2` with its `inHierarchy` and its off-bundle ratio.
+
+#### Measurements re-run
+
+- `scripts\Invoke-SmokeTest.ps1` on the boot scene - `----- RebuildGate OK -----`, 0 errors before the
+  load, `scene atoms: 18 declared, 18 present, 0 missing`, and the frame is the same frame: 118
+  renderers (14 disabled), 154 material slots, 120 distinct materials, 31 distinct shaders. 0 materials
+  with an unsupported shader, 0 on a stub, 0 `Shader error` lines, and the log's 12 distinct exception
+  lines are the pre-existing `MacGruber.Breathing` plugin ones - the same 12 as the round before.
+- The character is unchanged, and the new line explains it: `character materials: 49 drawn, 0 on an
+  unsupported shader, 16 on a bundle copy, 33 on a project shader`, where the 16 are **not** 16 drawn
+  materials. They are the 19 `GPUmaterials` of the unequipped `VictoriaElitePonytailHair*` template -
+  `active=True inHierarchy=False`, so `Awake` never ran and `SkinMeshGPUMaterialInit` never built them
+  - plus the live skin's single `EyeReflection-1`, which
+  `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff` leaves with nothing to redirect to. No
+  drawn material of the character still uses a bundle copy of a family this project defines.
+
+#### Not done
+
+- The redirection is name-based and deliberately changes no drawn family's program, so it cannot be
+  judged by eye: the hands and the hair tools are the only visible parts that changed owner, and both
+  draw through twins that `tools\verify_twins.py` already pairs. A visible run on the boot scene is
+  still the missing check before defect 1's height-dependent brightness is re-measured.
+- 21 materials are still `bundle only (not in project)`: the untranscribed `Marmoset/` set, the
+  overlay helpers and `Unlit/UnlitOverlayShader`.
 
 ## 0.1.1-alpha - 2026-09-16
 

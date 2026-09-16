@@ -852,6 +852,65 @@ Two things a reader should not expect from this:
 Visual confirmation is still outstanding: the gate proves the programs compile and the arithmetic
 matches, not that the body looks right. The manual run in the checklist below is the check for that.
 
+### Found by measuring: which materials still draw the bundle's copy
+
+The census prints an `origin=` for every material it sees, and after the plain twins landed it read
+`bundle (project defines one)` for materials whose family the project had just rebuilt. That is not a
+bookkeeping problem: a material VaM instantiated from `z_sha` holds the bundle's `Shader` object, and
+no amount of compiling our own copy changes which object a material points at. The label was telling
+the truth about the draw.
+
+`VamShaderProvider.UseProjectShader(material)` closes the gap by name, and
+`docs\shader-reconstruction.md` (*Who answers a name*) documents the gate and the six call sites. What
+this section keeps is the measurement, because the measurement is what caught three separate traps:
+
+- **The gate has to ask what was written, not what was found.** `Shader.Find("GPUTools/MeshedVR/HairOpt")`
+  answers - AssetRipper wrote a placeholder with that name - so a redirection gated on
+  `Find != null` would swap the hair's optimised path onto a one-pass placeholder and draw *less*. The
+  generator now emits `VamProjectShaders.cs`, the 88 names the run wrote, and 0 of them collides with
+  the 25 placeholders.
+- **The census was asking the same wrong question.** `ProjectDefinesShader` was loose enough to accept
+  `Standard`, `Unlit/Texture` and every placeholder, so 36 materials were counted as take-overs waiting
+  to happen. A separate `ProjectReconstructionDefines` refuses a name only a placeholder carries, and
+  those 36 now read `bundle (only a stub or a built-in answers)`.
+- **A material slot is not a drawn material.** The `character materials:` line counts a de-duplicated
+  draw list, while the per-material list prints one row per `RecordDrawMaterial` call, so the same
+  `MaterialUse` can appear twice - once `via renderer` and once `via skin GPUmaterials`. The "16
+  character materials on a bundle copy" is 16 *calls*, not 16 distinct drawn materials.
+
+What the sweep actually moved, on the boot scene: `material(s) on a bundle copy` **84 → 76**, the eight
+being the hands (`Hands_Mat_01_MVR`, `Hands_Mat_02_MVR`), the equipped cloth simulations
+(`hu_pty_body-1`, `hu_skt_body1/2-1`, `hu_skt_metal-1`, `hu_skt_str-1`) and `HairTool` - all off the
+character and all now on `Custom/Subsurface/GlossNMCull`, `TransparentSeparateAlpha`,
+`TransparentGlossNMNoCullSeparateAlpha` or `TransparentGlossNMDetailNoCullSeparateAlpha`, which are the
+project's own. Everything else is unchanged: 118 renderers (14 disabled), 154 material slots, 120
+distinct materials, 31 distinct shaders, 0 unsupported, 0 on a stub, 0 `Shader error`, and the same 12
+distinct exception lines as the previous three runs.
+
+The bucket that stays is the one worth writing down, because its count is misleading in the flattering
+direction and it makes the round look unfinished when it is not:
+
+- **19 of the 20 remaining bundle materials belong to the unequipped `VictoriaElitePonytailHair*`
+  template.** `DAZSkinV2.GPUmaterials` is filled in `SkinMeshGPUMaterialInit`, called from `Awake` only
+  when `Application.isPlaying`, and a skin outside the enabled hierarchy never runs `Awake` - so it
+  keeps the materials serialised with the scene. The new census line `skins still holding a bundle
+  shader` prints each skin with `active=` / `inHierarchy=` and its off-bundle ratio, which is what turns
+  "16 on the character" into "15/15 and 4/4 off-bundle, not in the hierarchy, not drawn".
+- **The twentieth is the live skin's `EyeReflection-1`**, on
+  `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff` - a family nobody has transcribed, so
+  there is nothing to redirect it to.
+
+Two sets are therefore left alone **on purpose**, and a future reader should not read either as a bug:
+
+- **The 15 hair-card materials on the inactive clones.** The hair's under-layer pass writes alpha only
+  (`mov o0.xyz, l(0,0,0,0)`), so the project's pass - which writes the colour - would paint black cards
+  over the hair until that pass is verified against the original.
+- **Everything behind a placeholder.** The interaction rig (`GPUTools/Painter`, 34 slots), the hair
+  optimiser (`GPUTools/MeshedVR/HairOpt`), the sky (`Marmoset/Skydome`) and the particles
+  (`Marmoset/Diffuse IBL`) all answer through a placeholder that keeps more passes than the shader it
+  would replace, so the redirection must not touch them until the families themselves are transcribed
+  (item 4).
+
 ## Still open
 
 - **Visual comparison.** Against a running `VaM.exe`: models, lighting, materials, shaders. The tool is

@@ -508,6 +508,69 @@ hides the interesting half of that: 41 plain contracts now have a rebuilt shader
 `VaM_Rebuild\Assets\Shader\` reads as 113 files = 47 rebuilt `*ComputeBuff` + 41 rebuilt plain + 25
 stubs.
 
+## Who answers a name
+
+Reconstructing a family is not the same thing as using it. A material VaM instantiated from the
+shipped bundle keeps the bundle's `Shader` object, and `Shader.Find` does not see bundle shaders, so
+the project can hold a faithful copy of a family and still draw the bundle's. Round 2 measured exactly
+that: every family the project had just rebuilt still appeared in the census as
+`bundle (project defines one)`.
+
+`MeshVR\VamShaderProvider.cs` is where a material reaches a shader by name, so the redirection lives
+there:
+
+```csharp
+VamShaderProvider.UseProjectShader(material);        // one material, in place
+VamShaderProvider.UseProjectShaders(materials);      // a material array
+VamShaderProvider.UseProjectShaders(gameObject);     // every renderer under an object
+VamShaderProvider.UseProjectShadersEverywhere();     // every renderer in the loaded scene
+```
+
+Everything else about the material is left alone - its properties, its maps, its render queue and the
+assignments that point at it. A call is a no-op unless all three hold: the name is one the project
+actually reconstructed, `Shader.Find` answers it, and the material does not already carry it.
+
+The first test is the important one, and it is why the generator writes a third artefact beside the
+shaders. `VamProjectShaders.cs` holds the 88 names the run *wrote* - not the names the contracts
+*named* - and a `Defines(string)` over them. The difference decides whether a redirection is safe:
+`Shader.Find("GPUTools/MeshedVR/HairOpt")` answers, because AssetRipper wrote a placeholder with that
+name, and a placeholder compiles, reports itself supported and keeps one pass, so the hair's optimised
+path would end up drawing *less* than the shader it replaced. A name the project did not reconstruct is
+left alone even when something answers it.
+
+### Where it is called
+
+Materials arrive at different times and through different draw paths, so there is a call site per path
+rather than one sweep:
+
+| Owner | Call site | Why there |
+| --- | --- | --- |
+| `SuperController` | end of the scene-load coroutine | every renderer of the loaded scene, once it exists |
+| `SuperController` | `AddAtom` | an atom added later: clothing, hair, a plugin's own objects |
+| `DAZSkinV2` | `SkinMeshGPUMaterialInit` | the `GPUmaterials` / `GPUsimpleMaterial` array the GPU draw path passes to `Graphics.DrawMesh`; it is built here, from the renderer's materials, and is not the renderer's slot list |
+| `DAZSkinV2`, `DAZSkinWrap` | `CopyMaterials` | the same array when a wrap re-copies it |
+| `DAZHairMesh` | `MaterialInit` | `hairMaterial` is copied into `hairMaterialRuntime`, the material `Graphics.DrawMesh` draws with; a hair material never reaches a renderer slot |
+
+The order is why the skin hooks exist at all: `Awake` builds `GPUmaterials` *before* the load coroutine
+finishes, so a sweep of the renderer slots at the end of the load would leave the copies the draw loop
+actually uses pointing at the bundle.
+
+### What it cannot reach
+
+- **A material of an unequipped template.** `SceneObjects<T>()` keeps objects that belong to the
+  project assets out of the walk, and a skin whose GameObject sits outside the enabled hierarchy never
+  runs `Awake`, so its `GPUmaterials` stay as they were serialised with the scene. The census reports
+  them (`skins still holding a bundle shader`) instead of the redirection touching them: nothing draws
+  them, and their materials may be shared with the prefab the scene instantiated.
+- **A family the project does not reconstruct.** 21 materials are still `bundle only (not in project)`,
+  above all the `Marmoset/` set.
+- **A material created after the sweep.** The screenshot and mini-camera materials
+  (`ScreenshotMaterial`, `HiResScreenshotMaterial`, `MiniCameraMaterial`,
+  `MiniCameraBackgroundMaterial`) are built when a screenshot or a mini camera is used, i.e. after the
+  load coroutine has returned. They are `Unlit/Texture` or `Unlit/UnlitOverlayShader`, so most have
+  nothing to redirect to; every entry point is idempotent, so adding a call site is the whole fix when
+  one is needed.
+
 ## Verification
 
 ```powershell

@@ -3354,6 +3354,7 @@ public static class RebuildGate
 
     private static readonly Dictionary<string, bool> StubShaderCache = new Dictionary<string, bool>(StringComparer.Ordinal);
     private static readonly Dictionary<string, bool> ProjectShaderNameCache = new Dictionary<string, bool>(StringComparer.Ordinal);
+    private static readonly Dictionary<string, bool> ProjectShaderReconstructionCache = new Dictionary<string, bool>(StringComparer.Ordinal);
 
     /// <summary>
     /// Every material slot on every renderer in the loaded scene, grouped by material and by shader.
@@ -3413,6 +3414,7 @@ public static class RebuildGate
             // draws the hair and the scalp it builds out of the selection with hairMaterialRuntime.
             // Those lists are copies made at init time, so they are what the pixels really come from.
             List<MaterialUse> drawn = new List<MaterialUse>();
+            List<string> offBundleSkins = new List<string>();
             foreach (DAZSkinV2 skin in SceneObjects<DAZSkinV2>())
             {
                 string skinPath = TransformPath(skin.transform);
@@ -3425,6 +3427,7 @@ public static class RebuildGate
                 }
 
                 RecordDrawMaterial(byMaterial, drawn, skin.GPUsimpleMaterial, "skin GPUsimpleMaterial", skinPath);
+                RecordOffBundleSkin(offBundleSkins, skin, skinPath);
             }
 
             foreach (DAZHairMesh hair in SceneObjects<DAZHairMesh>())
@@ -3513,6 +3516,7 @@ public static class RebuildGate
                 CountWhere(drawn, delegate (MaterialUse u) { return u.origin == "project"; })));
 
             AppendDrawMeshList(report, drawn);
+            AppendOffBundleSkinList(report, offBundleSkins);
             AppendTransparencyProbe(report, materialsBySeverity);
             AppendShaderFamilies(report, byShader, true);
             AppendMaterialList(report, materialsBySeverity);
@@ -3573,6 +3577,55 @@ public static class RebuildGate
         if (use.DrawnWithoutRenderer && !drawn.Contains(use))
         {
             drawn.Add(use);
+        }
+    }
+
+    /// <summary>
+    /// Collects the DAZSkinV2 instances that still carry a bundle copy of a family the project defines.
+    /// A skin whose GameObject was never active never ran Awake, and so never ran
+    /// SkinMeshGPUMaterialInit: its GPUmaterials are the ones the prefab was loaded with, which is both
+    /// why they are still on the bundle and why the census cannot move them - they are not reachable
+    /// from the scene-side sweep, which only ever sees renderers.
+    /// </summary>
+    private static void RecordOffBundleSkin(List<string> into, DAZSkinV2 skin, string path)
+    {
+        if (skin.GPUmaterials == null || skin.GPUmaterials.Length == 0)
+        {
+            return;
+        }
+
+        int offBundle = 0;
+        foreach (Material material in skin.GPUmaterials)
+        {
+            if (material != null && ShaderOrigin(material.shader).StartsWith("bundle", StringComparison.Ordinal))
+            {
+                offBundle++;
+            }
+        }
+
+        if (offBundle == 0)
+        {
+            return;
+        }
+
+        into.Add(string.Format(
+            "  {0}\n      active={1} inHierarchy={2} GPUAutoSwapShader={3} offBundle={4}/{5}",
+            path, skin.gameObject.activeSelf, skin.gameObject.activeInHierarchy, skin.GPUAutoSwapShader,
+            offBundle, skin.GPUmaterials.Length));
+    }
+
+    private static void AppendOffBundleSkinList(StringBuilder report, List<string> offBundleSkins)
+    {
+        report.AppendLine(string.Format("skins still holding a bundle shader ({0}):", offBundleSkins.Count));
+        if (offBundleSkins.Count == 0)
+        {
+            report.AppendLine("  none - every reachable skin material is on a project shader");
+            return;
+        }
+
+        foreach (string line in offBundleSkins)
+        {
+            report.AppendLine(line);
         }
     }
 
@@ -3870,7 +3923,18 @@ public static class RebuildGate
         string path = AssetDatabase.GetAssetPath(shader);
         if (string.IsNullOrEmpty(path))
         {
-            return ProjectDefinesShader(shader.name) ? "bundle (project defines one)" : "bundle only (not in project)";
+            if (ProjectReconstructionDefines(shader.name))
+            {
+                return "bundle (project defines one)";
+            }
+
+            // Something answers the name, but not the project's own reconstruction: a Unity built-in, or
+            // one of the AssetRipper placeholders. The redirect has to leave both alone - the hair's
+            // optimised path is a placeholder whose naive takeover draws *less* than the shipped shader it
+            // stands in for - so they are not counted with the families the project can still take over.
+            return ProjectDefinesShader(shader.name)
+                ? "bundle (only a stub or a built-in answers)"
+                : "bundle only (not in project)";
         }
 
         return path.StartsWith("Assets/", StringComparison.Ordinal) ? "project" : "built-in";
@@ -3904,6 +3968,40 @@ public static class RebuildGate
         }
 
         ProjectShaderNameCache[name] = known;
+        return known;
+    }
+
+    /// <summary>
+    /// True when the project holds its own reconstruction of this name: an `Assets/` shader that is not an
+    /// AssetRipper placeholder. This is the question the material redirection asks, and the one
+    /// `ShaderOrigin` has to ask to stay honest - `ProjectDefinesShader` also answers yes for a built-in
+    /// and for a placeholder, and neither can stand in for a family the game shipped.
+    /// </summary>
+    private static bool ProjectReconstructionDefines(string name)
+    {
+        if (string.IsNullOrEmpty(name) || name == NoShaderName)
+        {
+            return false;
+        }
+
+        bool known;
+        if (ProjectShaderReconstructionCache.TryGetValue(name, out known))
+        {
+            return known;
+        }
+
+        known = false;
+        foreach (string guid in AssetDatabase.FindAssets("t:Shader"))
+        {
+            Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(AssetDatabase.GUIDToAssetPath(guid));
+            if (shader != null && shader.name == name && !IsStubShader(shader))
+            {
+                known = true;
+                break;
+            }
+        }
+
+        ProjectShaderReconstructionCache[name] = known;
         return known;
     }
 
