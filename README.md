@@ -16,7 +16,8 @@ contains the recovered code and the pipeline, and you point it at your own insta
 - Clothing renders correctly, layers are fine.
 - Physics
 - UI
-- Some shaders
+- Shaders: 88 reconstructed from the shipped DXBC bytecode - 256 passes, 6 805 compiled programs.
+  Every drawn material of the character now draws with one of them instead of the bundle's copy.
 - Post-processing
 
 Also, the shading model of the drawn body has been compared with the released build's own shader
@@ -31,8 +32,15 @@ feature, but the ground the next rounds stand on.
   The shipped bytecode rules the shader out, so the next round looks at what is bound to it - the
   specular IBL cube's import colour space, the specular/fresnel values the material carries, and the
   bloom threshold. The list is in `CHANGELOG.md` under *Round 4*.
-- Many shaders not ported yet.
-- Some shaders
+- The `Marmoset/` set is not transcribed yet, and it is what the last 21 materials still draw: the live
+  skin's `EyeReflection-1` (left with nothing to redirect to by
+  `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`), the overlay helpers and
+  `Unlit/UnlitOverlayShader`. `Marmoset/` is a different shading model - its own SH, exposure and
+  sky-range uniforms - so it needs a second model beside the reconstructed one, not an extension of it.
+- 25 of the project's shader files are still AssetRipper placeholders that declare no pass, and the
+  families that fall back to a Unity built-in, to `GPUTools/Painter` or to `GPUTools/MeshedVR/HairOpt`
+  cannot be moved onto one: a placeholder compiles and draws *less* than the shipped shader it stands
+  in for, and its takeover would trade a wrong picture for a missing one.
 - Code is partially readable but needs refactoring.
 
 ## Plan
