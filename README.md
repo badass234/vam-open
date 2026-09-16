@@ -1,4 +1,4 @@
-# VAMOpen 0.2.0-alpha
+# VAMOpen 0.3.0-alpha
 
 Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
 developers just keep taking money and releasing tiny fixes for years.
@@ -19,6 +19,8 @@ contains the recovered code and the pipeline, and you point it at your own insta
 - Shaders: 88 reconstructed from the shipped DXBC bytecode - 256 passes, 6 805 compiled programs.
   Every drawn material of the character now draws with one of them instead of the bundle's copy.
 - Post-processing
+- A standalone `VAMOpen.exe` builds in batch mode and runs outside the editor: 10 scenes, D3D11, all
+  18 `.var` packages registered, 312 FPS in its own benchmark scene.
 
 Also, the shading model of the drawn body has been compared with the released build's own shader
 bytecode, instruction by instruction, and matches it: the tangent frame, the normal map, the albedo
@@ -29,9 +31,12 @@ feature, but the ground the next rounds stand on.
 ## What's still in progress
 
 - Minor character material defects: characters still shine a little more than the original does.
-  The shipped bytecode rules the shader out, so the next round looks at what is bound to it - the
-  specular IBL cube's import colour space, the specular/fresnel values the material carries, and the
-  bloom threshold. The list is in `CHANGELOG.md` under *Round 4*.
+  Part of that is the quality preset rather than the shading - the project's `prefs.json` is the
+  `Max` preset while the installation runs `High`, and two of the five knobs that differ
+  (`pixelLightCount` and `smoothPasses`) both flatter the skin. The shipped bytecode rules the shader
+  out, so the next round looks at what is bound to it - the specular IBL cube's import colour space,
+  the specular/fresnel values the material carries, and the bloom threshold. The list is in
+  `CHANGELOG.md` under *Round 4*, and the preset in *Round 5*.
 - The `Marmoset/` set is not transcribed yet, and it is what the last 21 materials still draw: the live
   skin's `EyeReflection-1` (left with nothing to redirect to by
   `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`), the overlay helpers and
@@ -67,6 +72,20 @@ python tools\check_shaders.py
 scripts\Invoke-ManualPlay.ps1
 ```
 
+The same project also builds as a standalone player, which needs neither Unity nor an open editor
+afterwards:
+
+```powershell
+scripts\Invoke-PlayerBuild.ps1        # Unity batch mode, output in artifacts\player
+scripts\New-PlayerRuntimeLinks.ps1    # links the installation's data and copies the key in
+artifacts\player\VAMOpen.exe
+```
+
+Start the player from its own folder - the game resolves its data relative to the working directory -
+and note that it logs to `%USERPROFILE%\AppData\LocalLow\MeshedVR\VaM\output_log.txt`. The failure to
+watch for there is the package count: `Scanned 18 packages` means the key was found, `Scanned 9`
+means it was not.
+
 If the editor comes up showing `Failed to load window layout`, play mode never starts: an editor that
 was killed rather than closed leaves an empty or stale `LastLayout.dwlt` in
 `%APPDATA%\Unity\Editor-5.x\Preferences\Layouts`, and Unity needs it gone before it will write a
@@ -82,7 +101,7 @@ Stage details are in `docs\`, the source of truth for status is in `CHANGELOG.md
 | `src\Assembly-UnityScript` | the game's second assembly (13 files) |
 | `src\RTTypeModel` | the type model the decompiler needs |
 | `shader-src\VamGpuSkinning.cginc` | the reconstructed GPU-skinning shading library (see [`docs/shader-reconstruction.md`](docs/shader-reconstruction.md)) |
-| `VaM_Rebuild\Assets\Editor\RebuildGate.cs` | the only code written by hand: a batch gate that boots the game and prints a verdict |
+| `VaM_Rebuild\Assets\Editor\` | the only code written by hand: `RebuildGate.cs` boots the game in batch mode and prints a verdict, `RebuildPlayer.cs` builds the standalone player |
 | `VaM_Rebuild\ProjectSettings`, `VaM_Rebuild\Packages` | Unity project settings, including the .NET 4.x scripting runtime the decompiled code needs |
 | `scripts\` | the pipeline: project setup, shader extraction and generation, compilation gate, smoke runs, log comparison |
 | `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison, shader pre-flight) |

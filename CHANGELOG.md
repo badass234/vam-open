@@ -6,6 +6,93 @@ Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html). The 
 so the minor number moves with each round of user-visible work and only the major/minor pair is
 meant to be read as stable.
 
+## 0.3.0-alpha - 2026-09-17
+
+The first round that produces something other than an editor project: `VAMOpen.exe` builds in batch
+mode and starts on its own. Building a player is not the same as running one, and the difference is
+where the round's second subject came from - the player scanned nine of the eighteen packages the
+editor scans for the same project, and settling that turned up the answer to the sheen that the three
+rounds before this one had been circling.
+
+### Round 5 - the standalone player, and a sheen that is a settings difference
+
+#### What works
+
+- **The player builds in batch mode.** `RebuildPlayer.Build` is the entry point and
+  `scripts\Invoke-PlayerBuild.ps1` is the driver: `-batchmode -nographics -quit -executeMethod`,
+  output to `artifacts\player`, verdict from the `----- RebuildPlayer` markers rather than from the
+  exit code, because Unity returns the same code for a failed build and for an editor that never
+  reached the method. A build that fails on an `UnityEditor` reference the editor compiles perfectly
+  well is the one class of error this adds to the gate's, and the marker is what reports it.
+- **The player runs.** Ten scenes, `VAMOpen_Data`, 258 972 055 B of output, and a window titled
+  `VaM`; its log is at `%USERPROFILE%\AppData\LocalLow\MeshedVR\VaM\output_log.txt`, not next to the
+  exe. The log shows the asset manager ready, D3D11 on the RX 9070 XT, and a 312 FPS benchmark.
+- **The build deliberately does not carry the game's data.** The player resolves all of it relative to
+  its own directory - the game computes its root as the parent of `Application.dataPath`, and the
+  bundles come from `Application.streamingAssetsPath`, which is `<exe>_Data\StreamingAssets` - so
+  `scripts\New-PlayerRuntimeLinks.ps1` links `AddonPackages` and `Custom` in (junctions: 0.84 GB and
+  1.1 GB that a copy would only let drift out of date), copies `Saves`,
+  `AddonPackagesUserPrefs` and `prefs.json` so that a run of this build cannot write into the
+  installation it borrowed them from, and refreshes `Keys`.
+- **The nine-against-eighteen packages are the key file.** The player's log read
+  `Scanned 9 packages in 60.8 ms` where the editor reads `Scanned 18 packages in 158.0 ms` for the
+  same `AddonPackages`, and 18 `.var` files are what is actually in there. `FileManager.Refresh`
+  logs `packagesByUid.Count`, and the count follows the key: `SuperController` reads
+  `keyFilePath` (`Keys/1.21/key.json`) relative to the working directory, and with no valid key it
+  fills in the restricted package set. Copying `Keys` into the player folder is the whole fix - the
+  same build then logs `Scanned 18 packages in 68.7 ms` - and the script now refuses to leave the
+  file out silently.
+- **The sheen is at least partly the quality preset, and the numbers are in two files.** The editor
+  project's `prefs.json` and the installation's hold the same settings, and the graphics ones among
+  them are not the same preset. The installation's five are the **High** preset of
+  `UserPreferences.QualityLevels` to the digit; the editor's are **Max**, with `msaaLevel` raised by
+  hand from the preset's 2 to 8:
+
+  | key | installation (High) | editor project (Max) | what it does in the code |
+  | --- | --- | --- | --- |
+  | `renderScale` | 1 | 2 | the internal render target's resolution |
+  | `msaaLevel` | 4 | 8 | `QualitySettings.antiAliasing` (`UserPreferences.cs:2886`) |
+  | `pixelLightCount` | 2 | 4 | `QualitySettings.pixelLightCount` (`UserPreferences.cs:3020`) |
+  | `smoothPasses` | 2 | 4 | `DAZSkinV2.smoothOuterLoops`, the Laplacian smoothing iterations on the skin mesh (`DAZSkinV2.cs:2612`) |
+  | `glowEffects` | Low | High | `MKGlow.Samples`, 3 against 2 (`UserPreferences.cs:3361`) |
+
+  Two of those move a character in the "smoother and lit harder" direction, which is what an oiled
+  look is: `pixelLightCount` is Unity's per-pixel light budget, so a light that was outside it
+  contributes no per-pixel highlight at 2 and does at 4, and `smoothPasses` is how many times the
+  skin's vertices are Laplacian smoothed before the normals are rebuilt, so 4 passes leave a flatter
+  and more mirror-like surface than 2. Both are the game's own quality settings applied by the
+  game's own code; neither is this project's shading.
+- **The glow level is not an on-off switch, which is what makes it a weak suspect.** `SyncGlow`
+  enables every registered `MKGlow` whenever `glowObjectCount > 0` and the level is not `Off`, and
+  `Low` and `High` differ only in `Samples` - 3 against 2. The installation is not running with its
+  bloom off.
+
+#### Measurements re-run
+
+- `scripts\Invoke-PlayerBuild.ps1` - `----- RebuildPlayer OK -----`, 258 972 055 B, 10 scenes, 0
+  `error CS`, 0 `Shader error`.
+- The built player's own log - asset manager ready, `Refresh Handlers took 0.6 ms`, packages
+  scanned, `Benchmark complete. Avg. FPS: 312.18`, D3D11.
+- `scripts\New-PlayerRuntimeLinks.ps1` - 18 `.var` packages visible, the manifest bundle present, the
+  key file in place.
+
+#### Known issues
+
+- **The sheen is diagnosed, not fixed.** The two `prefs.json` files say the editor sessions that
+  produced the report were running at a higher preset than the installation the report was compared
+  against, and until the same preset is run on both sides, whatever is left over cannot be attributed
+  to the shader. The three candidates Round 4 listed as living outside the shader - the specular
+  cube's import colour space, the material's own intensities, and the bloom thresholds - all stay
+  open, and two settings are now joined to them.
+- The gloss/bump seam the hand run still reports at very low visibility has not been re-examined at
+  the lower preset either.
+
+#### Not done
+
+- The player is not part of a single entry point: `scripts\Setup-RebuildProject.ps1` builds the
+  project, and the player build is a separate script that has to be called on purpose.
+- No release page is published for this or the previous round.
+
 ## 0.2.0-alpha - 2026-09-17
 
 Four rounds are in this release. The first transcribed the hair, and the whole hair family now renders
