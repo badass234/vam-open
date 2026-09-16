@@ -35,6 +35,7 @@ public static class RebuildGate
     private const string SceneKey = "RebuildGate.Play.Scene";
     private const string WarmupKey = "RebuildGate.Play.Warmup";
     private const string SceneDoneKey = "RebuildGate.Play.SceneDone";
+    private const string ManualKey = "RebuildGate.Play.Manual";
 
     static RebuildGate()
     {
@@ -52,6 +53,7 @@ public static class RebuildGate
         playScene = EditorPrefs.GetString(SceneKey, string.Empty);
         playWarmup = EditorPrefs.GetFloat(WarmupKey, 15f);
         playSceneRequested = EditorPrefs.GetBool(SceneDoneKey, false);
+        playManual = EditorPrefs.GetBool(ManualKey, false);
         Debug.Log("----- RebuildGate play: armed after reload -----");
     }
 
@@ -356,6 +358,11 @@ public static class RebuildGate
     private static bool playVerdict;
     private static string playScene = string.Empty;
     private static double playWarmup = 15.0;
+
+    // A manual run is the same boot, scene load and warmup, minus the clock: it never reports and
+    // never exits, so the editor stays in play mode for someone to look at and drive by hand.
+    private static bool playManual;
+
     private static bool playSceneRequested;
     private static int playErrorsAtLoad = -1;
 
@@ -418,6 +425,28 @@ public static class RebuildGate
     /// </summary>
     public static void Play()
     {
+        ArmPlay(false);
+    }
+
+    /// <summary>
+    /// Opens the game in play mode and leaves it there - the manual counterpart of Play.
+    ///
+    ///     Unity.exe -projectPath VaM_Rebuild -executeMethod RebuildGate.ManualPlay \
+    ///               -smokeScene "MeshedVR.DemoScenes.2:/Saves/scene/.../CyberDemoAlt.json"
+    ///
+    /// Same boot, same warmup and the same scene request as the gate, minus the clock: no
+    /// -smokeSeconds deadline, no report file, no EditorApplication.Exit. The run ends when the
+    /// person in front of the editor stops play mode, which is what makes this the method to use
+    /// when the point is to look at the render and drive the scene by hand rather than to grade it.
+    /// The Game view is brought forward and the editor maximized for the same reason as in Play.
+    /// </summary>
+    public static void ManualPlay()
+    {
+        ArmPlay(true);
+    }
+
+    private static void ArmPlay(bool manual)
+    {
         string[] arguments = Environment.GetCommandLineArgs();
         for (int i = 0; i < arguments.Length - 1; i++)
         {
@@ -459,8 +488,12 @@ public static class RebuildGate
         EditorPrefs.SetString(SceneKey, playScene ?? string.Empty);
         EditorPrefs.SetFloat(WarmupKey, (float)playWarmup);
         EditorPrefs.SetBool(SceneDoneKey, false);
+        playManual = manual;
+        EditorPrefs.SetBool(ManualKey, manual);
         EditorPrefs.SetBool(ArmedKey, true);
-        Debug.Log(string.Format("----- RebuildGate play: {0} for {1} s -----", scenePath, playSeconds));
+        Debug.Log(manual
+            ? string.Format("----- RebuildGate manual play: {0}, no deadline and no report -----", scenePath)
+            : string.Format("----- RebuildGate play: {0} for {1} s -----", scenePath, playSeconds));
         if (playScene != null && playScene != string.Empty)
         {
             Debug.Log(string.Format("----- RebuildGate play: will load {0} after {1} s -----",
@@ -617,6 +650,13 @@ public static class RebuildGate
         }
 
         TrackPlayScene();
+
+        // Manual mode stops here: the scene is loaded and the editor stays in play mode until the
+        // person in front of it says otherwise.
+        if (playManual)
+        {
+            return;
+        }
 
         if (elapsed < playSeconds)
         {
@@ -861,7 +901,22 @@ public static class RebuildGate
 
     private static void OnPlayModeChanged(PlayModeStateChange change)
     {
-        if (change != PlayModeStateChange.EnteredEditMode || !playReported)
+        if (change != PlayModeStateChange.EnteredEditMode)
+        {
+            return;
+        }
+
+        // A manual run is over once play mode is, and it must be disarmed here: the armed flag lives
+        // in EditorPrefs and would otherwise re-arm the next editor session with nothing to report.
+        if (playManual)
+        {
+            EditorPrefs.SetBool(ArmedKey, false);
+            EditorPrefs.SetBool(ManualKey, false);
+            Debug.Log("----- RebuildGate manual play: stopped -----");
+            return;
+        }
+
+        if (!playReported)
         {
             return;
         }
