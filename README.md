@@ -50,6 +50,11 @@ python tools\check_shaders.py
 scripts\Invoke-ManualPlay.ps1
 ```
 
+If the editor comes up showing `Failed to load window layout`, play mode never starts: an editor that
+was killed rather than closed leaves an empty or stale `LastLayout.dwlt` in
+`%APPDATA%\Unity\Editor-5.x\Preferences\Layouts`, and Unity needs it gone before it will write a
+default one.
+
 Stage details are in `docs\`, the source of truth for status is in `CHANGELOG.md`.
 
 ## Layout

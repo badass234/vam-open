@@ -40,6 +40,13 @@ surface the original had a small dedicated program for.
 - `python tools\verify_twins.py` - 112 pixel passes of the 14 twin families, all the same instruction
   stream up to renaming, 0 differing (`python tools\verify_twins.py --pairs-per-family 0` covers 580).
 
+### Verified by hand
+
+- The lashes draw as strands rather than solid dark cards, in the editor's play mode on the game's
+  own boot scene (`Saves/scene/MeshedVR/default.json`, `scripts\Invoke-ManualPlay.ps1`). The eye's
+  change is proven at the instruction level rather than by eye: both of its passes disassemble to
+  the shipped sequence.
+
 *Defect 3* in [`docs/verification.md`](docs/verification.md) carries the detail.
 
 ## 0.1.1-alpha - 2026-09-16
