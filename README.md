@@ -1,15 +1,24 @@
-# VaM (Virt-a-Mate) - reverse engineering and rebuild
+# OpenVaM - an open rebuild of Virt-a-Mate
 
-This is the Virt-a-Mate reverse-engineering project: the point is to give the community something to
-work with, so that the old, legacy core can be upgraded onto the newer Unity versions of the game.
+Virt-a-Mate's original authors have moved on, and the game is frozen on Unity 2018.1.9f2 with no
+source ever published. OpenVaM is the reverse engineering effort that hands the community the thing
+the original release never did: the game's code and shaders, and a project that builds from them, so
+the legacy core can be maintained and moved onto newer Unity versions by anyone who wants to.
 
 So here it all is - the decompiled C# sources, the Unity project they get put back together into, and
 the pipeline that compiles, boots and checks the result against the original. The game installation
 is only ever read from: nothing here writes into it, and no part of the game ships with the
 repository.
 
-Where the work stands, how it got there, and what is still broken: [`docs/verification.md`](docs/verification.md) and
-the rest of [`docs/`](docs/).
+## Release 0.1.0-alpha
+
+The current release is **0.1.0-alpha**: the game compiles, boots, loads a scene and renders an
+animated, lit character. Hair and body skin read close to the original. Cloth, part of the
+character's materials, the post-processing stage and the refactoring pass are still open.
+
+[`CHANGELOG.md`](CHANGELOG.md) says exactly what works and what does not; how each of those
+statements was measured is in [`docs/`](docs/), starting with
+[`docs/verification.md`](docs/verification.md).
 
 ## Layout
 
@@ -24,6 +33,7 @@ the rest of [`docs/`](docs/).
 | `scripts\` | the pipeline: project setup, shader extraction and generation, compilation gate, smoke runs, log comparison |
 | `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison, shader pre-flight) |
 | `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity, shader reconstruction |
+| `CHANGELOG.md` | what each release contains: what works, what does not, what is known broken |
 
 ## Requirements
 
@@ -71,7 +81,11 @@ scripts\Invoke-SmokeTest.ps1 -Method Report                    # cheap: assembli
 scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 150         # load a scene, report, exit by itself
 scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 150 -Visible # the same, with a visible editor window
 
-# 5. compare our boot log with the original game's
+# 5. or skip the gates and test by hand: opens the editor in play mode on the boot scene
+#    and leaves it there, with no deadline and no report
+scripts\Invoke-ManualPlay.ps1
+
+# 6. compare our boot log with the original game's
 scripts\Compare-BootLogs.ps1
 ```
 
@@ -96,6 +110,8 @@ they investigate is fixed.
 
 ## Status
 
+[`CHANGELOG.md`](CHANGELOG.md) is the source of truth for what works and what does not. In short:
+
 - Compilation: from 1421 errors down to 0; type parity with the original assembly is 2753/2753
   ([`docs/parity-report.md`](docs/parity-report.md)).
 - Booting: the game loads, `SuperController` is alive, `isLoading` falls back to false, and the boot
@@ -109,4 +125,8 @@ they investigate is fixed.
   different operands or opcodes. The 92 families the project does not transcribe - hair, the
   Marmoset IBL set, the geometry-shader family - are read back by name from the shipped `z_sha`
   bundle at runtime (`MeshVR.VamShaderProvider`), because `Shader.Find` never sees a bundle.
-- Next: visual comparison and system checks, then the refactoring pass towards readable code.
+- Manual testing: `scripts\Invoke-ManualPlay.ps1` opens the editor in play mode on the boot scene,
+  `Saves/scene/MeshedVR/default.json`, and leaves it there. Other scenes are for the gates that
+  audit them: opening several scenes in one session crashes the player.
+- Next: cloth and the remaining character materials, then the rest of the shader stubs and the
+  post-processing stage, then the refactoring pass towards readable code.
