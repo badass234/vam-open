@@ -72,7 +72,7 @@ artifacts/
 
 # --- intermediates and editor noise -----------------------------------------------------------
 src/UnityReferences.props
-tools/__pycache__/
+__pycache__/
 **/obj/
 **/bin/
 .vs/
