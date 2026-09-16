@@ -6,6 +6,36 @@ Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html). The 
 so the minor number moves with each round of user-visible work and only the major/minor pair is
 meant to be read as stable.
 
+## 0.1.1-alpha - 2026-09-16
+
+Clothing now renders with its own colour, and transparent where the original is transparent. The
+cause was ours and not the data's: three lines of the shader generator.
+
+### What works
+
+- **Cloth** - the materials of `Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha` draw
+  like the original's. The generator was decoding the serialized `rtBlend*.colMask` with the bit order
+  `(1, R) (2, G) (4, B) (8, A)`, while Unity's `ColorWriteMask` is `Alpha = 1, Blue = 2, Green = 4,
+  Red = 8`. The transparent families serialise `14`, i.e. `RGB`, so they were given `ColorMask GBA`
+  instead: the pass never wrote red, the colour behind it bled through, and the garment read as
+  inverted and transparent. 44 pass states moved from `GBA` to `RGB`
+  ([`docs/verification.md`](docs/verification.md), *Defect 4*).
+
+### Known issues
+
+- The same disassembly shows one layer of that family still missing: the shipped program samples
+  `_DetailMap` and perturbs the shading normal with it, where our library reads the detail layer from
+  `_DecalTex`. It is a bump layer rather than a colour one, so the garments' colour does not depend on
+  it.
+
+### Measurements re-run
+
+- `python tools\check_shaders.py` - `3023/3023 programs compiled, 0 failed`, 43 shaders, 113 passes,
+  15 of them tessellated.
+- `python tools\verify_twins.py --pairs-per-family 0` - 580 pixel passes compared, 0 with different
+  operands or opcodes; `python tools\verify_twins.py` samples every family and reports the same 0 on
+  its 112 passes.
+
 ## 0.1.0-alpha - 2026-09-16
 
 The first public alpha. Virt-a-Mate's code is decompiled, compiles, boots, loads a scene and renders
@@ -37,9 +67,11 @@ part of the character's materials do not, and the recovered code is still the ra
 
 ### What does not work yet
 
-- **Cloth** - clothing renders transparent with its colour inverted. The family the cloth materials
-  want, `Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha`, is not transcribed, and the
-  `_AlphaTex` of the bundle copy is empty where that family reads its alpha from it.
+- **Cloth** - clothing renders transparent with its colour inverted; **fixed in 0.1.1-alpha**. The
+  family the cloth materials want, `Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha`, is
+  not transcribed, and the `_AlphaTex` of the bundle copy is empty where that family reads its alpha
+  from it. *(Both halves of this explanation were refuted by the disassembly: the family does draw
+  through our reconstructed twin, and the empty `_AlphaTex` is the original's own state.)*
 - **Part of the character's materials** - a gloss and bump seam across the shoulder and the back,
   and the eyelashes and the eye, where only some of the material slots fall back to our
   reconstructions.

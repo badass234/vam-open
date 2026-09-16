@@ -10,10 +10,10 @@ the pipeline that compiles, boots and checks the result against the original. Th
 is only ever read from: nothing here writes into it, and no part of the game ships with the
 repository.
 
-## Release 0.1.0-alpha
+## Release 0.1.1-alpha
 
-The current release is **0.1.0-alpha**: the game compiles, boots, loads a scene and renders an
-animated, lit character. Hair and body skin read close to the original. Cloth, part of the
+The current release is **0.1.1-alpha**: the game compiles, boots, loads a scene and renders an
+animated, lit character. Hair, body skin and cloth read close to the original. Part of the
 character's materials, the post-processing stage and the refactoring pass are still open.
 
 [`CHANGELOG.md`](CHANGELOG.md) says exactly what works and what does not; how each of those
@@ -121,12 +121,14 @@ they investigate is fixed.
 - Shaders: the 43 shaders GPU-skinning and the shared `Custom/Subsurface` materials need are
   rebuilt from the shipped DXBC - 31 `*ComputeBuff` plus their 12 plain siblings
   ([`docs/shader-reconstruction.md`](docs/shader-reconstruction.md)); Unity compiles all 113 passes
-  with 0 shader errors, and each pair is checked program by program - 580 passes compared, 0 with
-  different operands or opcodes. The 92 families the project does not transcribe - hair, the
+  with 0 shader errors, and the two halves of each pair are checked program by program - 580 pixel
+  passes compared, 0 with different operands or opcodes. The 92 families the project does not
+  transcribe - hair, the
   Marmoset IBL set, the geometry-shader family - are read back by name from the shipped `z_sha`
   bundle at runtime (`MeshVR.VamShaderProvider`), because `Shader.Find` never sees a bundle.
 - Manual testing: `scripts\Invoke-ManualPlay.ps1` opens the editor in play mode on the boot scene,
   `Saves/scene/MeshedVR/default.json`, and leaves it there. Other scenes are for the gates that
   audit them: opening several scenes in one session crashes the player.
-- Next: cloth and the remaining character materials, then the rest of the shader stubs and the
-  post-processing stage, then the refactoring pass towards readable code.
+- Next: the rest of the character's materials (a gloss and bump seam across the shoulder, the lashes
+  and the eye), then the shader stubs that are still missing and the post-processing stage, then the
+  refactoring pass towards readable code.

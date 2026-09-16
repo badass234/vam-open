@@ -535,8 +535,9 @@ Scope of the fix: three lines of generator, and 44 pass states moved from `GBA` 
 `SeparateAlpha`, `Transparent` and `Cutout` family. The `GlossNMCull`-style skin families serialise as
 `15`, so they were never affected, which is why only the clothing, the lashes and the transparent skin
 layers looked wrong. Shaders are generated, so the fix is a regeneration plus the compile gate: **0
-errors**, 3851/3851 programs, then the user's own manual run on `Saves/scene/MeshedVR/default.json`,
-which confirms the garments.
+errors**. `python tools\check_shaders.py` re-run after the fix assembles every program of the current
+set (`3023/3023`, 0 failed), and the user's own manual run on
+`Saves/scene/MeshedVR/default.json` confirms the garments.
 
 One real gap is left open, and it has no effect on colour: the shipped program also samples
 `_DetailMap` (t3, on its own UV set) and unpacks it as a tangent-space normal - `mul x, w, x` /
@@ -604,7 +605,7 @@ Checked with the compile gate, which now compiles a tessellated pass as its four
 control point at `vs_5_0`, hull at `hs_5_0`, domain at `ds_5_0`, fragment at `ps_5_0` - with
 `SHADER_TARGET 50`, the model the original's hull and domain were built for:
 
-*Current state*: `2816/2816 programs compiled, 0 failed`, 43 shaders, 113 passes, 15 of them
+*Current state*: `3023/3023 programs compiled, 0 failed`, 43 shaders, 113 passes, 15 of them
 tessellated.
 
 Two things a reader should not expect from this:
