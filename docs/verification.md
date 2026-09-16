@@ -459,6 +459,78 @@ character's 30 `GPUmaterials` entries actually carry, and the handedness (`float
 tangent buffer that `DAZSkinV2` writes, since `VamSkin()` Gram-Schmidt-orthogonalises the binormal
 around it.
 
+#### Both of those are now measured, and both are clean
+
+`RebuildGate` reports them for the drawn skin every run, so they no longer have to be guessed at.
+
+* **The 30 `GPUmaterials` slots hold the right maps.** `AppendSubjectTextures` averages `_MainTex`,
+  `_DetailMap`, `_GlossTex` and `_BumpMap` on the GPU - a name in the slot table cannot answer
+  whether the texture behind it holds pixels, because a map that failed to decode or was generated at
+  runtime and never filled in keeps its name and still averages `(1, 1, 1)`. The result is the
+  reverse of the expectation the seam had been attributed to:
+
+  | Slot | `_MainTex` | average | reads as |
+  |---|---|---|---|
+  | `Legs-1` (renders correctly) | `Lexi_LimbsD` | `(0.64, 0.43, 0.38)` | warm skin |
+  | `Torso-1`, `Hips-1`, `Neck-1`, `Head-1` | `Lexi_TorsoD` | `(0.64, 0.41, 0.33)` | warm skin |
+  | `Face-1`, `Nostrils-1`, `Lips-1` | `Lexi_FaceD` | `(0.68, 0.40, 0.31)` | warm skin |
+  | `defaultMat-1` | `Lexi_GenitalsD` | `(0.64, 0.41, 0.36)` | warm skin |
+
+  The gloss maps average `0.04-0.07` (glossy, as skin should be) and the normal maps `(1.00, 0.49,
+  0.49)` - intact DXT5nm with `y` and `z` packed in `.g`/`.a`, which is what a correct bump map
+  averages. The one slot that *is* near-white is `Cornea-1` at `(0.99, 0.99, 0.99, 0.99)`, and that
+  is `S6EyesTr`, a transparency mask, whose family no longer shades at all (Done 18).
+
+  So the suspicion that `Lexi_TorsoD` is generated blank and the submeshes sharing it go neutral is
+  **refuted**: the map the broken submeshes sample carries the same warm skin as the map the working
+  legs sample. (It also closes the question of where those names come from - they are runtime
+  compositor names, not literals in the recovered code, and not on disk or in any `.var`.)
+
+* **The tangent basis is correct where the seam is.** `TangentReport` compares `drawTangents` and
+  `startTangents` with the mesh's own tangents, and reads back the `_tangentsBuffer` and
+  `delayedTangentsBuffer` that the shaders actually sample.
+
+  ```
+  drawTangents[24928]: w>0=0, w<0=24928; not perpendicular to the normal=0/24928; differ from the mesh=156/24928
+  _tangentsBuffer (GPUSkin)[25088]: w>0=45, w<0=24883, w=0=160
+  _tangentsBuffer: by world height - below the hip 181, hip 19, torso 3, neck and head 2
+  ```
+
+  Every CPU tangent is left handed, so nothing is inverted in the staging arrays; the buffer has 205
+  slots that are not left handed, and **181 of them are below the hip - the region that renders
+  correctly - against 3 in the torso and 2 in the neck and head.** A bad binormal would have to be
+  concentrated along the shoulder to explain a seam there; it is concentrated in the legs instead, and
+  the legs are the good part of the render. The 160 `w=0` slots sit past the end of the drawn
+  vertices and are the buffer's padding. Handedness is therefore **not** the cause either.
+
+With the shaders refuted (above), the materials refuted and the tangent frame refuted, defect 1 has no
+remaining suspect on the skin at all. What the same run *does* show is where the brightness the defect
+is described in terms of actually lives. Sampling the character's own column of the frame by world
+height, the pixels that are pure white (`min(RGB) >= 235`) and the median colour of the pixels around
+them:
+
+| Band | white | median of the skin-coloured pixels |
+|---|---|---|
+| legs `0.20-0.70` | 0.00 % | `(245, 168, 128)` |
+| hip `0.80-1.05` | 6.94 % | `(255, 187, 146)` |
+| torso `1.10-1.45` | 11.15 % | `(255, 225, 169)` |
+| neck and head `1.50-1.75` | 13.81 % | `(255, 198, 153)` |
+
+The legs are the only band with no blown pixels and the only band whose median is not clipped - red
+reaches 255 in every band above them. Whatever is over-bright is **additive and grows with height**,
+which is not how a wrong texture or a wrong tangent frame behaves; both would be uniform over the
+submesh. The two things that grow with height are the garments (a near-white top and panty, averages
+`0.91` and `0.89`) and the hair, and the hair is the one that is not in the project:
+
+```
+[bundle] Scalp-1 : shader Custom/Hair/MainSeparateAlphaLayer1 | origin=bundle only (not in project) | passes=3
+```
+
+`New-VaMShaders.py` carries `UNTRANSCRIBED_FAMILIES = ("Custom/Hair/", "Marmoset/")`, so the hair
+draws from the bundle's own shader and has no asset in the project at all - which is fine on a machine
+with the installation and is exactly what a standalone build would lose. That is the next step, not
+another pass over the skin maps.
+
 ### Defect 2 - the scalp patch floating in the air
 
 Verdict: **the hair-card draw path, plus the three hair families being absent from the project.**

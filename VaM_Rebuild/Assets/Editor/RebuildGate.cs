@@ -1490,6 +1490,222 @@ public static class RebuildGate
             drawn.Length, skin.rawVertsBuffer.count, Drift(drawn, unskinned), unskinned.Length);
     }
 
+    /// <summary>
+    /// Measures the tangent basis the body is shaded from.
+    ///
+    /// A bump or gloss seam that follows a line across the body - the shoulder/back seam in defect 1 - is
+    /// what a wrong tangent basis looks like: the normal map is decoded against the vertex tangent, so a
+    /// tangent whose handedness ("w") has flipped, or whose direction is no longer perpendicular to the
+    /// normal, turns the bump inside out on one side of the line and leaves a visible step.
+    ///
+    /// What matters is the buffer the shaders actually read, not the CPU arrays: DrawMeshGPU binds
+    /// _tangentsBuffer, and drawTangents/startTangents are the staging copies behind it. All four are
+    /// compared here, because a staging array that disagrees with the buffer is a skin upload that wrote
+    /// something else than it computed.
+    /// </summary>
+    private static string TangentReport(DAZSkinV2 skin)
+    {
+        Mesh mesh = skin.GetMesh();
+        Vector3[] normals = mesh == null ? null : mesh.normals;
+        Vector4[] meshTangents = mesh == null ? null : mesh.tangents;
+        StringBuilder text = new StringBuilder();
+
+        AppendTangentArray(text, "drawTangents", skin.drawTangents, normals, meshTangents);
+        AppendTangentArray(text, "startTangents", Field(skin, "startTangents") as Vector4[], normals, meshTangents);
+        AppendTangentBuffer(text, "_tangentsBuffer", Field(skin, "_tangentsBuffer") as ComputeBuffer, skin);
+        AppendTangentBuffer(text, "delayedTangentsBuffer", skin.delayedTangentsBuffer, skin);
+        return text.ToString();
+    }
+
+    private static void AppendTangentBuffer(StringBuilder text, string label, ComputeBuffer buffer, DAZSkinV2 skin)
+    {
+        // The tangent buffer holds a tangent per drawn vertex and, like the vertex buffers, extra slots
+        // beyond the mesh: 25088 here against a mesh of 24928 vertices.
+        if (buffer == null || buffer.count == 0)
+        {
+            text.AppendLine(string.Format("    {0}=NULL", label));
+            return;
+        }
+
+        try
+        {
+            Vector4[] data = new Vector4[buffer.count];
+            buffer.GetData(data);
+            AppendTangentArray(text, label + " (GPUSkin)", data, null, null);
+            AppendTangentAnomalies(text, label, data, skin);
+        }
+        catch (Exception e)
+        {
+            text.AppendLine(string.Format("    {0}=unreadable ({1})", label, e.Message));
+        }
+    }
+
+    /// <summary>
+    /// Locates the vertices whose handedness in the buffer disagrees with the staging arrays, and says
+    /// whether they are a body region or a block of indices.
+    ///
+    /// Every tangent in drawTangents is left handed, so any buffer entry that is not left handed is
+    /// either a vertex the skinning wrote a different sign for or a slot that was never written at all.
+    /// Where those sit decides what they are: a scatter along the shoulder is the bump seam, a contiguous
+    /// run at the end is padding.
+    /// </summary>
+    private static void AppendTangentAnomalies(StringBuilder text, string label, Vector4[] data, DAZSkinV2 skin)
+    {
+        Vector3[] verts = ReadVertices(skin == null ? null : skin.rawVertsBuffer);
+        List<int> anomalies = new List<int>();
+        for (int i = 0; i < data.Length; i++)
+        {
+            if (data[i].w >= 0f)
+            {
+                anomalies.Add(i);
+            }
+        }
+
+        if (anomalies.Count == 0)
+        {
+            text.AppendLine(string.Format("    {0}: every slot in the buffer is left handed", label));
+            return;
+        }
+
+        int padded = 0;
+        for (int i = 0; i < anomalies.Count; i++)
+        {
+            if (data[anomalies[i]].sqrMagnitude < 1e-10f)
+            {
+                padded++;
+            }
+        }
+
+        int first = anomalies[0];
+        int last = anomalies[anomalies.Count - 1];
+        text.AppendLine(string.Format(
+            "    {0}: {1} of {2} slots are not left handed ({3} of them all-zero, indices {4}..{5})",
+            label, anomalies.Count, data.Length, padded, first, last));
+
+        if (verts == null)
+        {
+            return;
+        }
+
+        int legs = 0;
+        int hips = 0;
+        int torso = 0;
+        int aboveTorso = 0;
+        int unknown = 0;
+        for (int i = 0; i < anomalies.Count; i++)
+        {
+            int index = anomalies[i];
+            if (index >= verts.Length)
+            {
+                unknown++;
+                continue;
+            }
+
+            float y = verts[index].y;
+            if (y < 0.75f)
+            {
+                legs++;
+            }
+            else if (y < 1.10f)
+            {
+                hips++;
+            }
+            else if (y < 1.53f)
+            {
+                torso++;
+            }
+            else
+            {
+                aboveTorso++;
+            }
+        }
+
+        text.AppendLine(string.Format(
+            "    {0}: by world height - below the hip {1}, hip {2}, torso {3}, neck and head {4}, past the drawn verts {5}",
+            label, legs, hips, torso, aboveTorso, unknown));
+
+        int listed = Math.Min(anomalies.Count, 8);
+        StringBuilder positions = new StringBuilder();
+        for (int i = 0; i < listed; i++)
+        {
+            int index = anomalies[i];
+            if (index >= verts.Length)
+            {
+                continue;
+            }
+
+            if (positions.Length > 0)
+            {
+                positions.Append(", ");
+            }
+
+            positions.Append(string.Format("{0} at ({1:0.00}, {2:0.00}, {3:0.00}) w={4:0.00}",
+                index, verts[index].x, verts[index].y, verts[index].z, data[index].w));
+        }
+
+        text.AppendLine(string.Format("    {0}: first {1} - {2}", label, listed, positions));
+    }
+
+    private static void AppendTangentArray(StringBuilder text, string label, Vector4[] tangents,
+        Vector3[] normals, Vector4[] meshTangents)
+    {
+        if (tangents == null)
+        {
+            text.AppendLine(string.Format("    {0}=NULL", label));
+            return;
+        }
+
+        int right = 0;
+        int left = 0;
+        int zeroed = 0;
+        int offAxis = 0;
+        int checkedAgainstNormals = 0;
+        int comparedWithMesh = 0;
+        int differFromMesh = 0;
+        int count = tangents.Length;
+
+        for (int i = 0; i < count; i++)
+        {
+            Vector4 tangent = tangents[i];
+            if (tangent.w > 0f)
+            {
+                right++;
+            }
+            else if (tangent.w < 0f)
+            {
+                left++;
+            }
+            else
+            {
+                zeroed++;
+            }
+
+            if (normals != null && i < normals.Length && normals[i].sqrMagnitude > 1e-10f)
+            {
+                checkedAgainstNormals++;
+                if (Mathf.Abs(Vector3.Dot(tangent, normals[i])) > 0.25f)
+                {
+                    offAxis++;
+                }
+            }
+
+            if (meshTangents != null && i < meshTangents.Length)
+            {
+                comparedWithMesh++;
+                Vector3 ours = new Vector3(tangent.x, tangent.y, tangent.z);
+                Vector3 theirs = new Vector3(meshTangents[i].x, meshTangents[i].y, meshTangents[i].z);
+                if ((ours - theirs).sqrMagnitude > 1e-6f || Mathf.Sign(tangent.w) != Mathf.Sign(meshTangents[i].w))
+                {
+                    differFromMesh++;
+                }
+            }
+        }
+
+        text.AppendLine(string.Format(
+            "    {0}[{1}]: handedness w>0={2}, w<0={3}, w=0={4}; not perpendicular to the normal={5}/{6}; differing from the mesh tangents={7}/{8}",
+            label, count, right, left, zeroed, offAxis, checkedAgainstNormals, differFromMesh, comparedWithMesh));
+    }
+
     /// <summary>The field of any name on an object, public or not, or null when there is no such field.</summary>
     private static object Field(object target, string name)
     {
@@ -2507,6 +2723,8 @@ public static class RebuildGate
             report.AppendLine(string.Format("    materialsEnabled={0}", flags.ToString()));
         }
 
+        AppendSubjectTextures(report, subject);
+
         MeshFilter ownFilter = subject.GetComponent<MeshFilter>();
         MeshRenderer ownRenderer = subject.GetComponent<MeshRenderer>();
         Mesh ownMesh = ownFilter == null ? null : ownFilter.sharedMesh;
@@ -2715,6 +2933,59 @@ public static class RebuildGate
         }
     }
 
+    /// <summary>
+    /// The average of every map the skin's own slots draw with. The slot table above answers "is a texture
+    /// bound", and a name is no answer to "does that texture hold pixels": a map that failed to decode, or
+    /// one generated at runtime and never filled in, keeps its name and still averages (1, 1, 1). Slots that
+    /// share a texture print once, under the first slot that uses it.
+    /// </summary>
+    private static void AppendSubjectTextures(StringBuilder report, DAZSkinV2 subject)
+    {
+        report.AppendLine("      maps the skin's own slots draw with, averaged on the GPU:");
+        HashSet<int> seen = new HashSet<int>();
+        AppendSlotTextures(report, subject.GPUmaterials, "GPUmaterials", seen);
+        AppendSlotTextures(report, subject.dazMesh == null ? null : subject.dazMesh.materials,
+                           "materials", seen);
+    }
+
+    /// <summary>Walks one material list and reports each distinct map in it, averaged.</summary>
+    private static void AppendSlotTextures(StringBuilder report, Material[] list, string label,
+                                           HashSet<int> seen)
+    {
+        if (list == null)
+        {
+            return;
+        }
+
+        string[] properties = { "_MainTex", "_DetailMap", "_GlossTex", "_BumpMap" };
+        for (int i = 0; i < list.Length; i++)
+        {
+            Material material = list[i];
+            if (material == null)
+            {
+                continue;
+            }
+
+            foreach (string property in properties)
+            {
+                if (!material.HasProperty(property))
+                {
+                    continue;
+                }
+
+                Texture texture = material.GetTexture(property);
+                if (texture == null || !seen.Add(texture.GetInstanceID()))
+                {
+                    continue;
+                }
+
+                report.AppendLine(string.Format("        {0}[{1}] {2} {3}: {4}",
+                                                label, i, material.name, property,
+                                                TextureAverage(texture)));
+            }
+        }
+    }
+
     /// <summary>The vertex count behind a protected Mesh field, read without running the init that fills it.</summary>
     private static string MeshField(object target, string name)
     {
@@ -2854,6 +3125,7 @@ public static class RebuildGate
                     string.Format("{0} ({1} verts)", mesh.name, mesh.vertexCount)));
                 report.AppendLine(string.Format("    generalWeights={0}, {1}",
                     Flag(skin, "_useGeneralWeights"), DrawnVertexDrift(skin)));
+                report.AppendLine(TangentReport(skin));
                 report.AppendLine(string.Format("    GPUmaterials={0}", MaterialSummary(skin.GPUmaterials)));
                 string subMeshes = SubMeshMap(skin, mesh, true);
                 if (subMeshes != string.Empty)

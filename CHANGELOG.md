@@ -39,6 +39,31 @@ surface the original had a small dedicated program for.
   are no longer compiled as the shared fragment as well as their own entry point.
 - `python tools\verify_twins.py` - 112 pixel passes of the 14 twin families, all the same instruction
   stream up to renaming, 0 differing (`python tools\verify_twins.py --pairs-per-family 0` covers 580).
+- The run's own report now carries two measurements defect 1 needed and did not have: the GPU average
+  of every map the drawn skin's 30 `GPUmaterials` slots sample, and the handedness of the tangent
+  basis the shaders are given.
+
+### Defect 1 - the two unmeasured suspects come back clean
+
+The shoulder and back gloss seam had been narrowed to two things that were never measured, and both
+come back clean:
+
+- **The skin maps are right.** Every slot's `_MainTex` averages a plausible warm skin -
+  `Lexi_TorsoD`, the map the broken submeshes share, is `(0.64, 0.41, 0.33)` against the working
+  `Lexi_LimbsD` at `(0.64, 0.43, 0.38)` - the gloss maps read `0.04-0.07` (glossy) and the normal maps
+  `(1.00, 0.49, 0.49)` (intact DXT5nm). The one near-white map is the cornea's `S6EyesTr`, a
+  transparency mask whose family no longer shades at all.
+- **The tangent basis is right where the seam is.** All 24928 CPU tangents are left handed and
+  perpendicular to their normals; the tangent buffer's 205 non-left-handed slots sit **181 below the
+  hip** - the region that renders correctly - against 3 in the torso and 2 in the neck and head.
+
+With the shaders already refuted, the skin now has no remaining suspect. What the same run locates is
+where the brightness comes from: the legs are the only band with no blown pixels and the only band
+whose colour is not clipped, and above them the white rises with height (hip 6.9 %, torso 11.2 %, head
+13.8 %) - additive, and not something a wrong map or a wrong tangent frame can do. The hair is the
+part of that which is not in the project: `Custom/Hair/MainSeparateAlphaLayer1` resolves as
+`origin=bundle only (not in project)`, since `New-VaMShaders.py` still lists `Custom/Hair/` and
+`Marmoset/` as untranscribed. Transcribing them is what a standalone build needs next.
 
 ### Verified by hand
 
