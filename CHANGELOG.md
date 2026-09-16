@@ -102,4 +102,4 @@ part of the character's materials do not, and the recovered code is still the ra
 ### Requirements
 
 Windows, Unity **2018.1.9f2**, and your own Virt-a-Mate installation - no game content ships with
-this repository. See [Reproducing](README.md#reproducing) in the README.
+this repository. See [How to try it](README.md#how-to-try-it) in the README.

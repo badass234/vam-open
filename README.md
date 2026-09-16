@@ -1,24 +1,56 @@
-# OpenVaM - an open rebuild of Virt-a-Mate
+# VAMOpen 0.1.1-alpha
 
-Virt-a-Mate's original authors have moved on, and the game is frozen on Unity 2018.1.9f2 with no
-source ever published. OpenVaM is the reverse engineering effort that hands the community the thing
-the original release never did: the game's code and shaders, and a project that builds from them, so
-the legacy core can be maintained and moved onto newer Unity versions by anyone who wants to.
+Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
+developers just keep taking money and releasing tiny fixes for years.
 
-So here it all is - the decompiled C# sources, the Unity project they get put back together into, and
-the pipeline that compiles, boots and checks the result against the original. The game installation
-is only ever read from: nothing here writes into it, and no part of the game ships with the
-repository.
+VAMOpen is an attempt to bring Virt-a-Mate back to life.
 
-## Release 0.1.1-alpha
+It's reverse engineering, reassembled back into a Unity project, with shaders recovered from the
+bytecode that ships in the release build. I don't redistribute the game itself. The repository only
+contains the recovered code and the pipeline, and you point it at your own installation.
 
-The current release is **0.1.1-alpha**: the game compiles, boots, loads a scene and renders an
-animated, lit character. Hair, body skin and cloth read close to the original. Part of the
-character's materials, the post-processing stage and the refactoring pass are still open.
+## What already works
 
-[`CHANGELOG.md`](CHANGELOG.md) says exactly what works and what does not; how each of those
-statements was measured is in [`docs/`](docs/), starting with
-[`docs/verification.md`](docs/verification.md).
+- Compiles and runs.
+- Scenes, character, skin, hair load.
+- Clothing renders correctly, layers are fine.
+- Physics
+- UI
+- Some shaders
+- Post-processing
+
+## What's still in progress
+
+- Minor character material defects.
+- Many shaders not ported yet.
+- Some shaders
+- Code is partially readable but needs refactoring.
+
+## Plan
+
+First, get the project to a state where 95% of basic functions work stably.
+Then gradually move everything to the latest Unity version.
+And after that, add modern stuff: proper Anti-Aliasing, new shaders (subsurface scattering, HDAO,
+etc.), then DX12 and Vulkan, add at least basic multithreading so physics doesn't lag when you add
+just a couple of characters to the scene, then FSR 4, DLSS, Ray Tracing, and so on.
+
+The hardest part here is the engine migration. Everything else after that is much easier.
+
+## How to try it
+
+You need Windows, Unity 2018.1.9f2, and your own Virt-a-Mate installation. Keep Unity Hub closed,
+otherwise it will reissue the license file and the 2018.1 editor will reject the reissued one.
+
+```powershell
+scripts\Setup-RebuildProject.ps1
+scripts\Invoke-CompileGate.ps1
+python scripts\Extract-VaMShaders.py --out artifacts\shader-blobs
+python scripts\New-VaMShaders.py
+python tools\check_shaders.py
+scripts\Invoke-ManualPlay.ps1
+```
+
+Stage details are in `docs\`, the source of truth for status is in `CHANGELOG.md`.
 
 ## Layout
 
@@ -34,15 +66,6 @@ statements was measured is in [`docs/`](docs/), starting with
 | `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison, shader pre-flight) |
 | `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity, shader reconstruction |
 | `CHANGELOG.md` | what each release contains: what works, what does not, what is known broken |
-
-## Requirements
-
-- Windows.
-- A Virt-a-Mate installation. Nothing in the repository points at it; see *Paths* below.
-- Unity **2018.1.9f2**, activated, installed through Unity Hub. Keep Hub closed while working: it
-  reissues `%ProgramData%\Unity\Unity_lic.ulf`, and the 2018.1 editor rejects the reissued file -
-  the details are in [`docs/unity-editor.md`](docs/unity-editor.md).
-- .NET SDK, ilspycmd and AssetRipper: `scripts\Setup-RebuildProject.ps1` fetches them into `.tools\`.
 
 ## Paths
 
@@ -61,41 +84,6 @@ parameter with a portable default:
   scripts work from any working directory. Beware that PowerShell's `Set-Location` does not move the
   process's current directory, which matters for the Unity runs; the runners handle it themselves.
 
-## Reproducing
-
-```powershell
-# 1. toolchain, asset extraction, project assembly (creates .tools, work\ripped-core, Assets\<asset type>)
-scripts\Setup-RebuildProject.ps1
-
-# 2. the decompiled sources must compile through the editor: 0 errors
-scripts\Invoke-CompileGate.ps1
-
-# 3. the ComputeBuff shaders: extract the shipped bytecode, generate the shaders,
-#    pre-flight them with fxc (docs\shader-reconstruction.md)
-python scripts\Extract-VaMShaders.py --out artifacts\shader-blobs
-python scripts\New-VaMShaders.py
-python tools\check_shaders.py
-
-# 4. boot the game and read the gate's verdict
-scripts\Invoke-SmokeTest.ps1 -Method Report                    # cheap: assemblies, scenes, diagnostic probes
-scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 150         # load a scene, report, exit by itself
-scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 150 -Visible # the same, with a visible editor window
-
-# 5. or skip the gates and test by hand: opens the editor in play mode on the boot scene
-#    and leaves it there, with no deadline and no report
-scripts\Invoke-ManualPlay.ps1
-
-# 6. compare our boot log with the original game's
-scripts\Compare-BootLogs.ps1
-```
-
-Runs are headless by default: `-batchmode` means the game renders offscreen and no window appears.
-`-Visible` drops `-batchmode`, so the editor opens and the game renders in the Game view - the only
-way to watch the rebuild with your own eyes.
-
-The reference for step 4 is the log the original game writes itself, at
-`%USERPROFILE%\AppData\LocalLow\MeshedVR\VaM\output_log.txt`.
-
 ## Diagnostics
 
 Before trusting any diagnostic run, call `-Method Report`. It prints which assemblies and scenes are
@@ -108,27 +96,9 @@ exactly like a negative result. This check tells the two apart.
 The probes themselves are marked `TEMP DIAGNOSTIC` in the sources and are removed once the defect
 they investigate is fixed.
 
-## Status
+## Where help is needed
 
-[`CHANGELOG.md`](CHANGELOG.md) is the source of truth for what works and what does not. In short:
-
-- Compilation: from 1421 errors down to 0; type parity with the original assembly is 2753/2753
-  ([`docs/parity-report.md`](docs/parity-report.md)).
-- Booting: the game loads, `SuperController` is alive, `isLoading` falls back to false, and the boot
-  log matches the original's line for line ([`docs/verification.md`](docs/verification.md)).
-- Scenes and animation: `CyberDemoAlt` loads with all 17 atoms present and 1883 MonoBehaviours, and
-  the character's 84-bone animation drives the skeleton.
-- Shaders: the 43 shaders GPU-skinning and the shared `Custom/Subsurface` materials need are
-  rebuilt from the shipped DXBC - 31 `*ComputeBuff` plus their 12 plain siblings
-  ([`docs/shader-reconstruction.md`](docs/shader-reconstruction.md)); Unity compiles all 113 passes
-  with 0 shader errors, and the two halves of each pair are checked program by program - 580 pixel
-  passes compared, 0 with different operands or opcodes. The 92 families the project does not
-  transcribe - hair, the
-  Marmoset IBL set, the geometry-shader family - are read back by name from the shipped `z_sha`
-  bundle at runtime (`MeshVR.VamShaderProvider`), because `Shader.Find` never sees a bundle.
-- Manual testing: `scripts\Invoke-ManualPlay.ps1` opens the editor in play mode on the boot scene,
-  `Saves/scene/MeshedVR/default.json`, and leaves it there. Other scenes are for the gates that
-  audit them: opening several scenes in one session crashes the player.
-- Next: the rest of the character's materials (a gloss and bump seam across the shoulder, the lashes
-  and the eye), then the shader stubs that are still missing and the post-processing stage, then the
-  refactoring pass towards readable code.
+The two character material defects are the smallest and most visible bugs left. After that, porting
+the remaining shaders is mechanical work with real payoff: it's what will let the build run without
+the original installation. If you have experience with D3D11 shaders, Marmoset IBL, and
+post-processing are the two places where it matters most.
