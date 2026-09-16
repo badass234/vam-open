@@ -2144,8 +2144,13 @@ public static class RebuildGate
     /// that texture lands on the head is therefore a question about a submesh index and about where
     /// the submesh's vertices actually are, so this prints both for every submesh that carries a hair
     /// or scalp material.
+    ///
+    /// `scalpOnly` keeps that filter. The body asks for the same map without it: the reported look
+    /// defects are the shoulder and back seams and the eye and lash materials, and a slot list that
+    /// does not follow the geometry - the eye materials drawn on a shoulder, say - is the one
+    /// data-side explanation a report can see, because the world box is where the submesh is.
     /// </summary>
-    private static string SubMeshMap(DAZSkinV2 skin, Mesh mesh)
+    private static string SubMeshMap(DAZSkinV2 skin, Mesh mesh, bool scalpOnly)
     {
         if (mesh == null || skin.dazMesh == null)
         {
@@ -2162,7 +2167,8 @@ public static class RebuildGate
             string gpu = skin.GPUmaterials != null && i < skin.GPUmaterials.Length && skin.GPUmaterials[i] != null
                 ? skin.GPUmaterials[i].name
                 : "none";
-            if (name.IndexOf("scalp", StringComparison.OrdinalIgnoreCase) < 0
+            if (scalpOnly
+                && name.IndexOf("scalp", StringComparison.OrdinalIgnoreCase) < 0
                 && gpu.IndexOf("scalp", StringComparison.OrdinalIgnoreCase) < 0
                 && name.IndexOf("hair", StringComparison.OrdinalIgnoreCase) < 0)
             {
@@ -2488,6 +2494,7 @@ public static class RebuildGate
                 : subject.GPUsimpleMaterial.shader.name,
             subject.renderSuspend));
         report.AppendLine(string.Format("    GPUmaterials={0}", MaterialSummary(subject.GPUmaterials)));
+        AppendWrapMaterials(report, "GPUmaterials", subject.GPUmaterials, subject.materialsEnabled);
 
         if (subject.materialsEnabled != null)
         {
@@ -2546,6 +2553,17 @@ public static class RebuildGate
                                 meshRenderer.enabled, meshRenderer.isVisible,
                                 shownMesh == null ? "NULL" : shownMesh.name,
                                 MaterialSummary(meshRenderer.sharedMaterials))));
+
+        Mesh drawnMesh = dazMesh.morphedUVMappedMesh != null ? dazMesh.morphedUVMappedMesh : shownMesh;
+        string bodySubMeshes = SubMeshMap(subject, drawnMesh, false);
+        if (bodySubMeshes.Length > 0)
+        {
+            report.AppendLine(string.Format(
+                "    submesh map of {0}, {1} verts (world boxes, so a slot can be placed on the body):",
+                drawnMesh.name.Length == 0 ? "<unnamed mesh>" : drawnMesh.name,
+                drawnMesh.vertexCount));
+            report.AppendLine(bodySubMeshes);
+        }
 
         return report.ToString();
     }
@@ -2837,7 +2855,7 @@ public static class RebuildGate
                 report.AppendLine(string.Format("    generalWeights={0}, {1}",
                     Flag(skin, "_useGeneralWeights"), DrawnVertexDrift(skin)));
                 report.AppendLine(string.Format("    GPUmaterials={0}", MaterialSummary(skin.GPUmaterials)));
-                string subMeshes = SubMeshMap(skin, mesh);
+                string subMeshes = SubMeshMap(skin, mesh, true);
                 if (subMeshes != string.Empty)
                 {
                     report.AppendLine(subMeshes);
