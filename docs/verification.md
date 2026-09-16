@@ -388,7 +388,8 @@ shader, pass count and origin. See section 3 for the command.
 
 ### Defect 1 - gloss and bump seams where Torso meets Head, Neck and Forearms
 
-Verdict: **two of our own reconstructions disagree with each other.** Not a missing shader.
+Verdict: **the shader side is not the cause.** The cause is data-side (material values or the
+skinned buffers), or the original has the same seam.
 
 The body is a single mesh of 28 submeshes, and those submeshes do not all land on the same family:
 
@@ -399,12 +400,39 @@ The body is a single mesh of 28 submeshes, and those submeshes do not all land o
 | `Gums`, `InnerMouth`, `Lacrimals`, `Pupils` | `Custom/Subsurface/CullComputeBuff` | project, 3 passes |
 
 The seams are exactly the boundaries of that first row - the shoulder (Torso against Forearms) and
-the back and throat (Torso against Neck and Head). Two transcriptions of one skin family that agree
-about the diffuse map but not about the normal map or the gloss produce precisely the reported
-effect: the texture lines up, the light does not. The `TessMappedFixed` row is the prime suspect,
-because its original evaluates normals on a tessellated and displacement-mapped surface; a
-transcription that keeps the passes but drops the tessellation evaluates them per vertex instead, and
-the two then disagree along every shared edge.
+the back and throat (Torso against Neck and Head), so the family split was the first suspect. It has
+since been refuted by compiling both of our generated families with `fxc` and comparing the
+programs, and by comparing our program against the shipped one:
+
+* **Our two families compile to the same program.** FORWARDBASE pixel 180 instructions on both
+  sides with differences only in `cb0` offsets (the `_Tess*` properties shift our own layout);
+  FORWARDADD 106/106 with two offset-only differences; the vertex program 43/43 with zero
+  differences. Identical programs cannot shade a shared edge differently, so the split cannot
+  produce the seam.
+* **Our program is a faithful port of the shipped one.** Against the original
+  `PixelSM40_DIRECTIONAL-MARMO_LINEAR` blob (201 instructions) the only material difference is the
+  documented omission of the lightmap indirection: the original's `if_nz` probe-volume block with
+  its `cb3[0..6]` uniforms and `cb2[46]` (Unity's baked occlusion) is 21 instructions, which is
+  exactly the 201-180 delta. Every other register maps one-to-one onto ours - `cb0[71]` subsurface
+  to our `cb0[9]`, `cb0[72]` bumpiness to our `cb0[7]`, `cb0[73..74]` IBL to our `cb0[18..19]`,
+  `cb0[86..94]` (`_SH0.._SH8`) to our `cb0[21..29]`, `cb2[39..46]` to our `cb2[39..45]`. Both
+  programs reference 21-22 `cb0` registers, i.e. the same property set.
+* **The tangent frame is fed correctly.** `VAM_NO_TANGENTS` is defined for exactly one pass of the
+  Cull family (SHADOWCASTER, whose original binds no tangent buffer); FORWARDBASE and FORWARDADD
+  read `t2`, so the normal map is not evaluated in a fallback frame.
+* **The one remaining shader-side deviation is the additive pass**, which is still a plain Lambert
+  diffuse in ours (`VamGpuSkinning.cginc`, header). It is identical for both families, so it too
+  cannot open a seam, but it does make the per-light response wrong and stays on the list.
+* **Material assignment cannot mix neighbours up either.** `MeshGPU.InitMaterials` sizes
+  `GPUmaterials` from `dazMesh.materials.Length`, and both draw loops
+  (`MeshGPU.DrawMesh`, `DAZSkinV2.DrawMeshGPU`) pass the same index as both the material slot and the
+  submesh index to `Graphics.DrawMesh`, gated by `materialsEnabled[i]`. Submesh `i` therefore always
+  gets `GPUmaterials[i]`, so two adjacent submeshes can never swap materials.
+
+What was not measured, and is what the seam now has to be: the per-material values the active
+character's 30 `GPUmaterials` entries actually carry, and the handedness (`float4.w`) of the skinned
+tangent buffer that `DAZSkinV2` writes, since `VamSkin()` Gram-Schmidt-orthogonalises the binormal
+around it.
 
 ### Defect 2 - the scalp patch floating in the air
 
