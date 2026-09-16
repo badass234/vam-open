@@ -2508,6 +2508,552 @@ public static class RebuildGate
         return report.ToString();
     }
 
+    /// <summary>One material asset as the census found it, with the shader that draws it and where it is used.</summary>
+    private class MaterialUse
+    {
+        public Material material;
+        public string shaderName;
+        public string origin;
+
+        /// <summary>
+        /// Every way the material is reached: a renderer slot, or a `Graphics.DrawMesh` call. A material
+        /// can be on both - the cloth items are, because a disabled renderer slot and the skin's GPU
+        /// material list can hold the same material.
+        /// </summary>
+        public readonly List<string> kinds = new List<string>();
+
+        public bool supported;
+        public bool stub;
+        public int passes;
+        public int slots;
+        public readonly List<string> owners = new List<string>();
+
+        public string KindLabel
+        {
+            get { return kinds.Count == 0 ? "unknown" : string.Join("+", kinds.ToArray()); }
+        }
+
+        public bool DrawnWithoutRenderer
+        {
+            get
+            {
+                foreach (string k in kinds)
+                {
+                    if (k != "renderer")
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+    }
+
+    /// <summary>One shader family, summed over the material assets that use it.</summary>
+    private class ShaderUse
+    {
+        public int materials;
+        public int slots;
+        public bool supported = true;
+        public bool stub;
+        public readonly SortedSet<int> passes = new SortedSet<int>();
+        public readonly List<string> origins = new List<string>();
+
+        public void AddOrigin(string origin)
+        {
+            if (!origins.Contains(origin))
+            {
+                origins.Add(origin);
+                origins.Sort(StringComparer.Ordinal);
+            }
+        }
+    }
+
+    private const string NoShaderName = "(no shader)";
+
+    private static readonly Dictionary<string, bool> StubShaderCache = new Dictionary<string, bool>(StringComparer.Ordinal);
+    private static readonly Dictionary<string, bool> ProjectShaderNameCache = new Dictionary<string, bool>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Every material slot on every renderer in the loaded scene, grouped by material and by shader.
+    ///
+    /// The look triage rests on this census, because the two causes it has to tell apart look identical
+    /// on screen: a family the project never defines at all - the material then draws with the copy
+    /// Unity resolved out of the shipped bundle - and a family the project does define, but as an
+    /// AssetRipper placeholder that renders `_MainTex * _Color` and nothing else. "Unsupported" is
+    /// therefore not the interesting column: a stub is perfectly supported, it just draws without
+    /// alpha, gloss and bump. What settles a defect is which family, in whose copy, with how many
+    /// passes, on which renderer.
+    /// </summary>
+    private static string ShaderCensus()
+    {
+        StringBuilder report = new StringBuilder("----- material and shader census -----\n");
+
+        // A headless editor has no graphics device, and with none every shader reports itself
+        // unsupported and keeps no passes - which would make two of the columns below look like a
+        // defect in the rebuild. The device is therefore stated once, next to them.
+        report.AppendLine(string.Format("graphics device: {0}{1}", SystemInfo.graphicsDeviceType,
+            SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null
+                ? " (NULL - isSupported and the pass counts below say nothing about a real run)"
+                : ""));
+        try
+        {
+            List<Renderer> renderers = SceneObjects<Renderer>();
+            Dictionary<int, MaterialUse> byMaterial = new Dictionary<int, MaterialUse>();
+            int slots = 0;
+            int nullSlots = 0;
+            int disabled = 0;
+            foreach (Renderer renderer in renderers)
+            {
+                disabled += renderer.enabled ? 0 : 1;
+                Material[] materials = renderer.sharedMaterials;
+                if (materials == null)
+                {
+                    continue;
+                }
+
+                string path = TransformPath(renderer.transform);
+                foreach (Material material in materials)
+                {
+                    slots++;
+                    if (material == null)
+                    {
+                        nullSlots++;
+                        continue;
+                    }
+
+                    RecordMaterialUse(byMaterial, material, "renderer", path);
+                }
+            }
+
+            // The character is the reason this census exists, and almost nothing of it goes through a
+            // renderer slot: DAZSkinV2 gpu-skins its mesh and draws it with the materials it keeps in
+            // GPUmaterials (or the single GPUsimpleMaterial of the cpu-skinned path), and DAZHairMesh
+            // draws the hair and the scalp it builds out of the selection with hairMaterialRuntime.
+            // Those lists are copies made at init time, so they are what the pixels really come from.
+            List<MaterialUse> drawn = new List<MaterialUse>();
+            foreach (DAZSkinV2 skin in SceneObjects<DAZSkinV2>())
+            {
+                string skinPath = TransformPath(skin.transform);
+                if (skin.GPUmaterials != null)
+                {
+                    foreach (Material material in skin.GPUmaterials)
+                    {
+                        RecordDrawMaterial(byMaterial, drawn, material, "skin GPUmaterials", skinPath);
+                    }
+                }
+
+                RecordDrawMaterial(byMaterial, drawn, skin.GPUsimpleMaterial, "skin GPUsimpleMaterial", skinPath);
+            }
+
+            foreach (DAZHairMesh hair in SceneObjects<DAZHairMesh>())
+            {
+                string hairPath = TransformPath(hair.transform);
+                RecordDrawMaterial(byMaterial, drawn, hair.hairMaterial, "hair hairMaterial", hairPath);
+                RecordDrawMaterial(byMaterial, drawn, hair.hairMaterialRuntime, "hair hairMaterialRuntime", hairPath);
+            }
+
+            drawn.Sort(delegate (MaterialUse a, MaterialUse b)
+            {
+                int byRank = ShaderRank(a).CompareTo(ShaderRank(b));
+                if (byRank != 0)
+                {
+                    return byRank;
+                }
+
+                int byKind = string.CompareOrdinal(a.KindLabel, b.KindLabel);
+                if (byKind != 0)
+                {
+                    return byKind;
+                }
+
+                int byShaderName = string.CompareOrdinal(a.shaderName, b.shaderName);
+                return byShaderName != 0 ? byShaderName : string.CompareOrdinal(a.material.name, b.material.name);
+            });
+
+            // Worst first, so the list can be capped without losing what it exists for: no shader,
+            // unsupported, stub, a bundle copy of a family the project does define, a built-in that
+            // was never meant to be replaced, then everything healthy.
+            List<MaterialUse> materialsBySeverity = new List<MaterialUse>(byMaterial.Values);
+            materialsBySeverity.Sort(delegate (MaterialUse a, MaterialUse b)
+            {
+                int byRank = ShaderRank(a).CompareTo(ShaderRank(b));
+                if (byRank != 0)
+                {
+                    return byRank;
+                }
+
+                int byName = string.CompareOrdinal(a.shaderName, b.shaderName);
+                return byName != 0 ? byName : string.CompareOrdinal(a.material.name, b.material.name);
+            });
+
+            Dictionary<string, ShaderUse> byShader = new Dictionary<string, ShaderUse>(StringComparer.Ordinal);
+            foreach (MaterialUse use in materialsBySeverity)
+            {
+                ShaderUse shader;
+                if (!byShader.TryGetValue(use.shaderName, out shader))
+                {
+                    shader = new ShaderUse();
+                    byShader[use.shaderName] = shader;
+                }
+
+                shader.materials++;
+                shader.slots += use.slots;
+                shader.supported &= use.supported;
+                shader.stub |= use.stub;
+                shader.passes.Add(use.passes);
+                shader.AddOrigin(use.origin);
+            }
+
+            report.AppendLine(string.Format(
+                "renderers: {0} ({1} disabled); material slots: {2} ({3} with no material); distinct materials: {4} ({5} of them drawn without a renderer slot); distinct shaders: {6}",
+                renderers.Count, disabled, slots, nullSlots, byMaterial.Count, drawn.Count, byShader.Count));
+            int missingFamilies = 0;
+            foreach (string name in byShader.Keys)
+            {
+                missingFamilies += name != NoShaderName && !ProjectDefinesShader(name) ? 1 : 0;
+            }
+
+            report.AppendLine(string.Format(
+                "suspects: {0} material(s) with an unsupported shader, {1} material(s) on a stub, {2} material(s) on a bundle copy, {3} shader family/families not defined in the project",
+                CountWhere(materialsBySeverity, delegate (MaterialUse u) { return !u.supported; }),
+                CountWhere(materialsBySeverity, delegate (MaterialUse u) { return u.stub; }),
+                CountWhere(materialsBySeverity, delegate (MaterialUse u) { return u.origin.StartsWith("bundle", StringComparison.Ordinal); }),
+                missingFamilies));
+
+            // The character's own materials are the ones the four reported defects come from, so they
+            // are stated separately from the scene furniture rather than left to be read out of the
+            // 80-line list above.
+            report.AppendLine(string.Format(
+                "character materials: {0} drawn, {1} on an unsupported shader, {2} on a bundle copy, {3} on a project shader",
+                drawn.Count,
+                CountWhere(drawn, delegate (MaterialUse u) { return !u.supported; }),
+                CountWhere(drawn, delegate (MaterialUse u) { return u.origin.StartsWith("bundle", StringComparison.Ordinal); }),
+                CountWhere(drawn, delegate (MaterialUse u) { return u.origin == "project"; })));
+
+            AppendDrawMeshList(report, drawn);
+            AppendShaderFamilies(report, byShader, true);
+            AppendMaterialList(report, materialsBySeverity);
+            AppendShaderFamilies(report, byShader, false);
+        }
+        catch (Exception e)
+        {
+            report.AppendLine("census stopped at " + e.GetType().Name + ": " + e.Message);
+        }
+
+        return report.ToString();
+    }
+
+    /// <summary>
+    /// Adds one material to the census, creating its entry the first time it is seen. The entry keeps
+    /// the state of the material at the moment it was found, which for a runtime copy is the state the
+    /// draw call really uses.
+    /// </summary>
+    private static void RecordMaterialUse(Dictionary<int, MaterialUse> byMaterial, Material material, string kind, string owner)
+    {
+        MaterialUse use;
+        if (!byMaterial.TryGetValue(material.GetInstanceID(), out use))
+        {
+            Shader shader = material.shader;
+            use = new MaterialUse();
+            use.material = material;
+            use.shaderName = shader == null ? NoShaderName : shader.name;
+            use.origin = ShaderOrigin(shader);
+            use.supported = shader != null && shader.isSupported;
+            use.stub = IsStubShader(shader);
+            use.passes = material.passCount;
+            byMaterial[material.GetInstanceID()] = use;
+        }
+
+        if (!use.kinds.Contains(kind))
+        {
+            use.kinds.Add(kind);
+        }
+
+        use.slots++;
+        if (use.owners.Count < 4 && !use.owners.Contains(owner))
+        {
+            use.owners.Add(owner);
+        }
+    }
+
+    /// <summary>The same, for a material reached through a `Graphics.DrawMesh` call rather than a slot.</summary>
+    private static void RecordDrawMaterial(Dictionary<int, MaterialUse> byMaterial, List<MaterialUse> drawn,
+        Material material, string kind, string owner)
+    {
+        if (material == null)
+        {
+            return;
+        }
+
+        RecordMaterialUse(byMaterial, material, kind, owner);
+        MaterialUse use = byMaterial[material.GetInstanceID()];
+        if (use.DrawnWithoutRenderer && !drawn.Contains(use))
+        {
+            drawn.Add(use);
+        }
+    }
+
+    private static void AppendDrawMeshList(StringBuilder report, List<MaterialUse> drawn)
+    {
+        report.AppendLine(string.Format("materials drawn without a renderer slot ({0}):", drawn.Count));
+        if (drawn.Count == 0)
+        {
+            report.AppendLine("  none - no DAZSkinV2 or DAZHairMesh material was reachable");
+            return;
+        }
+
+        foreach (MaterialUse use in drawn)
+        {
+            // DAZSkinV2 retargets its copies by name at init: it asks for the source shader's name with
+            // the compute buffer suffix. A project shader that answers that lookup is the only way the
+            // character can render with a reconstruction of ours, so the answer is reported per material.
+            Shader swap = MeshVR.VamShaderProvider.FindComputeBuff(use.shaderName);
+            report.AppendLine(string.Format(
+                "  [{0}] {1} : shader {2} | supported={3} | passes={4} | origin={5} | stub={6} | slots={7}",
+                ShaderRankName(use), use.KindLabel, use.shaderName, use.supported, use.passes, use.origin,
+                use.stub ? "yes" : "no", use.slots));
+            report.AppendLine(string.Format("      material {0}; compute buffer swap: {1}; same object={2}",
+                use.material.name,
+                swap == null ? "none - the copy keeps the original shader" : string.Format("{0} ({1})", swap.name, ShaderOrigin(swap)),
+                swap != null && swap == use.material.shader ? "yes" : "no"));
+            foreach (string owner in use.owners)
+            {
+                report.AppendLine("      on " + owner);
+            }
+        }
+    }
+
+    private static int ShaderRank(MaterialUse use)
+    {
+        if (use.material.shader == null)
+        {
+            return 0;
+        }
+
+        if (!use.supported)
+        {
+            return 1;
+        }
+
+        if (use.stub)
+        {
+            return 2;
+        }
+
+        if (use.origin.StartsWith("bundle", StringComparison.Ordinal))
+        {
+            return 3;
+        }
+
+        return use.origin == "built-in" ? 4 : 5;
+    }
+
+    private static int CountWhere(List<MaterialUse> uses, Predicate<MaterialUse> match)
+    {
+        int count = 0;
+        foreach (MaterialUse use in uses)
+        {
+            if (match(use))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// The families the scene draws with that the project has no asset for. These are the defects no
+    /// scene work can reach: the material renders the bundle's copy, so a reconstruction in
+    /// `Assets\Shader` is written, compiled and simply not used by this material.
+    /// </summary>
+    private static void AppendShaderFamilies(StringBuilder report, Dictionary<string, ShaderUse> byShader, bool missingOnly)
+    {
+        List<string> names = new List<string>();
+        foreach (KeyValuePair<string, ShaderUse> pair in byShader)
+        {
+            bool missing = pair.Key != NoShaderName && !ProjectDefinesShader(pair.Key);
+            if (missing == missingOnly)
+            {
+                names.Add(pair.Key);
+            }
+        }
+
+        names.Sort(delegate (string a, string b)
+        {
+            int byOrigin = string.CompareOrdinal(byShader[a].origins[0], byShader[b].origins[0]);
+            return byOrigin != 0 ? byOrigin : string.CompareOrdinal(a, b);
+        });
+
+        report.AppendLine(missingOnly
+            ? string.Format("shader families used but NOT defined in the project ({0}):", names.Count)
+            : string.Format("by shader, worst first ({0}):", names.Count));
+
+        int shown = 0;
+        foreach (string name in names)
+        {
+            if (!missingOnly && shown >= 60)
+            {
+                report.AppendLine(string.Format("  ... {0} more shader(s)", names.Count - shown));
+                break;
+            }
+
+            ShaderUse shader = byShader[name];
+            report.AppendLine(string.Format("  {0}: materials={1}, slots={2}, supported={3}, passes={4}, origin={5}, stub={6}",
+                name, shader.materials, shader.slots,
+                shader.supported, DescribePasses(shader.passes), string.Join("/", shader.origins.ToArray()),
+                shader.stub ? "yes" : "no"));
+            shown++;
+        }
+    }
+
+    private static void AppendMaterialList(StringBuilder report, List<MaterialUse> uses)
+    {
+        report.AppendLine(string.Format("by material, worst first ({0}):", uses.Count));
+        const int limit = 80;
+        for (int i = 0; i < uses.Count && i < limit; i++)
+        {
+            MaterialUse use = uses[i];
+            report.AppendLine(string.Format(
+                "  [{0}] {1} : shader {2} | via {3} | supported={4} | passes={5} | origin={6} | stub={7} | slots={8}",
+                ShaderRankName(use), use.material.name, use.shaderName, use.KindLabel, use.supported, use.passes,
+                use.origin, use.stub ? "yes" : "no", use.slots));
+            foreach (string path in use.owners)
+            {
+                report.AppendLine("      on " + path);
+            }
+        }
+
+        if (uses.Count > limit)
+        {
+            report.AppendLine(string.Format("  ... {0} more material(s)", uses.Count - limit));
+        }
+    }
+
+    private static string ShaderRankName(MaterialUse use)
+    {
+        switch (ShaderRank(use))
+        {
+            case 0: return "no shader";
+            case 1: return "unsupported";
+            case 2: return "stub";
+            case 3: return "bundle";
+            case 4: return "built-in";
+            default: return "ok";
+        }
+    }
+
+    private static string DescribePasses(SortedSet<int> passes)
+    {
+        if (passes.Count == 0)
+        {
+            return "?";
+        }
+
+        return passes.Min == passes.Max
+            ? passes.Min.ToString(CultureInfo.InvariantCulture)
+            : string.Format("{0}..{1}", passes.Min, passes.Max);
+    }
+
+    /// <summary>
+    /// Whose copy of the shader the material draws with. A shader the project owns has an asset path
+    /// under `Assets/`; one Unity resolved out of a shipped bundle has none at all, and `Shader.Find`
+    /// does not see bundle shaders, so a family name that resolves *while* the material carries no
+    /// asset path is the case worth naming: the project's reconstruction exists and is not in use.
+    /// </summary>
+    private static string ShaderOrigin(Shader shader)
+    {
+        if (shader == null)
+        {
+            return "none";
+        }
+
+        string path = AssetDatabase.GetAssetPath(shader);
+        if (string.IsNullOrEmpty(path))
+        {
+            return ProjectDefinesShader(shader.name) ? "bundle (project defines one)" : "bundle only (not in project)";
+        }
+
+        return path.StartsWith("Assets/", StringComparison.Ordinal) ? "project" : "built-in";
+    }
+
+    private static bool ProjectDefinesShader(string name)
+    {
+        if (string.IsNullOrEmpty(name) || name == NoShaderName)
+        {
+            return false;
+        }
+
+        bool known;
+        if (ProjectShaderNameCache.TryGetValue(name, out known))
+        {
+            return known;
+        }
+
+        known = Shader.Find(name) != null;
+        if (!known)
+        {
+            foreach (string guid in AssetDatabase.FindAssets("t:Shader"))
+            {
+                Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(AssetDatabase.GUIDToAssetPath(guid));
+                if (shader != null && shader.name == name)
+                {
+                    known = true;
+                    break;
+                }
+            }
+        }
+
+        ProjectShaderNameCache[name] = known;
+        return known;
+    }
+
+    /// <summary>
+    /// True when the project's copy of this shader is an AssetRipper placeholder. The exporter marks
+    /// its own output, so the file is the only honest witness: at runtime a stub is a valid shader that
+    /// compiles, reports itself supported and keeps one pass, and nothing in the material tells the
+    /// difference between it and a faithful reconstruction.
+    /// </summary>
+    private static bool IsStubShader(Shader shader)
+    {
+        if (shader == null)
+        {
+            return false;
+        }
+
+        string path = AssetDatabase.GetAssetPath(shader);
+        if (string.IsNullOrEmpty(path) || !path.StartsWith("Assets/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        bool stub;
+        if (StubShaderCache.TryGetValue(path, out stub))
+        {
+            return stub;
+        }
+
+        stub = false;
+        try
+        {
+            string full = Path.Combine(Application.dataPath, path.Substring("Assets/".Length));
+            if (File.Exists(full))
+            {
+                stub = File.ReadAllText(full).IndexOf("DummyShaderTextExporter", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+        }
+        catch (Exception)
+        {
+            // A shader the file system cannot read is reported as a real one rather than as a stub:
+            // the census exists to find families, not to guess at what it could not open.
+        }
+
+        StubShaderCache[path] = stub;
+        return stub;
+    }
+
     private static string PlayReport()
     {
         StringBuilder report = new StringBuilder();
@@ -2541,6 +3087,8 @@ public static class RebuildGate
         }
 
         report.Append(SkinReport());
+
+        report.Append(ShaderCensus());
 
         report.AppendLine(string.Format("errors and exceptions: {0}{1}", PlayErrors.Count,
             PlayErrors.Count >= playErrorLimit ? " (capped, distinct messages only)" : ""));
