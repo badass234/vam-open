@@ -367,14 +367,15 @@ currently possess the machinery that produces them.
 
 The question that opened this triage was whether the defects are simply shaders that have not been
 ported yet. The census answers it with two populations, and the split runs straight through the
-character: the body skin sits on **our** reconstructions while the hair, cloth and eye-reflection
-items sit on **bundle copies the project never defined**.
+character: the body skin sits on **our** reconstructions while the hair and eye-reflection items sit
+on **bundle copies the project never defined**. The cloth only *names* a bundle family - it is drawn
+through our reconstructed `*ComputeBuff` twin, and that is where its defect turned out to live.
 
 | Population | Families (slots) | Origin |
 |---|---|---|
 | body skin | `GlossNMTessMappedFixedComputeBuff` (14), `GlossNMCullComputeBuff` (26), `CullComputeBuff` (8), `GlossCullComputeBuff` (7), `AlphaMaskComputeBuff` (2), `Transparent{Gloss,}ComputeBuff` (3) | project |
 | hair item | `Custom/Hair/MainSeparateAlphaLayer1` (7), `..Layer2` (6), `..Layer3` (6) | bundle only |
-| cloth | `Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha` (10) | bundle only |
+| cloth | `Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha` (10), swapped to our `…ComputeBuff` twin at draw time | bundle, drawn by project - see defect 4 |
 | eye reflection | `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff` (2, 6 passes) | bundle only |
 
 This supersedes the earlier reading in this file that the body is unlit and that the whole scene
@@ -490,17 +491,60 @@ Verdict: **mixed.** Two of the three parts are ours; the third is the original s
   the environment the scene sets (`_SpecCubeIBL=SkyCyber2SPEC`, `_ExposureIBL=(0.1, 0.02, 0.002, 1)`)
   and has to be compared against the original before anything is changed.
 
-### Defect 4 - cloth with an inverted colour and no alpha
+### Defect 4 - cloth with an inverted colour and no alpha - **fixed** (`e956c78`)
 
-Verdict: **`_AlphaTex` is never assigned, and the family is absent from the project.**
+Verdict: **the family was transcribed all along; the generator read the colour-write mask backwards.**
+The first reading of this defect was wrong in both halves, and both are worth keeping as refutations:
 
-`Pantie_Cloth-1`, `Pantie_Sides-1`, `Stocking-1`, `Shoe-1` and `Sole-1` are all on the bundle-only
-`Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha` (2 passes), with
-`_AlphaTex=NONE`, `_MainTex=AyaneLeg_Diffuse`, `_SpecTex=_Specular`, `_GlossTex=_Glossy`,
-`_BumpMap=_Displacement` and `_DetailMap=_Bump`. A family named *SeparateAlpha* whose `_AlphaTex` is
-empty samples an alpha that was never assigned, which is a transparency defect by construction; the
-inverted colour is the `_DetailMap` and `_BumpMap` slots pointing at the diffuse and displacement
-maps, which is how a material looks before the clothing loader has remapped its slots.
+- *"`_AlphaTex` is never assigned"* - **refuted**. The bundle that ships the clothing,
+  `StreamingAssets\c_heu_mat` (66 814 745 B), holds the 13 real `hu_*` materials and every one of them
+  has `_AlphaTex = None`; the shipped fragment program of this family samples it regardless
+  (`_MainTex, _AlphaTex, _BumpMap, _DetailMap, _SpecTex, _GlossTex`). An unbound sampler returns Unity's
+  white default, so alpha is 1 and the garment is **opaque by design** - our shader does exactly the
+  same thing for exactly the same reason.
+- *"the family is absent from the project"* - true only of the *plain* family
+  `Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha`. The garments are drawn by
+  `DAZSkinWrap`, which asks `MeshVR.VamShaderProvider.FindComputeBuff` for the `*ComputeBuff` twin, and
+  that twin **is** one of the 51 reconstructions. The cloth was on our own shader the whole time.
+
+The cause is one line of the generator. `scripts\New-VaMShaders.py` decoded the serialised render
+state's colour-write mask as `(1,R) (2,G) (4,B) (8,A)`. Unity's `ColorWriteMask` reads out of the
+engine we build with (`UnityEngine.CoreModule.dll`, 2018.1.9f2) as `Alpha = 1, Blue = 2, Green = 4,
+Red = 8, All = 15`. This family's passes serialise as **14**, i.e. **RGB**, and we emitted
+**`ColorMask GBA`** - so the shader never wrote the red channel and the red of whatever lay behind bled
+through. That is the whole symptom: an inverted colour that also reads as transparency, because the
+channel that should have carried the cloth carried the body instead.
+
+The shipped bytecode supports the reading and not the old one. The base pass writes all four channels
+(`mad o0.xyz, ...` / `mov o0.w, ...`) with `SrcAlpha`/`OneMinusSrcAlpha`, so the mask decides only what
+is *stored* - alpha still drives the blend - which is what makes "RGB but not A" the coherent state for
+a blended pass. The disassembly is kept at
+`artifacts\cloth-asm\Custom_Subsurface_TransparentGlossNMDetailNoCullSeparateAlpha\` (34 programs, one
+per keyword variant, from `python tools\dump_dxbc.py Custom_Subsurface_TransparentGlossNMDetailNoCullSeparateAlpha --stage fragment --asm --out artifacts\cloth-asm`;
+`…_064_…DIRECTIONAL-MARMO_LINEAR.dxbc.asm` is the one read most), and the contract that enumerates the
+passes and their texture bindings is
+`artifacts\shader-blobs\Custom_Subsurface_TransparentGlossNMDetailNoCullSeparateAlpha\contract.json`.
+The bit order fits the whole corpus too: across the 135 extracted contracts the mask
+takes three values, `0` (3 passes), `14` (109) and `15` (3016), and **every** `14` pass belongs to the
+`RenderType=TransparentDynamicVertices` family - the GPUSkin, alpha-mask and transparent-subsurface
+passes that composite with camera colour - while the ordinary `Opaque` and `TransparentCutout` passes
+keep `15`. Dropping red from `TransparentDynamicVertices` would have made VaM's hair, lashes and cloth
+colour-blind in red; dropping only alpha *storage* from a blended pass is what the blend wants.
+
+Scope of the fix: three lines of generator, and 44 pass states moved from `GBA` to `RGB` - every
+`SeparateAlpha`, `Transparent` and `Cutout` family. The `GlossNMCull`-style skin families serialise as
+`15`, so they were never affected, which is why only the clothing, the lashes and the transparent skin
+layers looked wrong. Shaders are generated, so the fix is a regeneration plus the compile gate: **0
+errors**, 3851/3851 programs, then the user's own manual run on `Saves/scene/MeshedVR/default.json`,
+which confirms the garments.
+
+One real gap is left open, and it has no effect on colour: the shipped program also samples
+`_DetailMap` (t3, on its own UV set) and unpacks it as a tangent-space normal - `mul x, w, x` /
+`mad xy, xy, 2, -1` / `z = sqrt(1 - x^2 - y^2)` - adds it to the `_BumpMap` normal scaled by
+`_DetailWeight`, then derives two normals by scaling the deviation from `(0,0,1)` by `cb0[73].x` and
+`.y`, i.e. `_DiffuseBumpiness` and `_SpecularBumpiness`. Our cginc keys the detail layer on `_DecalTex`
+(`VAM_SAMPLE_DECAL`), a name this family never declares, so the detail layer is dropped and the cloth
+draws with the base bump alone. Tracked as `cloth-detail-layer`.
 
 ### What the census cleared
 
