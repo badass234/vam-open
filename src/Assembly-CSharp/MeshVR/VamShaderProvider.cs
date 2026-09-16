@@ -20,6 +20,8 @@ namespace MeshVR
 	{
 		private const string ShaderBundleName = "z_sha";
 
+		private const string ComputeBuffSuffix = "ComputeBuff";
+
 		private const float RetryInterval = 5f;
 
 		private static readonly Dictionary<string, Shader> cache = new Dictionary<string, Shader>();
@@ -33,7 +35,18 @@ namespace MeshVR
 		/// <summary>The "&lt;paramref name="shaderName"/&gt;ComputeBuff" variant of a shader.</summary>
 		public static Shader FindComputeBuff(string shaderName)
 		{
-			return shaderName == null ? null : FindByName(shaderName + "ComputeBuff");
+			if (string.IsNullOrEmpty(shaderName))
+			{
+				return null;
+			}
+			// A skin swaps its materials again whenever it re-initialises them, and by then the material
+			// already carries the ComputeBuff name. Appending the suffix a second time names a shader
+			// that exists nowhere, so an already-suffixed name is looked up as it is.
+			if (shaderName.EndsWith(ComputeBuffSuffix, StringComparison.Ordinal))
+			{
+				return FindByName(shaderName);
+			}
+			return FindByName(shaderName + ComputeBuffSuffix);
 		}
 
 		/// <summary>A shader of this name: the project's own first, then the shipped original.</summary>

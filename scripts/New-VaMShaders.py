@@ -71,7 +71,16 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-CONTRACTS = REPO / "artifacts" / "shader-blobs"
+# Two sources, read in this order and deduplicated by name.  The engine data
+# files carry the shaders Unity instantiates by name; z_sha is the bundle VaM
+# ships its own copies of them in, and it is the only source for some of the
+# plain twins -- the engine data files do not carry Custom/Hair/* at all.
+# Extract-VaMShaders.py writes both.
+CONTRACT_SOURCES = (
+    REPO / "artifacts" / "shader-blobs",
+    REPO / "artifacts" / "zsha-blobs",
+)
+CONTRACTS = CONTRACT_SOURCES[0]
 CGINC_SRC = REPO / "shader-src" / "VamGpuSkinning.cginc"
 CGINC_DST = REPO / "VaM_Rebuild" / "Assets" / "VaMShaders" / "VamGpuSkinning.cginc"
 SHADER_DIR = REPO / "VaM_Rebuild" / "Assets" / "Shader"
@@ -99,11 +108,12 @@ SKIP_LIGHTMODES = {"META", "DEFERRED", "PREPASSBASE", "PREPASSFINAL"}
 # compute-buffer twin at all, like Custom/Subsurface/EmissiveGlow -- is left
 # alone instead of being quietly shaded by the wrong library.
 #
-# The hair's plain twins are not listed: Custom/Hair/* ships no contract of its
-# own, so there is nothing here to reconstruct them from.  Nothing asks for them
-# either -- every lookup goes through VamShaderProvider.FindComputeBuff, which
-# appends the suffix -- and the game still resolves them from its own bundle.
-MESH_FAMILY_PREFIXES = ("Custom/Subsurface/",)
+# The hair's plain twins are listed for the same reason, and their absence was
+# the last thing that kept the bundle in the hair path.  VaM does not look them
+# up through VamShaderProvider at all: the hair is CPU-skinned and drawn with
+# Graphics.DrawMesh, so DAZHairMesh's material carries the plain name, and only
+# the z_sha bundle could resolve it.  Their contracts come from z_sha alone.
+MESH_FAMILY_PREFIXES = ("Custom/Subsurface/", "Custom/Hair/")
 
 # Declared by Unity's own include files, so the generated shader must not
 # declare them a second time.  UnityLightingCommon.cginc declares _SpecColor.
@@ -465,7 +475,7 @@ def classify(name: str, sub: dict, names: set):
 
     "skin"  -- reads the compute buffers, skinned by DAZSkinV2
     "mesh"  -- plain twin of one of those shaders, drawn the ordinary way
-    None    -- a different shading model, not reconstructed by this script
+    None    -- left pending: another shading model, or no reconstruction here
     """
     if name.endswith("ComputeBuff"):
         if name.startswith(UNTRANSCRIBED_FAMILIES):
@@ -477,10 +487,15 @@ def classify(name: str, sub: dict, names: set):
         return None
     # A plain twin must not bind the compute buffers in any pass this project
     # renders -- if it did, its fragment program would be a different model.
+    # A tessellated one is out of reach as well: the hull and domain pair this
+    # project reconstructs reads the compute buffers, so only the skinned family
+    # has a tessellation path here.  Those shaders keep the bundle's copy.
     for pas in sub["passes"]:
         if pass_lightmode(pas) in SKIP_LIGHTMODES:
             continue
         if pass_buffers(pas) & {"verts", "normals", "tangents"}:
+            return None
+        if pass_tessellates(pas):
             return None
     return "mesh"
 
@@ -500,7 +515,7 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
         f"// {name}",
         "//",
         "// Reconstructed from the game's own DXBC by scripts/New-VaMShaders.py.",
-        f"// Program contracts: artifacts/shader-blobs/{blob_dir}/",
+        f"// Program contracts: {blob_dir}/",
         f"// Shading model:     shader-src/{library}",
         f"// Vertex stage:      {'GPU skinning (compute buffers)' if skin else 'mesh attributes'}",
         f"// Tessellation:      {'hull + domain (Shader Model 5.0)' if tess else 'none'}",
@@ -563,9 +578,16 @@ def main(argv=None) -> int:
     contracts = []
     pending = []
     found = []
-    for path in sorted(CONTRACTS.glob("*/contract.json")):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        found.append((path.parent.name, data))
+    seen = set()
+    for source in CONTRACT_SOURCES:
+        if not source.is_dir():
+            continue
+        for path in sorted(source.glob("*/contract.json")):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data["name"] in seen:
+                continue
+            seen.add(data["name"])
+            found.append((f"{source.relative_to(REPO).as_posix()}/{path.parent.name}", data))
     names = {data["name"] for _, data in found}
 
     for blob_dir, data in found:
@@ -580,28 +602,39 @@ def main(argv=None) -> int:
 
     skipped = []
     shaders = 0
+    written = 0
     passes = 0
     tess_passes = 0
     for blob_dir, data, family in contracts:
         text, n, t = emit_shader(data, blob_dir, skipped, family)
+        target = SHADER_DIR / (data["name"].replace("/", "_") + ".shader")
+        if not n:
+            # Not one of this family's passes reads the compute buffers, so classify() guessed a
+            # vertex path it does not have -- the two Custom/Debug*ComputeBuff families.  A file
+            # here would shadow the shipped shader with an empty one, which is worse than being
+            # pending, so the name is left pending and any file a previous run wrote is removed.
+            print(f"warning: {data['name']} produced no passes, left pending", file=sys.stderr)
+            pending.append(data["name"])
+            if not args.list and target.exists():
+                target.unlink()
+            continue
         if args.list:
+            written += 1
             print(f"{family:<5} {data['name']:<58} "
                   f"passes={n} props={len(data['properties']):>2}"
                   f"{f'  tess={t}' if t else ''}")
             continue
-        if not n:
-            print(f"warning: {data['name']} produced no passes", file=sys.stderr)
-        target = SHADER_DIR / (data["name"].replace("/", "_") + ".shader")
         target.write_text(text, encoding="utf-8")
+        written += 1
         shaders += 1
         passes += n
         tess_passes += t
 
     if args.list:
-        print(f"\n{len(contracts)} reconstructed, {len(pending)} pending (no shading model yet):")
+        print(f"\n{written} reconstructed, {len(pending)} pending (no shading model yet):")
         for name in pending:
             print(f"      {name}")
-        print(f"\n{len(contracts)} shaders, {len(skipped)} passes skipped")
+        print(f"\n{written} shaders, {len(skipped)} passes skipped")
         return 0
 
     SHADER_DIR.mkdir(parents=True, exist_ok=True)

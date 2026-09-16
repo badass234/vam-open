@@ -557,7 +557,14 @@ vam_surface VamSurface(vam_v2f i) {
     // Bumpiness interpolates the tangent-space normal away from flat: 0 leaves
     // the surface unperturbed, 1 applies the map in full.
     float3 nFlat = float3(0.0, 0.0, 1.0);
-    float3 n0 = nTS - nFlat;
+    // The shipped program normalises the unpacked normal *before* subtracting
+    // the flat direction, and that is not a no-op: the unpacking above leaves
+    // the vector longer than one wherever the map's two slope channels are both
+    // steep (the z term is clamped, so the length becomes sqrt(x^2 + y^2) > 1).
+    // Skipping the normalise shrinks the perturbation there instead of rotating
+    // it, which reads as a seam wherever the map carries a crease and grows with
+    // the bumpiness sliders.
+    float3 n0 = normalize(nTS) - nFlat;
     float3 nDiffTS = normalize(nFlat + VAM_DiffuseBumpiness * n0);
     float3 nSpecTS = normalize(nFlat + VAM_SpecularBumpiness * n0);
 

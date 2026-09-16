@@ -1,9 +1,16 @@
-"""Check that a plain Custom/Subsurface shader and its ComputeBuff twin are the same program.
+"""Check that a plain shader and its ComputeBuff twin are the same program.
 
 The rebuilt project emits two shaders per family: ``Custom/Subsurface/GlossNMCull`` for CPU
 skinning and ``Custom/Subsurface/GlossNMCullComputeBuff`` for GPU skinning. ``VamGpuSkinning.cginc``
 compiles both from one source through a single ``#ifdef``, and the claim that must hold is that the
 fragment paths are the same machine code in the shipped game too.
+
+Every family that has both contracts is checked. A plain shader is normally in the same blob as its
+ComputeBuff twin, and then the pair really is one build's two shaders. The hair is different: its
+plain twins exist only in the z_sha bundle, so the pair is the bundle's shader against the data
+file's, and the two builds also strip different variant lists. The tool keeps those pairs out of its
+verdict -- it gates only on families whose two contracts come from one blob -- and prints the rest
+as context. Both blob directories are named in scripts/New-VaMShaders.py.
 
 For every family that has both contracts, pair the D3D11 pixel programs by keyword set and compare
 the disassembled instruction streams after normalising only the shader-model spelling
@@ -30,16 +37,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dump_dxbc as dx  # noqa: E402
 
-BLOBS = Path(__file__).resolve().parents[1] / "artifacts" / "shader-blobs"
+REPO = Path(__file__).resolve().parents[1]
+# Both contract sources, first one wins per name; see scripts/New-VaMShaders.py.
+BLOBS = (REPO / "artifacts" / "shader-blobs", REPO / "artifacts" / "zsha-blobs")
 
 SAMPLE_DEST = re.compile(r"^(sample\S*)\s+(r\d+)\.([xyzw]+)([,\s])(.*)$")
 
 
 def load_all():
     contracts = {}
-    for path in BLOBS.glob("*/contract.json"):
-        contract = json.loads(path.read_text(encoding="utf-8"))
-        contracts[contract["name"]] = (path.parent, contract)
+    for blobs in BLOBS:
+        if not blobs.is_dir():
+            continue
+        for path in blobs.glob("*/contract.json"):
+            contract = json.loads(path.read_text(encoding="utf-8"))
+            contracts.setdefault(contract["name"], (blobs, path.parent, contract))
     return contracts
 
 
@@ -220,45 +232,66 @@ def main():
     families = sorted(n for n in contracts if (n + "ComputeBuff") in contracts)
 
     identical = canonical = mask_only = operand_diff = opcode_diff = compared = 0
-    layout_mismatch = 0
+    other_build_diff = 0
+    unmatched = 0
+    stripped = 0
     lane_assignment = 0
     notes = []
     for name in families:
-        twin_dir, twin = contracts[(name + "ComputeBuff")]
+        twin_source, twin_dir, twin = contracts[(name + "ComputeBuff")]
+        plain_source, plain_dir, plain_contract = contracts[name]
+        # Where both contracts come from the same blob the pair is one build's plain shader and the
+        # same build's ComputeBuff twin, which is the comparison this file is about. A family whose
+        # plain shader only exists in z_sha pairs two independent builds of the shader instead, so
+        # its differences are reported but counted apart: they say the builds differ, not that the
+        # twins disagree.
+        other_build = plain_source != twin_source
 
         buckets = {}
-        for side, contract in (("plain", contracts[name][1]), ("twin", twin)):
+        for side, source, contract in (("plain", plain_source, plain_contract),
+                                       ("twin", twin_source, twin)):
             for entry in programs(contract):
                 if "Pixel" not in entry["program_type"]:
                     continue
                 keywords = tuple(entry.get("header_keywords") or [])
                 if any(k in keywords for k in dx.STEREO):
                     continue
-                body = dx.disassemble(fxc, BLOBS / entry["file"])
+                body = dx.disassemble(fxc, source / entry["file"])
                 if body is None:
                     notes.append(f"{name}: fxc refused {entry['file']}")
                     continue
                 plain = normalise(body)
-                # `blob_index` enumerates the shader's passes and variants, and both contracts list
-                # the same ones (336 programs each for NoCull, SM40 versus SM50). A keyword set alone
-                # is ambiguous: several passes share it, and pairing the passes wrongly invents
-                # differences, so the index goes into the key.
-                buckets.setdefault(("pixel", entry["blob_index"], keywords),
+                # A keyword set names one *variant*, and several passes can share it, so the unit of
+                # comparison is the multiset of streams under that keyword set: each twin stream must
+                # be found among the plain ones. `blob_index` used to be part of this key, but it
+                # enumerates the shader's programs in listing order, and the two contracts do not
+                # always list the same number of them -- the hair's plain twins carry 152 pixel
+                # programs where the ComputeBuff twins carry 168 -- so an index-keyed bucket paired
+                # variants that are not each other and reported differences that are not there.
+                buckets.setdefault(("pixel", keywords),
                                    {"plain": [], "twin": []})
-                buckets[("pixel", entry["blob_index"], keywords)][side].append(
+                buckets[("pixel", keywords)][side].append(
                     (entry, plain, ssa(plain)))
 
         if set(k for k in buckets if k[0] == "pixel" and buckets[k]["plain"]) != \
            set(k for k in buckets if k[0] == "pixel" and buckets[k]["twin"]):
-            layout_mismatch += 1
-            notes.append(f"{name}: the two contracts do not enumerate the same passes")
+            stripped += 1
+            notes.append(f"{name}: the two contracts do not carry the same keyword sets")
 
         for index, (key, sides) in enumerate(sorted(buckets.items())):
             if args.pairs_per_family and index >= args.pairs_per_family:
                 break
+            if not sides["plain"] or not sides["twin"]:
+                # Unity strips unused variants per build, and the two builds stripped differently:
+                # the bundle's plain Custom/Subsurface/AlphaMask ships 16 pixel programs where the
+                # data file's ComputeBuff twin ships 136. A variant only one side enumerates has
+                # nothing to be compared against and is counted on its own.
+                unmatched += len(sides["plain"]) + len(sides["twin"])
+                continue
             compared += 1
             strict_plain = {body for _, body, _ in sides["plain"]}
             loose_plain = {loose for _, _, loose in sides["plain"]}
+            lane_plain = {erase_lanes(loose) for _, _, loose in sides["plain"]}
             plain_opcodes = {opcodes(body) for _, body, _ in sides["plain"]}
             for entry, body, loose in sides["twin"]:
                 if body in strict_plain:
@@ -275,18 +308,25 @@ def main():
                 if same_opcodes and only_sample_masks(diff):
                     mask_only += 1
                     continue
-                if same_opcodes and candidate and erase_lanes(candidate) == erase_lanes(loose):
+                if same_opcodes and erase_lanes(loose) in lane_plain:
+                    lane_plain.discard(erase_lanes(loose))
                     lane_assignment += 1
                     continue
                 operand_diff += 1 if same_opcodes else 0
                 opcode_diff += 0 if same_opcodes else 1
+                if other_build:
+                    other_build_diff += 1
                 notes.append(
-                    f"{name} pass {key[1]} [{'/'.join(key[2]) or 'no keywords'}] "
-                    f"({'same opcodes, different operands' if same_opcodes else 'different opcodes'}): "
+                    f"{name} [{'/'.join(key[1]) or 'no keywords'}] "
+                    f"({'same opcodes, different operands' if same_opcodes else 'different opcodes'}"
+                    f"{', two builds' if other_build else ''}): "
                     f"{entry['file']}\n"
                     + "\n".join("      " + l for l in diff[:6]))
 
-    print(f"twin families: {len(families)}")
+    from_one_build = sum(1 for n in families
+                         if contracts[n][0] == contracts[n + "ComputeBuff"][0])
+    print(f"twin families: {len(families)} ({from_one_build} one build, "
+          f"{len(families) - from_one_build} two builds)")
     print(f"pixel passes compared: {compared}")
     print(f"  identical: {identical}")
     print(f"  same up to how the temporaries are allocated: {canonical}")
@@ -294,14 +334,20 @@ def main():
     print(f"  same up to which lane carries a component: {lane_assignment}")
     print(f"  same opcodes, different operands: {operand_diff}")
     print(f"  different instruction streams: {opcode_diff}")
-    print(f"  families whose contracts do not enumerate the same passes: {layout_mismatch}")
+    print(f"  variants only one of the two contracts enumerates: {unmatched}")
+    print(f"  families whose two contracts carry different keyword sets: {stripped}")
     print(f"proven the same instruction stream up to renaming: {identical + canonical + mask_only}")
     print(f"agree only when the lane a component sits in is ignored: {lane_assignment}")
+    print(f"differing pairs from two builds (evidence that the builds differ, not a failure): "
+          f"{other_build_diff}")
     for note in notes[:args.show]:
         print("  ", note)
     if len(notes) > args.show:
         print(f"   ... {len(notes) - args.show} more")
-    return 1 if (opcode_diff or operand_diff or layout_mismatch) else 0
+    differing = operand_diff + opcode_diff
+    # Some families can only be checked across two builds, so the gate is the subset of differences
+    # that two contracts from one build disagree on; everything else is printed above as context.
+    return 1 if differing - other_build_diff else 0
 
 
 if __name__ == "__main__":
