@@ -713,9 +713,17 @@ namespace MeshVR
 											{
 												dAZSkinWrap.GPUSkinWrapper = dAZImport.GPUSkinCompute;
 											}
+											else
+											{
+												dAZSkinWrap.GPUSkinWrapper = VamComputeShaderProvider.SkinShader;
+											}
 											if (dAZImport.GPUMeshCompute != null)
 											{
 												dAZSkinWrap.GPUMeshCompute = dAZImport.GPUMeshCompute;
+											}
+											else
+											{
+												dAZSkinWrap.GPUMeshCompute = VamComputeShaderProvider.MeshShader;
 											}
 										}
 									}

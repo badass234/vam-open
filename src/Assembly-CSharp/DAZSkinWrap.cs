@@ -1059,7 +1059,7 @@ public class DAZSkinWrap : PreCalcMeshProvider, IBinaryStorable, RenderSuspend
 		for (int i = 0; i < GPUmaterials.Length; i++)
 		{
 			Shader shader = GPUmaterials[i].shader;
-			Shader shader2 = Shader.Find(shader.name + "ComputeBuff");
+			Shader shader2 = MeshVR.VamShaderProvider.FindComputeBuff(shader.name);
 			int renderQueue = GPUmaterials[i].renderQueue;
 			if (shader2 != null)
 			{
@@ -1339,8 +1339,22 @@ public class DAZSkinWrap : PreCalcMeshProvider, IBinaryStorable, RenderSuspend
 		}
 	}
 
+	/// <summary>Same recovery as DAZSkinV2.EnsureGPUComputeShaders, for the wrap/graft skin.</summary>
+	private void EnsureGPUComputeShaders()
+	{
+		if (GPUSkinWrapper == null)
+		{
+			GPUSkinWrapper = VamComputeShaderProvider.SkinShader;
+		}
+		if (GPUMeshCompute == null)
+		{
+			GPUMeshCompute = VamComputeShaderProvider.MeshShader;
+		}
+	}
+
 	protected void UpdateVertsGPU(bool fullUpdate = true)
 	{
+		EnsureGPUComputeShaders();
 		if (!(skin != null) || !skin.isActiveAndEnabled || !(GPUSkinWrapper != null))
 		{
 			return;

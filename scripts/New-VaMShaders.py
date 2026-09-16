@@ -96,6 +96,13 @@ MESH_FAMILY_PREFIXES = ("Custom/Subsurface/",)
 # declare them a second time.  UnityLightingCommon.cginc declares _SpecColor.
 UNITY_DECLARED = {"_SpecColor"}
 
+# Shading models this project has no reconstruction of.  Their "*ComputeBuff"
+# variants belong to the family's own source, not to the body one, so shading
+# them with VamGpuSkinning.cginc would render hair and the whole Marmoset IBL
+# set with the skin library.  They are left pending instead: the game ships them
+# verbatim in the z_sha bundle, and VamShaderProvider reads them from there.
+UNTRANSCRIBED_FAMILIES = ("Custom/Hair/", "Marmoset/")
+
 def num(v: float) -> str:
     """Shortest ShaderLab spelling of a contract default."""
     return f"{v:g}"
@@ -280,6 +287,8 @@ def classify(name: str, sub: dict, names: set):
     None    -- a different shading model, not reconstructed by this script
     """
     if name.endswith("ComputeBuff"):
+        if name.startswith(UNTRANSCRIBED_FAMILIES):
+            return None
         return "skin"
     if not name.startswith(MESH_FAMILY_PREFIXES):
         return None

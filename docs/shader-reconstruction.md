@@ -16,27 +16,30 @@ therefore swaps every material for a name-mangled twin:
 
 ```csharp
 // DAZSkinV2.SkinMeshGPUMaterialInit
-Shader.Find(material.shader.name + "ComputeBuff")
+MeshVR.VamShaderProvider.FindComputeBuff(material.shader.name)
 ```
 
 which is why the game ships two shaders under one name: the ordinary one and the `ComputeBuff` one
-that reads the buffers. AssetRipper exports these as placeholders, so the rebuilt project loses the
+that reads the buffers. AssetRipper exports these as placeholders, so a naive rebuild loses the
 body: the mesh draws its bind pose, flat, while the (separately skinned) hair animates correctly on
-the real skeleton.
+the real skeleton. `VamShaderProvider` answers that lookup from this project's reconstructions or,
+failing those, from the game's own shader library; the sections below cover both halves.
 
 The original HLSL is not in the installation. Unity keeps no shader source in a player build, and no
 copy of these files survives in `VaM_Data`. What the build does keep is the ShaderLab contract and
 the compiled Direct3D 11 bytecode, so the shaders are reconstructed from that.
 
-## The shipped shader library in `z_sha`, and why it cannot replace this one
+## The shipped shader library in `z_sha`
 
 `VaM_Data\StreamingAssets\z_sha` (23.3 MB) is the game's shader library: an AssetBundle holding
-**261 `Shader` objects under 260 unique names**, listed as a dependency of 217 other bundles. Because
-VaM ships a Direct3D 11 player, the bundle carries the compiled bytecode of every one of them - all
-63 names this project generates are in there, together with the plain half of every pair.
+**261 `Shader` objects under 260 unique names** (counted by walking the bundle with UnityPy), and
+listed as a dependency of 217 other bundles. Because
+VaM ships a Direct3D 11 player, the bundle carries the compiled bytecode of every one of them -
+including all 43 names this project reconstructs, together with the plain half of every pair.
 
-That looks like it makes the whole reconstruction unnecessary, and it does not. Moving the project's
-88 `.shader` files out of `VaM_Rebuild\Assets\Shader\` and re-running the smoke test settles it:
+That looks like it makes the reconstruction unnecessary. It does not, because `Shader.Find` **does
+not see shaders that live inside an AssetBundle**. Measured on the 63-shader set, by moving
+88 `.shader` files out of `VaM_Rebuild\Assets\Shader\` and re-running the smoke test:
 
 | | project shaders present | project shaders removed |
 |---|---|---|
@@ -44,20 +47,50 @@ That looks like it makes the whole reconstruction unnecessary, and it does not. 
 | the body in the render | drawn, posed, lit | gone |
 | atoms, exceptions, skinned-vertex counts | 17/17, 0, 23046/24928 | 17/17, 0, 22973/24928 |
 
-The skinning keeps running either way; only the draw breaks, because `Shader.Find` **does not see
-shaders that live inside an AssetBundle**. `DAZSkinV2.SkinMeshGPUMaterialInit` asks for
-`shader.name + "ComputeBuff"`, gets `null` when that name is only in `z_sha`, keeps the plain shader,
-and the plain shader binds `verts`/`normals`/`tangents` - attributes a compute-skinned mesh does not
-supply.
+The skinning keeps running either way; only the draw breaks. `DAZSkinV2.SkinMeshGPUMaterialInit`
+asks for `shader.name + "ComputeBuff"`, gets `null` when that name is only in `z_sha`, keeps the
+plain shader, and the plain shader binds `verts`/`normals`/`tangents` - attributes a compute-skinned
+mesh does not supply.
 
 At the same time the bundle's shaders *are* used, by a different mechanism: a material loaded from a
 bundle references its shader **by pointer** (`m_Shader`), and that reference is resolved across the
 dependency chain. That is why `Custom/Subsurface/TransparentSeparateAlpha`, `EmissiveCutout`,
 `AlphaMask` and the rest keep working in the rebuilt project although it never defines them.
 
-So the two paths are independent: pointer references are served by `z_sha`, `Shader.Find` is served
-only by the project. `VaM_Rebuild\Assets\Shader\` is therefore load-bearing - deleting a file there
-does not fall back to the identical shipped shader, it removes the body.
+The gap between the two paths is closed by `VamShaderProvider`, which makes a name lookup a second
+consumer of the same library: a family this project has not transcribed yet renders with the game's
+own bytecode instead of a stub. That gives `VaM_Rebuild\Assets\Shader\` two rules. A reconstructed
+file still wins, because `Shader.Find` is tried first. And a name that is deliberately not
+transcribed must have **no** file here: otherwise `Shader.Find` returns a shader built for the wrong
+shading model and the fallback is never reached. That is why hair and the Marmoset IBL set are
+excluded in `New-VaMShaders.py` rather than merely left pending.
+
+### Reading a shipped shader back by name
+
+`src\Assembly-CSharp\MeshVR\VamShaderProvider.cs` is that shim. It tries
+`Shader.Find` first - a reconstruction of this project wins, because it is the one that has been
+checked against the bytecode - and on a miss loads `z_sha` and indexes its shaders by `Shader.name`,
+which is the ShaderLab name the name-mangled lookup asks for. The bundle's own asset paths are
+unrelated to that name, so the index is built by loading the bundle's shader assets once and keying
+them by name. A miss is deliberately not cached, because the scene bundles may still be loading, and
+an attempt is made at most once every five seconds.
+
+The two swappers call it instead of `Shader.Find`: `DAZSkinV2.SkinMeshGPUMaterialInit` (including the
+`ComputeBuffCopy` variant it prefers, which is never in the bundle) and `DAZSkinWrap.InitMaterials`.
+A material therefore reaches its `ComputeBuff` twin whether the project generated it or the game
+shipped it:
+
+| family | served by |
+|---|---|
+| `Custom/Subsurface/*`, `Custom/DebugNormals`, `Custom/Subsurface/Classic`, ... | this project, 43 shaders |
+| `Custom/Hair/*`, `Marmoset/*`, `GPUTools/MeshedVR/Hair*` and the rest of the 92 pending contracts | `z_sha`, verbatim |
+
+`New-VaMShaders.py` names the first two of those families in `UNTRANSCRIBED_FAMILIES`, so the
+generator stops claiming them, and their 20 generated files were removed with that change. Shading
+hair or the Marmoset IBL set with `VamGpuSkinning.cginc` was never right - they are shading models of
+their own - and the shipped bytecode is both correct and free. The body family is still reconstructed
+rather than borrowed: it is the one whose every detail this project reads, and `VAM_HAS_<name>`
+switches in the library depend on knowing which uniforms a family publishes.
 
 ## Extraction
 
@@ -74,7 +107,8 @@ For each of the 135 shaders in the player data this writes a directory holding
 - one `.dxbc` per compiled program, named
   `kShaderCompPlatformD3D11_<blobIndex>_<type>_<KEYWORDS>.dxbc`.
 
-The run yields **58 748 programs**; the ones that matter here are the 51 `*ComputeBuff` shaders.
+The run yields **58 748 programs**; the ones that matter here are the 31 `*ComputeBuff` shaders this
+project reconstructs, out of the 51 that exist.
 `register_slot` inside a constant buffer is a raw byte offset (`index / 16`, then `/4` for the
 component), which is how every uniform below was tied to the register its bytecode reads.
 
@@ -91,10 +125,10 @@ z-test, z-write, the blend factors, the per-pass alpha cutoff), and the pragmas 
 pass's keyword set. It then copies `shader-src\VamGpuSkinning.cginc` next to the shaders so the
 `#include "../VaMShaders/VamGpuSkinning.cginc"` resolves.
 
-Result: **51 shaders, 148 passes**, with 32-104 keyword variants each. 14 passes are deliberately
-skipped - the `META`, `DEFERRED`, `PREPASSBASE` and `PREPASSFINAL` ones - because the rebuilt project
-uses forward rendering only and those entry points would need a deferred/lightmap pipeline that does
-not exist yet.
+Result: **43 shaders, 113 passes**, with 32-104 keyword variants each. The `META`, `DEFERRED`,
+`PREPASSBASE` and `PREPASSFINAL` passes are not generated - `SKIP_LIGHTMODES` - because the rebuilt
+project uses forward rendering only and those entry points would need a deferred/lightmap pipeline
+that does not exist yet.
 
 Every uniform is declared by the generated shader, in the family that published it, together with a
 `VAM_HAS_<name>` define. Nothing is auto-declared by Unity here: the only two names its own includes
@@ -165,10 +199,10 @@ is visible in a single-pass compile:
 
 The `ComputeBuff` name suffix is not decoration and it is not universal. `DAZSkinV2` appends it only
 when it swaps a material it is going to skin; every other material keeps the ordinary shader. The
-extracted set reflects that: **135 contracts, of which 51 are `*ComputeBuff` and 84 are plain**. The
-51 above are done. The plain ones are reached by a second vertex stage that reads vertex attributes
-instead of structured buffers, and 12 of them turned out to be the *same program* as a
-`ComputeBuff` twin, so only the vertex data source had to change.
+extracted set reflects that: **135 contracts, of which 51 are `*ComputeBuff` and 84 are plain**. Of
+the 51, 31 are reconstructed here - the body family and its relatives - and 20 are left to the
+shipped library, because they are not the body's shading model. Of the 84 plain contracts, 12 turned
+out to be the *same program* as a `ComputeBuff` twin, so only the vertex data source had to change.
 
 ### How that was established, and not guessed
 
@@ -240,9 +274,12 @@ contract but **no `ComputeBuff` twin at all** - no contract, no file, and no ent
 that way on purpose: being batch-tinted is a property of the material, not of the pairing, and
 nothing in the shipped scenes selects it.
 
-`Marmoset/Specular IBL Soft` and `Marmoset/Transparent/Specular IBL` are twins too, and are
-deliberately held back: the `ComputeBuff` Marmoset family has an open lightmap question, and the
-plain files should not be trusted until that is settled.
+`Marmoset/Specular IBL Soft` and `Marmoset/Transparent/Specular IBL` are twins too, and both halves
+are held back: their shading model is not the body's, so `VamShaderProvider` serves the
+`ComputeBuff` name out of `z_sha` instead. The 14 `Custom/Hair/*ComputeBuff` hair shaders and the
+other four `Marmoset/*ComputeBuff` ones are held back for the same reason - the generator used to
+shade all of them with `VamGpuSkinning.cginc`, and that was wrong. This also settles the open
+lightmap question those twins carried: it is not the body library's question to answer.
 
 ### What the generator emits
 
@@ -259,10 +296,10 @@ plain files should not be trusted until that is settled.
 buffer set against the family it chose, and prints the shaders it left behind. Current output:
 
 ```
-wrote 63 shaders (180 passes)
+wrote 43 shaders (113 passes)
 ```
 
-- **51 `skin`** - the `*ComputeBuff` family.
+- **31 `skin`** - the `*ComputeBuff` family this project reconstructs.
 - **12 `mesh`** - `Custom/Subsurface/` `Cull`, `NoCull`, `GlossCull`, `GlossNoCull`, `GlossNMCull`,
   `GlossNMNoCull`, `CutoutSeparateAlpha`, `TransparentCutoutSeparateAlpha`,
   `TransparentGlossSeparateAlpha`, `TransparentGlossNoCullSeparateAlpha`,
@@ -273,25 +310,26 @@ wrote 63 shaders (180 passes)
   the families nothing claims: Marmoset lit (7), sky/dome/overlay (3), `Marmoset/Projection Box`
   (1), the geometry-shader family (`GPUTools/MeshedVR/Hair`, `HairOpt`, `HairOptSinglePass`,
   `GPUTools/Painter`, `Hidden/NGSS_Directional` - 5), and 9 unlit gizmo/UI/cursor/silhouette
-  shaders. None of them is reached by a scene load or a character draw, which is why the stubs are
-  harmless; they matter only if a bundle later asks for them by name.
+  shaders. A stub is only a hazard where a name is *looked up* instead of referenced - the
+  `ComputeBuff` swap, or `DAZImportMaterial`'s JSON lookup - and `VamShaderProvider` now answers
+  those from `z_sha`.
 
 So `Assets\Shader\` holds two file families for many names. Counting the leftovers as "25 stubs"
 hides the interesting half of that: 12 plain contracts that used to be stubs are now rebuilt
-shaders, and `Unity\Assets\Shader\` reveals it as 88 files = 51 rebuilt `*ComputeBuff` + 12 rebuilt
-plain + 25 stubs.
+shaders, and `VaM_Rebuild\Assets\Shader\` reveals it as 68 files = 31 rebuilt `*ComputeBuff` + 12
+rebuilt plain + 25 stubs.
 
 ## Verification
 
 ```powershell
-python tools\check_shaders.py             # all 51 shaders
+python tools\check_shaders.py             # all 43 shaders
 python tools\check_shaders.py GlossNMCull # one family
 ```
 
 `tools\check_shaders.py` lifts every `CGPROGRAM` block out of the generated files and hands it to the
 Windows SDK's `fxc.exe` with the profile the pragmas ask for, once per entry point *and once per
 keyword set*. Compiling with one keyword set hides exactly the bugs above; with ten of them the sweep
-runs **4659/4659 programs, 0 failures**.
+runs **2858/2858 programs, 0 failures**.
 
 That is a pre-flight, not a verdict: fxc knows nothing about ShaderLab, and it is not Unity's
 compiler. The verdict comes from a real run, which must report no shader errors at all:

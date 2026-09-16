@@ -102,11 +102,11 @@ they investigate is fixed.
   log matches the original's line for line ([`docs/verification.md`](docs/verification.md)).
 - Scenes and animation: `CyberDemoAlt` loads with all 17 atoms present and 1883 MonoBehaviours, and
   the character's 84-bone animation drives the skeleton.
-- Shaders: the 63 shaders GPU-skinning and the shared `Custom/Subsurface` materials need are
-  rebuilt from the shipped DXBC - 51 `*ComputeBuff` plus their 12 plain siblings
-  ([`docs/shader-reconstruction.md`](docs/shader-reconstruction.md)); Unity compiles all 180 passes
+- Shaders: the 43 shaders GPU-skinning and the shared `Custom/Subsurface` materials need are
+  rebuilt from the shipped DXBC - 31 `*ComputeBuff` plus their 12 plain siblings
+  ([`docs/shader-reconstruction.md`](docs/shader-reconstruction.md)); Unity compiles all 113 passes
   with 0 shader errors, and each pair is checked program by program - 580 passes compared, 0 with
-  different operands or opcodes. `Assets\Shader\` is load-bearing: `Shader.Find` never sees the
-  shipped `z_sha` bundle, so deleting a rebuilt shader removes the body from the scene rather than
-  falling back to the bundle copy.
+  different operands or opcodes. The 92 families the project does not transcribe - hair, the
+  Marmoset IBL set, the geometry-shader family - are read back by name from the shipped `z_sha`
+  bundle at runtime (`MeshVR.VamShaderProvider`), because `Shader.Find` never sees a bundle.
 - Next: visual comparison and system checks, then the refactoring pass towards readable code.

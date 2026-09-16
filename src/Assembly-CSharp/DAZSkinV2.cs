@@ -1914,15 +1914,15 @@ public class DAZSkinV2 : PreCalcMeshProvider, RenderSuspend
 			Shader shader2;
 			if (GPUAutoSwapCopyNum > 0)
 			{
-				shader2 = Shader.Find(shader.name + "ComputeBuffCopy" + GPUAutoSwapCopyNum);
+				shader2 = MeshVR.VamShaderProvider.FindByName(shader.name + "ComputeBuffCopy" + GPUAutoSwapCopyNum);
 				if (shader2 == null)
 				{
-					shader2 = Shader.Find(shader.name + "ComputeBuff");
+					shader2 = MeshVR.VamShaderProvider.FindComputeBuff(shader.name);
 				}
 			}
 			else
 			{
-				shader2 = Shader.Find(shader.name + "ComputeBuff");
+				shader2 = MeshVR.VamShaderProvider.FindComputeBuff(shader.name);
 			}
 			Material material = new Material(GPUmaterials[i]);
 			RegisterAllocatedObject(material);
@@ -1935,7 +1935,7 @@ public class DAZSkinV2 : PreCalcMeshProvider, RenderSuspend
 		if (GPUsimpleMaterial != null)
 		{
 			Shader shader3 = GPUsimpleMaterial.shader;
-			Shader shader4 = Shader.Find(shader3.name + "ComputeBuff");
+			Shader shader4 = MeshVR.VamShaderProvider.FindComputeBuff(shader3.name);
 			Material material2 = new Material(GPUsimpleMaterial);
 			RegisterAllocatedObject(material2);
 			if (shader4 != null)
@@ -2555,10 +2555,28 @@ public class DAZSkinV2 : PreCalcMeshProvider, RenderSuspend
 		}
 	}
 
+	/// <summary>
+	/// GPUSkinner/GPUMeshCompute are assigned by DAZImport, but a skin that came straight out of a
+	/// prefab carries them as null because the rip holds no compute shaders. Recover them so the
+	/// GPU path is not skipped.
+	/// </summary>
+	private void EnsureGPUComputeShaders()
+	{
+		if (GPUSkinner == null)
+		{
+			GPUSkinner = VamComputeShaderProvider.SkinShader;
+		}
+		if (GPUMeshCompute == null)
+		{
+			GPUMeshCompute = VamComputeShaderProvider.MeshShader;
+		}
+	}
+
 	protected void SkinMeshGPU()
 	{
 		lastFrameSkinStartTime = skinStartTime;
 		skinStartTime = (float)stopwatch.ElapsedTicks * f;
+		EnsureGPUComputeShaders();
 		if (mesh != null && root != null && GPUSkinner != null)
 		{
 			StartThreads();
@@ -3064,6 +3082,7 @@ public class DAZSkinV2 : PreCalcMeshProvider, RenderSuspend
 	{
 		lastFrameSkinStartTime = skinStartTime;
 		skinStartTime = (float)stopwatch.ElapsedTicks * f;
+		EnsureGPUComputeShaders();
 		if (mesh != null && root != null && GPUSkinner != null)
 		{
 			if (!forceSynchronous)

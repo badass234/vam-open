@@ -860,12 +860,29 @@ namespace MeshVR
 			return result;
 		}
 
+		/// <summary>
+		/// In VaM these two references come from the prefab; the rip has no compute shaders, so they
+		/// are recovered here instead of relying on the serialized (empty) fields.
+		/// </summary>
+		private void EnsureGPUComputeShaders()
+		{
+			if (GPUSkinCompute == null)
+			{
+				GPUSkinCompute = VamComputeShaderProvider.SkinShader;
+			}
+			if (GPUMeshCompute == null)
+			{
+				GPUMeshCompute = VamComputeShaderProvider.MeshShader;
+			}
+		}
+
 		private DAZSkinV2 CreateDAZSkin(string skinId, string skinUrl, GameObject skinContainer)
 		{
 			DAZSkinV2 dAZSkinV = skinContainer.AddComponent<DAZSkinV2>();
 			dAZSkinV.skinId = skinId;
 			dAZSkinV.skinUrl = DAZurlFix(skinUrl);
 			dAZSkinV.physicsType = skinPhysicsType;
+			EnsureGPUComputeShaders();
 			if (Application.isPlaying)
 			{
 				if (GPUSkinCompute != null)
@@ -912,6 +929,7 @@ namespace MeshVR
 			dAZSkinWrap.skinTransform = skinToWrapToTransform;
 			dAZSkinWrap.skin = skinToWrapTo;
 			dAZSkinWrap.dazMesh = dazMesh;
+			EnsureGPUComputeShaders();
 			if (Application.isPlaying)
 			{
 				if (GPUSkinCompute != null)
