@@ -388,8 +388,12 @@ shader, pass count and origin. See section 3 for the command.
 
 ### Defect 1 - gloss and bump seams where Torso meets Head, Neck and Forearms
 
-Verdict: **the shader side is not the cause.** The cause is data-side (material values or the
-skinned buffers), or the original has the same seam.
+Verdict: **the shading math is not the cause.** Compiling both families and both stages against the
+shipped bytecode shows the split computes the same shading on either side of the boundary, so it
+cannot open a seam. The one behavioural difference the split genuinely carries - the original
+tessellates the `TessMappedFixed` submeshes and our build does not - is a separate, still-open gap
+rather than the cause, because dropping it makes our tessellated submeshes *match* the `Cull` ones
+instead of diverging from them. What is left is the data side, or the original having the seam too.
 
 The body is a single mesh of 28 submeshes, and those submeshes do not all land on the same family:
 
@@ -428,6 +432,27 @@ programs, and by comparing our program against the shipped one:
   (`MeshGPU.DrawMesh`, `DAZSkinV2.DrawMeshGPU`) pass the same index as both the material slot and the
   submesh index to `Graphics.DrawMesh`, gated by `materialsEnabled[i]`. Submesh `i` therefore always
   gets `GPUmaterials[i]`, so two adjacent submeshes can never swap materials.
+
+The split is not inert, though, and the part of it that is still missing is worth naming here because
+it is easy to mistake for the cause:
+
+* **We emit no tessellation stage at all.** The shipped `TessMappedFixed` family carries a hull
+  (`hs_5_0`, 3 control points, `domain_tri`, `partitioning_fractional_odd`) and a domain (`ds_5_0`)
+  program on its passes; ours declares the properties (`_Tess` default **3.35**, `_TessTex`,
+  `_TessPhong` 0.75) but only `#pragma vertex` / `#pragma fragment` with `#pragma target 4.0`. The
+  hull displaces PN-triangle control points along the interpolated normal by a height sample scaled
+  by `_Tess`, and the domain reconstructs with `_TessPhong` as the mix weight, so in the original
+  `Torso`, `Legs` and `Nipples` are ~3.35x subdivided and Phong-projected while the `Cull` submeshes
+  are not. Our build renders both identically. This makes our torso and legs coarser than the
+  original and, if anything, removes a discontinuity the original has, so it cannot be what opened
+  the seam - but it is the difference the user's "is it the unported shaders?" question is actually
+  pointing at, and it is a real gap.
+* **The pipeline behind the buffers is the original's, not ours.** `DAZGPUSkin` and `MeshGPU` are
+  loaded as shipped from the `z_sha` bundle by `MeshVR.VamComputeShaderProvider`, so the Laplacian
+  smoothing (`_useSmoothing` is true on the drawn skin - census `smoothing=True`), the
+  Laplacian/HC/spring passes, `RecalculateNormals` and `RecalculateTangents` all run the original's
+  own kernels and neighbour tables; `MeshSmoothGPU` fails loudly rather than silently if a kernel is
+  missing, and the gate reports no such error.
 
 What was not measured, and is what the seam now has to be: the per-material values the active
 character's 30 `GPUmaterials` entries actually carry, and the handedness (`float4.w`) of the skinned
