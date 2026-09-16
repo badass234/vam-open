@@ -24,6 +24,13 @@
 //  shared: the two vertex programs pack their varyings identically and the
 //  fragment programs are byte-identical (only the shader model differs).
 //
+//  A third group -- the five "*TessMapped*" skin shaders -- ships a hull and a
+//  domain program on every pass, forward and shadow alike, and VaM's materials
+//  hand them a density map in _TessTex.  Those two stages are reconstructed as
+//  well, at the end of this file, and the generated shader asks for them with
+//  VAM_TESS; the fragment stage is the same program as the non-tessellated
+//  family's, because the domain finishes in the layout VamPack builds.
+//
 //  VaM ships these shaders only as compiled DXBC, so this file is a
 //  reconstruction from that bytecode (see scripts/Extract-VaMShaders.py and
 //  docs/shader-reconstruction.md).  The lighting model follows the decompiled
@@ -203,6 +210,22 @@ float4 _SH6;  float4 _SH7;  float4 _SH8;
     #define VAM_Cutoff 0.001
 #endif
 
+// The tessellation controls, used by the hull and domain at the end of the
+// file.  _Tess scales the density map and _TessPhong blends the Phong
+// projection of a patch against its flat interpolation; both defaults are the
+// ones the *TessMapped* shaders declare.
+#ifdef VAM_HAS__Tess
+    #define VAM_TessScale _Tess
+#else
+    #define VAM_TessScale 3.35
+#endif
+
+#ifdef VAM_HAS__TessPhong
+    #define VAM_TessPhong _TessPhong
+#else
+    #define VAM_TessPhong 0.75
+#endif
+
 // Diffuse texture: the only property present in every *ComputeBuff shader
 // except Custom/DebugNormalsComputeBuff, which has no properties at all.
 // Each texture also provides its UV accessor, because a shader that does not
@@ -367,17 +390,18 @@ vam_skinned VamSkin(vam_appdata v) {
     return s;
 }
 
-vam_v2f VamVertex(vam_appdata v) {
+// Everything the fragment stage reads, from a skinned world-space vertex.  The
+// tessellation domain finishes here too, so a tessellated pass shades exactly
+// like its non-tessellated twin.
+vam_v2f VamPack(float3 posWS, float3 nrmWS, float3 tanWS, float tanSign, float2 uv) {
     vam_v2f o = (vam_v2f)0;
-    vam_skinned s = VamSkin(v);
 
-    o.pos     = mul(UNITY_MATRIX_VP, float4(s.pos, 1.0));
-    o.posWS   = s.pos;
-    o.nrmWS   = s.nrm;
-    o.tanWS   = s.tan;
-    o.bitWS   = cross(s.nrm, s.tan) * s.tanSign;
+    o.pos     = mul(UNITY_MATRIX_VP, float4(posWS, 1.0));
+    o.posWS   = posWS;
+    o.nrmWS   = nrmWS;
+    o.tanWS   = tanWS;
+    o.bitWS   = cross(nrmWS, tanWS) * tanSign;
 
-    float2 uv = v.uv0.xy;
     o.uvMain  = VAM_UV_MAIN(uv);
     o.uvSpec  = VAM_UV_SPEC(uv);
     o.uvGloss = VAM_UV_GLOSS(uv);
@@ -391,6 +415,11 @@ vam_v2f VamVertex(vam_appdata v) {
     UNITY_TRANSFER_SHADOW(o, float2(0, 0));
 
     return o;
+}
+
+vam_v2f VamVertex(vam_appdata v) {
+    vam_skinned s = VamSkin(v);
+    return VamPack(s.pos, s.nrm, s.tan, s.tanSign, v.uv0.xy);
 }
 
 // -----------------------------------------------------------------------------
@@ -635,16 +664,15 @@ struct vam_shadow_v2f {
     UNITY_POSITION(pos);
 };
 
-vam_shadow_v2f VamShadowVertex(vam_appdata v) {
+vam_shadow_v2f VamShadowClip(float3 posWS, float3 nrmWS) {
     vam_shadow_v2f o = (vam_shadow_v2f)0;
-    vam_skinned s = VamSkin(v);
 
-    float4 wPos = float4(s.pos, 1.0);
+    float4 wPos = float4(posWS, 1.0);
     if (unity_LightShadowBias.z != 0.0) {
         float3 wLight = normalize(UnityWorldSpaceLightDir(wPos.xyz));
-        float shadowCos = dot(s.nrm, wLight);
+        float shadowCos = dot(nrmWS, wLight);
         float shadowSine = sqrt(1.0 - shadowCos * shadowCos);
-        wPos.xyz -= s.nrm * (unity_LightShadowBias.z * shadowSine);
+        wPos.xyz -= nrmWS * (unity_LightShadowBias.z * shadowSine);
     }
 
     // Only the legacy cubemap path carries the light-space vector in the varying;
@@ -659,8 +687,202 @@ vam_shadow_v2f VamShadowVertex(vam_appdata v) {
     return o;
 }
 
+vam_shadow_v2f VamShadowVertex(vam_appdata v) {
+    vam_skinned s = VamSkin(v);
+    return VamShadowClip(s.pos, s.nrm);
+}
+
 float4 VamShadowFragment(vam_shadow_v2f i) : SV_Target {
     SHADOW_CASTER_FRAGMENT(i)
 }
+
+#ifdef VAM_TESS
+// -----------------------------------------------------------------------------
+//  Tessellation
+//
+//  Five of the skin shaders -- Custom/Subsurface/*TessMapped* -- carry a hull and
+//  a domain program on every pass, forward and shadow alike, and their materials
+//  hand them a density map in _TessTex: the body is subdivided where the map is
+//  bright and left at the mesh's own density where it is dark.  Without those two
+//  stages the shader still draws the mesh, but it draws it on whatever triangles
+//  the mesh already has, which is the difference the eye reads as seams where two
+//  submeshes meet with different tessellated silhouettes.
+//
+//  Both stages are reconstructions of the shipped DXBC, decoded register by
+//  register:
+//
+//    * the control point forwards the compute buffers untouched and in *object*
+//      space.  Unlike VamSkin it transforms nothing: this family's vertex program
+//      binds no object-to-world matrix at all and leaves the whole transform to
+//      the domain;
+//    * the hull turns the density map into tessellation factors -- the arithmetic
+//      of Unity's own UnityCalcTriEdgeTessFactors, inlined so the rounding
+//      matches the shipped hull -- and keeps the patch's three control points;
+//    * the domain interpolates the patch barycentrically, projects the position
+//      onto the control points' tangent planes (the Pn-triangle step the original
+//      performs; Unity's Tessellation.cginc has no equivalent), blends that
+//      projection against the flat interpolation by _TessPhong, and finishes in
+//      the world-space layout VamPack builds.  The fragment stage is therefore
+//      the same program the non-tessellated family runs.
+//
+//  Hull and domain shaders need Shader Model 5, so the generator emits target 5.0
+//  and the hull/domain pragmas for these passes and leaves every other pass at
+//  4.0.  The shipped programs are SM5.0 (HullSM50/DomainSM50), so this matches
+//  the original rather than exceeding it.
+// -----------------------------------------------------------------------------
+
+#if defined(VAM_MESH_SKIN)
+#error VAM_TESS with VAM_MESH_SKIN is not reconstructed: the tessellated passes are compute-buffer only
+#endif
+
+struct vam_tess_cp {
+    float3 pos : INTERNALTESSPOS;   // object space, the interpolation target
+    float3 nrm : NORMAL;            // object space
+    float4 tan : TANGENT;           // object space, .w carries the handedness
+    float4 uv0 : TEXCOORD0;         // .xy mesh UV, .w density-map mip
+};
+
+struct vam_tess_factors {
+    float edge[3] : SV_TessFactor;
+    float inside  : SV_InsideTessFactor;
+};
+
+vam_tess_cp VamTessVertex(vam_appdata v) {
+    vam_tess_cp o;
+    // verts[] is already world space in this family's own terms, but the
+    // tessellation runs in object space: the domain applies the object matrix
+    // after the patch has been subdivided.  Unlike VamSkin, the per-vertex
+    // offset is not added here -- the shipped control point program does not
+    // read POSITION.w at all.
+    o.pos = verts[v.vid];
+    o.nrm = normals[v.vid];
+#ifndef VAM_NO_TANGENTS
+    o.tan = tangents[v.vid];
+#else
+    o.tan = float4(1, 0, 0, 1);
+#endif
+    o.uv0 = v.uv0;
+    return o;
+}
+
+float VamTessDensity(vam_tess_cp cp) {
+    // A density map that is black at this vertex would collapse its patch, so the
+    // original keeps a 0.01 floor under the scaled sample.
+#ifdef VAM_HAS__TessTex
+    return tex2Dlod(_TessTex, float4(cp.uv0.xy, 0.0, cp.uv0.w)).x * VAM_TessScale + 0.01;
+#else
+    return VAM_TessScale + 0.01;
+#endif
+}
+
+vam_tess_factors VamTessFactors(InputPatch<vam_tess_cp, 3> patch) {
+    float h0 = VamTessDensity(patch[0]);
+    float h1 = VamTessDensity(patch[1]);
+    float h2 = VamTessDensity(patch[2]);
+
+    vam_tess_factors o;
+    o.edge[0] = (h1 + h2) * 0.5;
+    o.edge[1] = (h2 + h0) * 0.5;
+    o.edge[2] = (h0 + h1) * 0.5;
+    o.inside  = (h0 + h1 + h2) * 0.333333;
+    return o;
+}
+
+[UNITY_domain("tri")]
+[UNITY_partitioning("fractional_odd")]
+[UNITY_outputtopology("triangle_cw")]
+[UNITY_outputcontrolpoints(3)]
+[UNITY_patchconstantfunc("VamTessFactors")]
+vam_tess_cp VamTessHull(InputPatch<vam_tess_cp, 3> patch, uint id : SV_OutputControlPointID) {
+    return patch[id];
+}
+
+// One control point, unpacked, for the interpolation below.  The patch itself
+// cannot be handed to a helper: its element type carries semantics.
+struct vam_tess_point {
+    float3 pos;
+    float3 nrm;
+    float4 tan;
+    float2 uv;
+};
+
+void VamTessUnpack(OutputPatch<vam_tess_cp, 3> patch, out vam_tess_point p[3]) {
+    [unroll]
+    for (int i = 0; i < 3; i++) {
+        p[i].pos = patch[i].pos;
+        p[i].nrm = patch[i].nrm;
+        p[i].tan = patch[i].tan;
+        p[i].uv  = patch[i].uv0.xy;
+    }
+}
+
+// The Pn-triangle step of the shipped domain: interpolate the position flat
+// first, then push that point onto each control point's own tangent plane, and
+// blend the projection against the flat point by _TessPhong (0 leaves the patch
+// flat, 1 makes it follow the normals).  Only the position is projected -- the
+// normal stays a barycentric interpolation.
+void VamTessInterpolate(vam_tess_point p[3], float3 bary, out float3 posOS, out float3 nrmOS) {
+    float3 flat = p[0].pos * bary.x + p[1].pos * bary.y + p[2].pos * bary.z;
+
+    float3 phong = float3(0, 0, 0);
+    [unroll]
+    for (int i = 0; i < 3; i++) {
+        float d = dot(flat - p[i].pos, p[i].nrm);
+        phong += (flat - p[i].nrm * d) * bary[i];
+    }
+
+    posOS = lerp(flat, phong, VAM_TessPhong);
+    nrmOS = p[0].nrm * bary.x + p[1].nrm * bary.y + p[2].nrm * bary.z;
+}
+
+// World-space varyings for a point inside a patch.  The Gram-Schmidt step is the
+// one VamSkin performs, so a tessellated triangle shades like the mesh triangle
+// it subdivides.  The tangent's handedness is interpolated too, the way the
+// shipped domain interpolates it before rebuilding the bitangent.
+vam_v2f VamTessVaryings(vam_tess_point p[3], float3 bary) {
+    float3 posOS, nrmOS;
+    VamTessInterpolate(p, bary, posOS, nrmOS);
+
+    float3 posWS = mul(unity_ObjectToWorld, float4(posOS, 1.0)).xyz;
+    float3 nrmWS = UnityObjectToWorldNormal(nrmOS);
+
+    float3 tanWS = UnityObjectToWorldDir(p[0].tan.xyz * bary.x
+                                       + p[1].tan.xyz * bary.y
+                                       + p[2].tan.xyz * bary.z);
+    tanWS = normalize(tanWS - nrmWS * dot(nrmWS, tanWS));
+
+    float tanSign = (p[0].tan.w * bary.x + p[1].tan.w * bary.y + p[2].tan.w * bary.z)
+                  * unity_WorldTransformParams.w;
+
+    float2 uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
+
+    return VamPack(posWS, nrmWS, tanWS, tanSign, uv);
+}
+
+[UNITY_domain("tri")]
+vam_v2f VamTessDomain(vam_tess_factors factors, float3 bary : SV_DomainLocation,
+                      const OutputPatch<vam_tess_cp, 3> patch) {
+    vam_tess_point p[3];
+    VamTessUnpack(patch, p);
+    return VamTessVaryings(p, bary);
+}
+
+// The shadow pass tessellates too, so its depth has to be subdivided the same
+// way -- otherwise the tessellated body casts the shadow of the mesh it no
+// longer is.  It ends in the same clip-space shadow position as the unsplit
+// vertex path.
+[UNITY_domain("tri")]
+vam_shadow_v2f VamTessShadowDomain(vam_tess_factors factors, float3 bary : SV_DomainLocation,
+                                   const OutputPatch<vam_tess_cp, 3> patch) {
+    vam_tess_point p[3];
+    VamTessUnpack(patch, p);
+
+    float3 posOS, nrmOS;
+    VamTessInterpolate(p, bary, posOS, nrmOS);
+
+    return VamShadowClip(mul(unity_ObjectToWorld, float4(posOS, 1.0)).xyz,
+                         UnityObjectToWorldNormal(nrmOS));
+}
+#endif // VAM_TESS
 
 #endif // VAM_GPU_SKINNING_INCLUDED

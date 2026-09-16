@@ -24,6 +24,13 @@ its data:
     position, normal and tangent from the vertex attributes instead.  Those
     shaders therefore reuse the same cginc with VAM_MESH_SKIN defined.
 
+Five of the compute-buffer shaders -- the "*TessMapped*" skin shaders -- also
+ship a hull and a domain program on every pass, forward and shadow alike.  Both
+are reconstructed as well, and a pass that carries them is emitted with the
+hull/domain pragmas at Shader Model 5 (the shipped programs are SM5.0), which is
+what lets the material's density map subdivide the body.  See the tessellation
+block in VamGpuSkinning.cginc.
+
 This script reads the per-shader contracts produced by Extract-VaMShaders.py
 (artifacts/shader-blobs/<name>/contract.json) and writes real ShaderLab files
 that forward to the reconstruction in shader-src/VamGpuSkinning.cginc:
@@ -38,10 +45,11 @@ that forward to the reconstruction in shader-src/VamGpuSkinning.cginc:
   * META, DEFERRED and the deferred pre-passes are dropped: this project
     renders forward only, and those passes need a rendering setup (lightmap
     baking, a G-buffer) that the rebuilt project does not have.
-  * Tessellation stages are dropped: the hull/domain programs of the
-    *TessMapped* variants are not reconstructed, so those passes render with
-    plain vertex skinning, exactly like the *TessMappedFixed* variants that
-    VaM ships side by side with them.
+  * Where the contract carries a hull and a domain program for a pass, both are
+    reconstructed from the same bytecode and the pass declares them (VAM_TESS,
+    target 5.0).  A pass whose contract carries only one of the two is a hard
+    error rather than a silent downgrade: that pair is what makes the body the
+    silhouette its material was authored for.
 
 Shaders whose fragment program is a *different* model are left alone: they are
 reported as pending and keep whatever AssetRipper wrote.  Reconstructing them
@@ -209,15 +217,44 @@ def cutoff_for(pas: dict, lightmode: str, names: set, opaque_fb_index: int):
     return None
 
 
-def entry_points(lightmode: str):
+def pass_tessellates(pas: dict) -> bool:
+    """Whether the contract carries a hull/domain pair for this pass.
+
+    Both stages belong to one decision: their arithmetic is shared (the hull
+    produces the factors, the domain interpolates against them and finishes in
+    the varyings the fragment stage reads), so a contract offering only one of
+    the two is reported rather than silently rendered without either.
+    """
+    stages = pas.get("stages", {})
+    hull = bool(stages.get("progHull"))
+    domain = bool(stages.get("progDomain"))
+    if hull != domain:
+        raise ValueError(
+            f"pass {pass_tags(pas).get('LIGHTMODE') or '<untagged>'} has "
+            f"progHull={hull} but progDomain={domain}; tessellation is a pair")
+    return hull
+
+
+def entry_points(lightmode: str, tess: bool = False):
     """The cginc entry points and keyword set matching an original LightMode."""
     if lightmode == "FORWARDBASE":
-        return "VamVertex", "VamFragment", ["multi_compile_fwdbase"]
-    if lightmode == "FORWARDADD":
-        return "VamVertex", "VamFragmentAdd", ["multi_compile_fwdadd_fullshadows"]
-    if lightmode == "SHADOWCASTER":
-        return "VamShadowVertex", "VamShadowFragment", ["multi_compile_shadowcaster"]
-    return "VamVertex", "VamFragment", ["multi_compile_fwdbase"]
+        pairs = ("VamVertex", "VamFragment", ["multi_compile_fwdbase"])
+    elif lightmode == "FORWARDADD":
+        pairs = ("VamVertex", "VamFragmentAdd", ["multi_compile_fwdadd_fullshadows"])
+    elif lightmode == "SHADOWCASTER":
+        pairs = ("VamShadowVertex", "VamShadowFragment", ["multi_compile_shadowcaster"])
+    else:
+        pairs = ("VamVertex", "VamFragment", ["multi_compile_fwdbase"])
+    if not tess:
+        return pairs
+    # A tessellated pass replaces the vertex stage with three: the control point
+    # program, the hull that subdivides it, and -- on the far side of the
+    # subdivision -- a domain that finishes either the varyings or the
+    # shadow-caster clip position.
+    vert, frag, keywords = pairs
+    tess_vert = "VamTessVertex"
+    tess_domain = "VamTessShadowDomain" if lightmode == "SHADOWCASTER" else "VamTessDomain"
+    return (tess_vert, frag, keywords, tess_domain)
 
 
 def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
@@ -230,10 +267,22 @@ def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
         raise ValueError(f"pass {lightmode or '<untagged>'} binds {sorted(bufs)}; "
                          "a plain shader's pass reads the vertex attributes")
     names = {p["name"] for p in props}
-    vert, frag, keywords = entry_points(lightmode)
+    tess = pass_tessellates(pas)
+    if tess and family != "skin":
+        raise ValueError(f"pass {lightmode or '<untagged>'} is tessellated but is not "
+                         "skinned; the reconstructed domain reads the compute buffers")
+    if tess:
+        # The far side of the subdivision runs in the shader model the original
+        # hull and domain programs were compiled for.
+        entry = entry_points(lightmode, tess=True)
+        vert, frag, keywords, tess_domain = entry
+    else:
+        vert, frag, keywords = entry_points(lightmode)
 
     body = []
-    body.append("#pragma target 4.0")
+    body.append("#pragma target 5.0" if tess else "#pragma target 4.0")
+    if tess:
+        body.append("#define VAM_TESS")
     if family == "mesh":
         body.append("// drawn the ordinary way: the vertex stage transforms the mesh")
         body.append("#define VAM_MESH_SKIN")
@@ -244,6 +293,9 @@ def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
     if cutoff:
         body.append("#define VAM_PASS_CUTOFF " + cutoff)
     body.append(f"#pragma vertex {vert}")
+    if tess:
+        body.append(f"#pragma hull {TESS_HULL}")
+        body.append(f"#pragma domain {tess_domain}")
     body.append(f"#pragma fragment {frag}")
     for kw in keywords:
         body.append(f"#pragma {kw}")
@@ -271,6 +323,11 @@ def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
 
 TAG_CASE = {"QUEUE": "Queue", "RENDERTYPE": "RenderType"}
 BANNER = "// " + "-" * 78
+
+# The hull's patch-constant function has one implementation for every light mode:
+# the subdivision does not depend on the light.  Its control point program is the
+# vertex stage, so it is named by #pragma vertex.
+TESS_HULL = "VamTessHull"
 
 
 def is_opaque_pass(pas: dict) -> bool:
@@ -311,6 +368,8 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
     props = contract["properties"]
     skin = family == "skin"
     library = "VamGpuSkinning.cginc"
+    tess = any(pass_tessellates(pas) for pas in sub["passes"]
+               if pass_lightmode(pas) not in SKIP_LIGHTMODES)
 
     lines = [
         BANNER,
@@ -320,6 +379,7 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
         f"// Program contracts: artifacts/shader-blobs/{blob_dir}/",
         f"// Shading model:     shader-src/{library}",
         f"// Vertex stage:      {'GPU skinning (compute buffers)' if skin else 'mesh attributes'}",
+        f"// Tessellation:      {'hull + domain (Shader Model 5.0)' if tess else 'none'}",
         BANNER,
         f'Shader "{name}" {{',
     ]
@@ -337,6 +397,7 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
     lines.append("")
 
     passes = 0
+    tess_passes = 0
     opaque_fb = 0
     for pas in sub["passes"]:
         lm = pass_lightmode(pas)
@@ -353,13 +414,15 @@ def emit_shader(contract: dict, blob_dir: str, skipped: list, family: str):
         lines.append(emit_pass(pas, lm, props, opaque_fb, family))
         lines.append("")
         passes += 1
+        if pass_tessellates(pas):
+            tess_passes += 1
         if lm == "FORWARDBASE" and is_opaque_pass(pas):
             opaque_fb += 1
     lines.append("\t}")
     if contract.get("fallback"):
         lines.append(f'\tFallback "{contract["fallback"]}"')
     lines.append("}")
-    return "\n".join(lines) + "\n", passes
+    return "\n".join(lines) + "\n", passes, tess_passes
 
 
 def main(argv=None) -> int:
@@ -397,11 +460,13 @@ def main(argv=None) -> int:
     skipped = []
     shaders = 0
     passes = 0
+    tess_passes = 0
     for blob_dir, data, family in contracts:
-        text, n = emit_shader(data, blob_dir, skipped, family)
+        text, n, t = emit_shader(data, blob_dir, skipped, family)
         if args.list:
             print(f"{family:<5} {data['name']:<58} "
-                  f"passes={n} props={len(data['properties']):>2}")
+                  f"passes={n} props={len(data['properties']):>2}"
+                  f"{f'  tess={t}' if t else ''}")
             continue
         if not n:
             print(f"warning: {data['name']} produced no passes", file=sys.stderr)
@@ -409,6 +474,7 @@ def main(argv=None) -> int:
         target.write_text(text, encoding="utf-8")
         shaders += 1
         passes += n
+        tess_passes += t
 
     if args.list:
         print(f"\n{len(contracts)} reconstructed, {len(pending)} pending (no shading model yet):")
@@ -421,7 +487,7 @@ def main(argv=None) -> int:
     CGINC_DST.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(CGINC_SRC, CGINC_DST)
 
-    print(f"wrote {shaders} shaders ({passes} passes) to "
+    print(f"wrote {shaders} shaders ({passes} passes, {tess_passes} tessellated) to "
           f"{SHADER_DIR.relative_to(REPO)}")
     print(f"copied  {CGINC_SRC.relative_to(REPO)} -> {CGINC_DST.relative_to(REPO)}")
     for name, lightmode, why in skipped:

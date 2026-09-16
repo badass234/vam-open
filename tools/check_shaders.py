@@ -18,6 +18,13 @@ KEYWORD_SETS.  That matters: AutoLight and the shader library both branch on the
 light and shadow keywords, and compiling with a single keyword set is exactly how
 a variant Unity builds anyway goes unchecked.
 
+A pass that declares a hull and a domain is compiled as a tessellation pipeline:
+its control-point program at vs_5_0, the hull at hs_5_0, the domain at ds_5_0 and
+its fragment stage at ps_5_0, all with SHADER_TARGET 50 to match Unity's own
+preamble for those passes.  Its four stages are compiled under every keyword set
+the pass declares, exactly as Unity builds them, and the whole pipeline of a
+shadow-caster pass - which reads no lighting keyword - is compiled once.
+
 Requires the Windows SDK's fxc.exe and Unity 2018.1.9f2's CGIncludes; both are
 located automatically, or pass --fxc / --unity.
 """
@@ -40,10 +47,13 @@ DEFAULT_UNITY = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / \
 
 # Unity's shader compiler defines these before it parses a source file, and
 # passes /Gec so that the unqualified `half` globals in its own includes are
-# accepted at SM4.0 (fxc otherwise rejects them with X3650).
-PLATFORM = """#define SHADER_API_D3D11 1
-#define SHADER_TARGET 40
-"""
+# accepted at SM4.0 (fxc otherwise rejects them with X3650).  A tessellated pass
+# is built for Shader Model 5, which is what the original hull and domain
+# programs were compiled for and what Unity's own preamble sets for them.
+PLATFORM = "#define SHADER_API_D3D11 1\n#define SHADER_TARGET {target}\n"
+
+TARGET_TESS = 50
+TARGET_PLAIN = 40
 
 # Keyword sets that read differently in HLSLSupport/AutoLight/UnityCG and in the
 # VaM library.  The bare SHADOWS_DEPTH set is not a real light - it is the one
@@ -110,16 +120,34 @@ def keyword_defines(keywords):
     return "".join(f"#define {token} 1\n" for token in keywords.split())
 
 
+def has_pragma(block, kind):
+    return re.search(r"#pragma\s+" + kind + r"\s+\w+", block) is not None
+
+
 def compile_block(fxc, cgincludes, name, index, entry, profile, source, keywords, slot):
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / f"{name}.{index}.{entry}.{slot}.hlsl"
     # pragmas are ShaderLab's, not fxc's; it only warns about them
     source = re.sub(r"^\s*#pragma.*$", "", source, flags=re.M)
-    path.write_text(PLATFORM + keyword_defines(keywords) + source, encoding="utf-8")
+    target = TARGET_TESS if profile.endswith("_5_0") else TARGET_PLAIN
+    path.write_text(PLATFORM.format(target=target) + keyword_defines(keywords) + source,
+                    encoding="utf-8")
     command = [str(fxc), "/nologo", "/Gec", "/T", profile, "/E", entry,
                "/I", str(cgincludes), "/Fo", str(path.with_suffix(".dxbc")), str(path)]
     proc = subprocess.run(command, capture_output=True, text=True)
     return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+def is_unkeyed(block, entry, tess):
+    """Whether a stage of a pass is built once instead of once per lighting keyword.
+
+    A shadow-caster pass is built once per ``multi_compile_shadowcaster`` variant
+    and no stage of it reads the lighting keywords, so the whole tessellation
+    pipeline of one is compiled unkeyed.  Every other stage keeps the per-entry
+    rule this gate has always used: the shadow vertex program is unkeyed while the
+    fragment stage of the same pass is still compiled under every keyword set.
+    """
+    return entry in UNKEYED_ENTRIES or (tess and "#pragma multi_compile_shadowcaster" in block)
 
 
 def main(argv):
@@ -151,13 +179,24 @@ def main(argv):
         text = path.read_text(encoding="utf-8").replace(
             "../VaMShaders/VamGpuSkinning.cginc", str(CGINC))
         for index, block in split_blocks(text):
-            entries = [(entry_point(block, "vertex"), "vs_4_0")]
-            entries += [(entry, "ps_4_0") for entry in fragment_entries(block)]
+            tess = has_pragma(block, "hull")
+            if tess:
+                # The whole tessellation pipeline: the control-point program, the
+                # hull, the domain, and the fragment stage the domain feeds.
+                entries = [
+                    (entry_point(block, "vertex"), "vs_5_0"),
+                    (entry_point(block, "hull"), "hs_5_0"),
+                    (entry_point(block, "domain"), "ds_5_0"),
+                ]
+                entries += [(entry, "ps_5_0") for entry in fragment_entries(block)]
+            else:
+                entries = [(entry_point(block, "vertex"), "vs_4_0")]
+                entries += [(entry, "ps_4_0") for entry in fragment_entries(block)]
             for entry, profile in entries:
                 source = block
-                if profile == "ps_4_0":
+                if profile.startswith("ps_"):
                     source = re.sub(r"(#pragma\s+fragment\s+)\w+", r"\g<1>" + entry, block)
-                sets = [""] if entry in UNKEYED_ENTRIES else KEYWORD_SETS
+                sets = [""] if is_unkeyed(block, entry, tess) else KEYWORD_SETS
                 for slot, keywords in enumerate(sets):
                     programs += 1
                     code, output = compile_block(fxc, cgincludes, path.stem, index,

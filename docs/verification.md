@@ -391,9 +391,10 @@ shader, pass count and origin. See section 3 for the command.
 Verdict: **the shading math is not the cause.** Compiling both families and both stages against the
 shipped bytecode shows the split computes the same shading on either side of the boundary, so it
 cannot open a seam. The one behavioural difference the split genuinely carries - the original
-tessellates the `TessMappedFixed` submeshes and our build does not - is a separate, still-open gap
-rather than the cause, because dropping it makes our tessellated submeshes *match* the `Cull` ones
-instead of diverging from them. What is left is the data side, or the original having the seam too.
+tessellates the `TessMappedFixed` submeshes and our build did not - has since been closed (see
+*The tessellation stages* below); the geometry is now subdivided on both sides of the boundary, so if
+the seam survives it is data, or it is in the original too. The remaining shader-side deviation is the
+additive pass, which is equally wrong on both sides of the boundary and so cannot open one either.
 
 The body is a single mesh of 28 submeshes, and those submeshes do not all land on the same family:
 
@@ -436,17 +437,15 @@ programs, and by comparing our program against the shipped one:
 The split is not inert, though, and the part of it that is still missing is worth naming here because
 it is easy to mistake for the cause:
 
-* **We emit no tessellation stage at all.** The shipped `TessMappedFixed` family carries a hull
-  (`hs_5_0`, 3 control points, `domain_tri`, `partitioning_fractional_odd`) and a domain (`ds_5_0`)
-  program on its passes; ours declares the properties (`_Tess` default **3.35**, `_TessTex`,
-  `_TessPhong` 0.75) but only `#pragma vertex` / `#pragma fragment` with `#pragma target 4.0`. The
-  hull displaces PN-triangle control points along the interpolated normal by a height sample scaled
-  by `_Tess`, and the domain reconstructs with `_TessPhong` as the mix weight, so in the original
-  `Torso`, `Legs` and `Nipples` are ~3.35x subdivided and Phong-projected while the `Cull` submeshes
-  are not. Our build renders both identically. This makes our torso and legs coarser than the
-  original and, if anything, removes a discontinuity the original has, so it cannot be what opened
-  the seam - but it is the difference the user's "is it the unported shaders?" question is actually
-  pointing at, and it is a real gap.
+* **The tessellation stages are reconstructed now.** The shipped `TessMappedFixed` family carries a
+  hull (`hs_5_0`, 3 control points, `domain_tri`, `partitioning_fractional_odd`) and a domain
+  (`ds_5_0`) program on its passes, and five shaders carry them on all three passes each - the four
+  other `Custom/Subsurface/*TessMapped*` shaders are the same pipeline with a different pixel
+  program, so 15 passes in total. Both stages are transcribed register by register into
+  `shader-src\VamGpuSkinning.cginc` (the *Tessellation* section) and the passes are emitted with
+  `#pragma hull` / `#pragma domain` and `#pragma target 5.0`, which is the model the original's hull
+  and domain were compiled for. *The tessellation stages* below records what was decoded and how it
+  was checked.
 * **The pipeline behind the buffers is the original's, not ours.** `DAZGPUSkin` and `MeshGPU` are
   loaded as shipped from the `z_sha` bundle by `MeshVR.VamComputeShaderProvider`, so the Laplacian
   smoothing (`_useSmoothing` is true on the drawn skin - census `smoothing=True`), the
@@ -513,6 +512,71 @@ warnings are real but belong to the transcription backlog: our generated `*Compu
 declare `Fallback "Marmoset/Specular IBL SoftComputeBuff"` and
 `"Marmoset/Specular IBL Soft NoCullComputeBuff"`, names faithful to the original that
 `transcribe-hair-marmoset` has not built yet.
+
+### The tessellation stages
+
+The five `Custom/Subsurface/*TessMapped*ComputeBuff` shaders are the only ones in VaM that ship a hull
+and a domain program, and they ship them on *every* pass - forward base, forward additive and
+shadow caster alike. The four outside `GlossNMTessMappedFixed` differ only in their pixel program, so
+one reconstruction serves all fifteen passes. What the material controls is `_Tess` (how much of the
+density map's range reaches the tessellator, default 3.35), `_TessTex` (the density map itself) and
+`_TessPhong` (how far the patch bends towards its normals, default 0.75).
+
+Decoded from the shipped assembly, and what the reconstruction does:
+
+- **The control point carries the buffers through in object space.** The shipped vertex program
+  (`vs_5_0`, blob `000`) forwards `verts[vid]` as `INTERNALTESSPOS`, and the raw `normals[vid]` and
+  `tangents[vid]` unreformed - no normalize, no Gram-Schmidt, no object-to-world. The shipped hull's
+  input signature is exactly that, so the transform belongs to the domain. Note it does not read
+  `POSITION.w`, i.e. unlike the non-tessellated path there is no per-vertex offset term.
+- **The hull turns the density map into factors.** `h(n) = tex2Dlod(_TessTex, cp[n].uv0.xy,
+  lod = cp[n].uv0.w).x * _Tess + 0.01`, then `edge0 = (h1+h2)/2`, `edge1 = (h2+h0)/2`,
+  `edge2 = (h0+h1)/2`, `inside = (h0+h1+h2)/3` - eleven instructions, reproduced literally,
+  including the 0.01 floor that keeps a black sample from collapsing its patch. Each edge factor is
+  symmetric in its two corners, so two patches sharing an edge compute the same number for it and the
+  subdivision cannot crack. The density-map mip comes from the control point's own `TEXCOORD0.w`, and
+  the arithmetic is byte-identical in every keyword variant.
+- **The domain is a Pn triangle.** The position is interpolated flat first, then pushed onto each
+  control point's tangent plane by `P_n = flat - normal_n * dot(flat - pos_n, normal_n)`, the three
+  projections are weighted barycentrically and blended against the flat point by `_TessPhong` (0
+  leaves the patch flat, 1 makes it follow the normals). Only the position is projected; the normal
+  stays a barycentric interpolation. The result is an object-space position - object because the
+  original draws the body with `Matrix4x4.identity` - which the object-to-clip matrix turns into the
+  clip position; ours goes through `unity_ObjectToWorld` and `UNITY_MATRIX_VP` by the same route.
+- **The rest of the domain is the varyings.** The five `_ST` transforms are applied after the
+  barycentric UV interpolation, the tangent and normal are transformed to world space and the
+  bitangent is rebuilt as `cross(N,T)` scaled by the interpolated tangent `w` times
+  `unity_WorldTransformParams.w`, and the screen-space shadow coordinate is computed from the domain's
+  own clip position - the shipped `SHADOWS_SCREEN` variant does this, and the domain cannot call
+  `TRANSFER_SHADOW`, which reads `a.pos` from the vertex stage. The domain finishes in the same
+  world-space layout `VamPack()` builds for the non-tessellated vertex path, which is what lets the
+  fragment stage stay the same program.
+- **The shadow pass is tessellated too.** Its depth would otherwise be the mesh's silhouette, not the
+  subdivided body's. That domain repeats the same Pn position and then reproduces Unity's own
+  shadow-caster placement from `unity_LightShadowBias`: the normal offset scaled by the sine of the
+  light angle, then the linear-bias clamp.
+
+Checked with the compile gate, which now compiles a tessellated pass as its four programs -
+control point at `vs_5_0`, hull at `hs_5_0`, domain at `ds_5_0`, fragment at `ps_5_0` - with
+`SHADER_TARGET 50`, the model the original's hull and domain were built for:
+
+*Current state*: `2816/2816 programs compiled, 0 failed`, 43 shaders, 113 passes, 15 of them
+tessellated.
+
+Two things a reader should not expect from this:
+
+- **The Pn normal is not carried.** The original ships its Phong-projected normal to the pixel stage
+  in `TEXCOORD6` while also shipping the interpolated one; our fragment stage is a transcription of
+  the *non-tessellated* family's program, which reads only the interpolated one, so nothing consumes
+  it. Detail-bump shading on a tessellated submesh is therefore what it was before this change; what
+  changed is the geometry.
+- **The varying packing is ours, not the original's.** The original interleaves tangent, bitangent
+  and both normals across `o4`/`o5`/`o6`; we repack into our own layout. That is invisible as long as
+  both stages come from the same source, which they do, and it is what keeps the fragment stage shared
+  between the two families.
+
+Visual confirmation is still outstanding: the gate proves the programs compile and the arithmetic
+matches, not that the body looks right. The manual run in the checklist below is the check for that.
 
 ## Still open
 
