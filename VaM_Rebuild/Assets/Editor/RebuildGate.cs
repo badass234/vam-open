@@ -1053,6 +1053,27 @@ public static class RebuildGate
         return array != null ? array.Length.ToString() : value.ToString();
     }
 
+    /// <summary>
+    /// The material *names* of a slot list, which is what identifies a submesh: the shader name says
+    /// how it is lit, the material name says which part of the body it is.
+    /// </summary>
+    private static string MaterialNameSummary(Material[] materials)
+    {
+        if (materials == null)
+        {
+            return "NULL";
+        }
+
+        StringBuilder text = new StringBuilder(materials.Length.ToString());
+        for (int i = 0; i < materials.Length; i++)
+        {
+            text.Append(i == 0 ? ": " : ", ");
+            text.Append(materials[i] == null ? "NULL" : materials[i].name);
+        }
+
+        return text.ToString();
+    }
+
     private static string MaterialSummary(Material[] materials)
     {
         if (materials == null)
@@ -2062,6 +2083,168 @@ public static class RebuildGate
     /// skeleton each one actually resolves to, together with the world positions of the two ancestor
     /// chains, so the skeleton the skins use and the skeleton the body uses can be compared by path.
     /// </summary>
+    /// <summary>
+    /// The scalp of a hair item is not a mesh of its own: it is a submesh of the skin the item is
+    /// attached to, drawn with a material out of the same list that draws the hair strands. Whether
+    /// that texture lands on the head is therefore a question about a submesh index and about where
+    /// the submesh's vertices actually are, so this prints both for every submesh that carries a hair
+    /// or scalp material.
+    /// </summary>
+    private static string SubMeshMap(DAZSkinV2 skin, Mesh mesh)
+    {
+        if (mesh == null || skin.dazMesh == null)
+        {
+            return string.Empty;
+        }
+
+        Material[] named = skin.dazMesh.materials;
+        Vector3[] vertices = mesh.vertices;
+        Matrix4x4 toWorld = skin.transform.localToWorldMatrix;
+        StringBuilder lines = new StringBuilder();
+        for (int i = 0; i < mesh.subMeshCount; i++)
+        {
+            string name = named != null && i < named.Length && named[i] != null ? named[i].name : "none";
+            string gpu = skin.GPUmaterials != null && i < skin.GPUmaterials.Length && skin.GPUmaterials[i] != null
+                ? skin.GPUmaterials[i].name
+                : "none";
+            if (name.IndexOf("scalp", StringComparison.OrdinalIgnoreCase) < 0
+                && gpu.IndexOf("scalp", StringComparison.OrdinalIgnoreCase) < 0
+                && name.IndexOf("hair", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                continue;
+            }
+
+            int[] triangles = mesh.GetTriangles(i);
+            Vector3 min = Vector3.zero;
+            Vector3 max = Vector3.zero;
+            bool any = false;
+            for (int t = 0; t < triangles.Length; t++)
+            {
+                Vector3 vertex = toWorld.MultiplyPoint3x4(vertices[triangles[t]]);
+                if (!any)
+                {
+                    min = vertex;
+                    max = vertex;
+                    any = true;
+                }
+                else
+                {
+                    min = Vector3.Min(min, vertex);
+                    max = Vector3.Max(max, vertex);
+                }
+            }
+
+            lines.AppendLine(string.Format("    submesh {0}{1}: material={2}, gpu material={3}, world={4}",
+                i,
+                skin.materialsEnabled != null && i < skin.materialsEnabled.Length && !skin.materialsEnabled[i]
+                    ? " disabled"
+                    : "",
+                name, gpu,
+                any ? BoxText(true, new Bounds((min + max) * 0.5f, max - min)) : "no triangles"));
+        }
+
+        return lines.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>
+    /// The world-space box of one submesh, with every vertex taken through `toWorld`. The vertices
+    /// have to be read through the same matrix the draw call uses, because that matrix is the whole
+    /// question for geometry a skin does not skin.
+    /// </summary>
+    private static string SubMeshBox(Mesh mesh, int index, Matrix4x4 toWorld)
+    {
+        Vector3[] vertices = mesh.vertices;
+        int[] triangles = mesh.GetTriangles(index);
+        Vector3 min = Vector3.zero;
+        Vector3 max = Vector3.zero;
+        bool any = false;
+        for (int t = 0; t < triangles.Length; t++)
+        {
+            int vertex = triangles[t];
+            if (vertex < 0 || vertex >= vertices.Length)
+            {
+                continue;
+            }
+
+            Vector3 point = toWorld.MultiplyPoint3x4(vertices[vertex]);
+            if (!any)
+            {
+                min = point;
+                max = point;
+                any = true;
+            }
+            else
+            {
+                min = Vector3.Min(min, point);
+                max = Vector3.Max(max, point);
+            }
+        }
+
+        return any ? BoxText(true, new Bounds((min + max) * 0.5f, max - min)) : "no triangles";
+    }
+
+    /// <summary>
+    /// Geometry a skin draws without skinning it. `DAZSkinV2.LateUpdate` falls through to
+    /// `dazMesh.DrawMorphedUVMappedMesh(root.transform.localToWorldMatrix)` whenever it is not
+    /// skinning, and that one matrix decides where the geometry lands - the hair item's scalp, its
+    /// holders and its strands all go out that way. This prints the matrix's own target and, for
+    /// every submesh that draw call submits, the world box it lands in under that matrix and under
+    /// the identity, so a displaced part can be read off instead of guessed at.
+    /// </summary>
+    private static string DazMeshDrawReport()
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("geometry drawn through dazMesh.DrawMorphedUVMappedMesh:");
+        int listed = 0;
+        foreach (DAZSkinV2 skin in SceneObjects<DAZSkinV2>())
+        {
+            DAZMesh dazMesh = skin.dazMesh;
+            Mesh mesh = dazMesh == null ? null : dazMesh.morphedUVMappedMesh;
+            if (dazMesh == null || mesh == null || skin.GetMesh() != null)
+            {
+                continue;
+            }
+
+            listed++;
+            MeshFilter filter = skin.GetComponent<MeshFilter>();
+            MeshRenderer own = skin.GetComponent<MeshRenderer>();
+            report.AppendLine(string.Format(
+                "  {0}: skin={1}, wasInit={2}, draw={3}, renderSuspend={4}, mesh={5} ({6} verts, {7} submeshes)",
+                TransformPath(skin.transform), skin.skin, skin.wasInit, skin.draw, skin.renderSuspend,
+                mesh.name, mesh.vertexCount, mesh.subMeshCount));
+            report.AppendLine(string.Format("    dazMesh={0}, root={1}, root at {2}, object at {3}",
+                dazMesh.geometryId,
+                skin.root == null ? "NULL" : TransformPath(skin.root.transform),
+                skin.root == null ? "none" : skin.root.transform.position.ToString("F3"),
+                skin.transform.position.ToString("F3")));
+            report.AppendLine(string.Format("    own meshFilter={0}, own renderer={1}",
+                filter == null ? "none" : Describe(filter.sharedMesh),
+                own == null
+                    ? "none"
+                    : string.Format("enabled={0}, visible={1}, materials={2}", own.enabled, own.isVisible,
+                                    MaterialSummary(own.sharedMaterials))));
+
+            Matrix4x4 rootMatrix = skin.root == null ? Matrix4x4.identity : skin.root.transform.localToWorldMatrix;
+            for (int i = 0; i < mesh.subMeshCount; i++)
+            {
+                Material material = dazMesh.materials != null && i < dazMesh.materials.Length ? dazMesh.materials[i] : null;
+                report.AppendLine(string.Format("    submesh {0}: material={1} ({2}), world at root={3}, world at identity={4}",
+                    i,
+                    Describe(material),
+                    material == null || material.shader == null ? "no shader" : material.shader.name + ", " + ShaderOrigin(material.shader),
+                    SubMeshBox(mesh, i, rootMatrix),
+                    SubMeshBox(mesh, i, Matrix4x4.identity)));
+            }
+        }
+
+        if (listed == 0)
+        {
+            report.AppendLine("  none - every skin in the scene owns a skinned mesh");
+        }
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
     private static string HairReport()
     {
         StringBuilder report = new StringBuilder();
@@ -2093,9 +2276,41 @@ public static class RebuildGate
                     TransformPath(owned[i].transform), mesh == null ? "none" : mesh.name,
                     owned[i].skin, owned[i].draw,
                     owned[i].root == null ? "NULL" : TransformPath(owned[i].root.transform)));
+                // The scalp and the holders a hair item shows are submeshes of its own geometry, and
+                // that geometry is only reachable through the skin's dazMesh: a skin whose dazMesh is
+                // gone cannot draw them however healthy its flags look.
+                DAZMesh dazMesh = owned[i].dazMesh;
+                Mesh morphed = dazMesh == null ? null : dazMesh.morphedUVMappedMesh;
+                report.AppendLine(string.Format(
+                    "      dazMesh={0}, morphedUVMappedMesh={1}, GPUmaterials={2}, GPUsimpleMaterial={3}, useSimpleMaterial={4}",
+                    dazMesh == null ? "NULL" : dazMesh.geometryId,
+                    morphed == null ? "NULL" : morphed.name + " (" + morphed.vertexCount + " verts, " + morphed.subMeshCount + " submeshes)",
+                    MaterialNameSummary(owned[i].GPUmaterials),
+                    Describe(owned[i].GPUsimpleMaterial),
+                    dazMesh == null ? "no dazMesh" : dazMesh.useSimpleMaterial.ToString()));
+                if (morphed != null)
+                {
+                    report.AppendLine(string.Format("      dazMeshUses={0}", MaterialNameSummary(dazMesh.materials)));
+                }
             }
 
             report.AppendLine(AncestorChain(group.transform));
+        }
+
+        List<string> heads = new List<string>();
+        foreach (Transform transform in SceneObjects<Transform>())
+        {
+            if (transform.name.Equals("head", StringComparison.OrdinalIgnoreCase))
+            {
+                heads.Add(string.Format("  head bone {0} at {1}",
+                    TransformPath(transform), transform.position.ToString("F3")));
+            }
+        }
+
+        report.AppendLine(string.Format("bones named head in the scene: {0}", heads.Count));
+        for (int i = 0; i < heads.Count && i < 8; i++)
+        {
+            report.AppendLine(heads[i]);
         }
 
         return report.ToString().TrimEnd('\r', '\n');
@@ -2300,6 +2515,7 @@ public static class RebuildGate
             }
 
             report.AppendLine(HairReport());
+            report.AppendLine(DazMeshDrawReport());
 
             List<DAZSkinV2> skins = SceneObjects<DAZSkinV2>();
             report.AppendLine(string.Format(
@@ -2352,6 +2568,11 @@ public static class RebuildGate
                 report.AppendLine(string.Format("    generalWeights={0}, {1}",
                     Flag(skin, "_useGeneralWeights"), DrawnVertexDrift(skin)));
                 report.AppendLine(string.Format("    GPUmaterials={0}", MaterialSummary(skin.GPUmaterials)));
+                string subMeshes = SubMeshMap(skin, mesh);
+                if (subMeshes != string.Empty)
+                {
+                    report.AppendLine(subMeshes);
+                }
             }
 
             foreach (string idle in idleSkins)

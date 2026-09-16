@@ -363,6 +363,104 @@ Until one is chosen, the visual comparison below is bounded by this: **movement,
 material response on the body cannot be verified against the original**, because the rebuild does not
 currently possess the machinery that produces them.
 
+## The four reported look defects, triaged
+
+The question that opened this triage was whether the defects are simply shaders that have not been
+ported yet. The census answers it with two populations, and the split runs straight through the
+character: the body skin sits on **our** reconstructions while the hair, cloth and eye-reflection
+items sit on **bundle copies the project never defined**.
+
+| Population | Families (slots) | Origin |
+|---|---|---|
+| body skin | `GlossNMTessMappedFixedComputeBuff` (14), `GlossNMCullComputeBuff` (26), `CullComputeBuff` (8), `GlossCullComputeBuff` (7), `AlphaMaskComputeBuff` (2), `Transparent{Gloss,}ComputeBuff` (3) | project |
+| hair item | `Custom/Hair/MainSeparateAlphaLayer1` (7), `..Layer2` (6), `..Layer3` (6) | bundle only |
+| cloth | `Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha` (10) | bundle only |
+| eye reflection | `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff` (2, 6 passes) | bundle only |
+
+This supersedes the earlier reading in this file that the body is unlit and that the whole scene
+renders flat: the body's slots resolve to project shaders with their passes intact, and the reported
+symptoms - gloss and bump *reacting* to light, only disagreeably - are not symptoms of an unlit
+surface.
+
+Evidence is `artifacts\census3-play.report.txt`, produced by `ShaderCensus()` in
+`VaM_Rebuild\Assets\Editor\RebuildGate.cs`, which resolves every material a draw path reaches to its
+shader, pass count and origin. See section 3 for the command.
+
+### Defect 1 - gloss and bump seams where Torso meets Head, Neck and Forearms
+
+Verdict: **two of our own reconstructions disagree with each other.** Not a missing shader.
+
+The body is a single mesh of 28 submeshes, and those submeshes do not all land on the same family:
+
+| Submeshes | Shader | Origin |
+|---|---|---|
+| `Torso`, `Legs`, `Nipples` (and their `-1` copies) | `Custom/Subsurface/GlossNMTessMappedFixedComputeBuff` | project, 3 passes |
+| `Head`, `Neck`, `Face`, `Forearms`, `Hands`, `Ears`, `Lips`, `Sclera`, `Irises`, `Teeth`, `Tongue` | `Custom/Subsurface/GlossNMCullComputeBuff` | project, 3 passes |
+| `Gums`, `InnerMouth`, `Lacrimals`, `Pupils` | `Custom/Subsurface/CullComputeBuff` | project, 3 passes |
+
+The seams are exactly the boundaries of that first row - the shoulder (Torso against Forearms) and
+the back and throat (Torso against Neck and Head). Two transcriptions of one skin family that agree
+about the diffuse map but not about the normal map or the gloss produce precisely the reported
+effect: the texture lines up, the light does not. The `TessMappedFixed` row is the prime suspect,
+because its original evaluates normals on a tessellated and displacement-mapped surface; a
+transcription that keeps the passes but drops the tessellation evaluates them per vertex instead, and
+the two then disagree along every shared edge.
+
+### Defect 2 - the scalp patch floating in the air
+
+Verdict: **the hair-card draw path, plus the three hair families being absent from the project.**
+
+Two facts, and only the second one explains a scalp that is visible at all:
+
+- Every hair submesh - `Scalp-1`, `HairHolder1-1`, `HairHolder2-1`, `Top1-4-1`, `TopInner1/2-1`,
+  `Tail1/2-1`, `TailThin1/2-1` - belongs to `VictoriaElitePonytailHairMain`, whose `dazMesh` is
+  `geometry` but whose **`morphedUVMappedMesh` is `NULL`**. That node is also inactive. A skin with no
+  morphed mesh has no geometry to draw, so these submeshes cannot be the patch on screen.
+- What does draw is the hair cards, on the project-defined `GPUTools/MeshedVR/HairOpt` reached as a
+  bundle copy, from `Sim2Hair/Sim2Hair/Head/Styles/Long + Straight/HairSettings/Render` and
+  `RenVR:Simone (REN)/Render`. `DAZHairMesh` draws them with
+  `Graphics.DrawMesh(mesh, Matrix4x4.identity, hairMaterialRuntime, ...)`, and its `init()` takes the
+  strand and scalp vertices from the *skin's* local arrays without re-anchoring them to the item's
+  transform. Anything whose input positions were lifted without that re-anchoring lands at the world
+  origin instead of on the head - which is what a patch hanging in mid-air, cut off from the body,
+  looks like.
+
+### Defect 3 - eyelash materials and the shiny eye
+
+Verdict: **mixed.** Two of the three parts are ours; the third is the original shader.
+
+- `Eyelashes-1` is on the project `Custom/Subsurface/TransparentGlossNoCullSeparateAlphaComputeBuff`
+  (2 passes) with `_AlphaTex=Olympia6EyelashesTr`. Wrongly applied lashes are a transcription defect.
+- `Cornea` is on the project `Custom/Subsurface/AlphaMaskComputeBuff` (2 passes), which is the likely
+  source of an over-bright eye.
+- `EyeReflection-1` is on the bundle-only `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`
+  with 6 passes, i.e. the original game shader, so its intensity is not a porting gap; it depends on
+  the environment the scene sets (`_SpecCubeIBL=SkyCyber2SPEC`, `_ExposureIBL=(0.1, 0.02, 0.002, 1)`)
+  and has to be compared against the original before anything is changed.
+
+### Defect 4 - cloth with an inverted colour and no alpha
+
+Verdict: **`_AlphaTex` is never assigned, and the family is absent from the project.**
+
+`Pantie_Cloth-1`, `Pantie_Sides-1`, `Stocking-1`, `Shoe-1` and `Sole-1` are all on the bundle-only
+`Custom/Subsurface/TransparentGlossNMDetailNoCullSeparateAlpha` (2 passes), with
+`_AlphaTex=NONE`, `_MainTex=AyaneLeg_Diffuse`, `_SpecTex=_Specular`, `_GlossTex=_Glossy`,
+`_BumpMap=_Displacement` and `_DetailMap=_Bump`. A family named *SeparateAlpha* whose `_AlphaTex` is
+empty samples an alpha that was never assigned, which is a transparency defect by construction; the
+inverted colour is the `_DetailMap` and `_BumpMap` slots pointing at the diffuse and displacement
+maps, which is how a material looks before the clothing loader has remapped its slots.
+
+### What the census cleared
+
+Two things that looked like suspects are not: `Marmoset/Transparent/Cutout/{Diffuse,Bumped
+Diffuse,Specular,Bumped Specular} IBL` and `Marmoset/Beta/Skin IBL Soft` fail to compile in
+`artifacts\manual-play.log` (`All passes removed`), but no material of this scene uses them, so they
+cannot be responsible for anything on screen. Separately, the `fallback shader ... not found`
+warnings are real but belong to the transcription backlog: our generated `*ComputeBuff` shaders
+declare `Fallback "Marmoset/Specular IBL SoftComputeBuff"` and
+`"Marmoset/Specular IBL Soft NoCullComputeBuff"`, names faithful to the original that
+`transcribe-hair-marmoset` has not built yet.
+
 ## Still open
 
 - **Visual comparison.** Against a running `VaM.exe`: models, lighting, materials, shaders. The tool is
