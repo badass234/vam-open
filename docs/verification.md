@@ -480,7 +480,8 @@ Two facts, and only the second one explains a scalp that is visible at all:
 
 ### Defect 3 - eyelash materials and the shiny eye
 
-Verdict: **mixed.** Two of the three parts are ours; the third is the original shader.
+Verdict: **mixed.** Two of the three parts are ours - both porting gaps, both fixed; the third is the
+original shader.
 
 #### The lash alpha mask - **fixed** (cause found, pending a visible run)
 
@@ -528,18 +529,58 @@ behaviour:
 - the no-mask path keeps `VAM_Color.a * diffuseTex.a`, now also `+ VAM_AlphaAdjust` - which is what the
   shipped `Custom/Hair/MainAlternate*` and `Custom/Subsurface/AlphaMask*` families do.
 
-*Verification so far:* `python tools\check_shaders.py` compiles all **3023/3023** programs, and the
-lash fragment we emit now disassembles to the shipped instruction sequence - `_AlphaTex` is sampled at
-its own UV (`v3.zw`, previously the diffuse `v1`), and the `add_sat` / premultiply / `discard` chain is
-present. The sampler register numbers differ from the shipped side and always will, because ours are
-laid out by the generator; only `contract.json` names them. **A visible run is still outstanding.**
+*Verification so far:* `python tools\check_shaders.py` compiles every program it generates -
+**3003/3003**, 0 failed - and `python tools\verify_twins.py` still proves all **112** of the twin
+families' pixel passes the same instruction stream up to renaming, 0 different. The lash fragment we
+emit now disassembles to the shipped instruction sequence - `_AlphaTex` is sampled at its own UV
+(`v3.zw`, previously the diffuse `v1`), and the `add_sat` / premultiply / `discard` chain is present.
+The sampler register numbers differ from the shipped side and always will, because ours are laid out by
+the generator; only `contract.json` names them. **A visible run is still outstanding.**
 
-#### The other two parts
+#### The cornea - **fixed** (cause found, pending a visible run)
 
-- `Cornea` is on the project `Custom/Subsurface/AlphaMaskComputeBuff` (2 passes), which is the likely
-  source of an over-bright eye. It needs no change beyond the same visible run: the shipped pass forces
-  RGB black, takes alpha as `saturate(_MainTex.a * _Color.a + _AlphaAdjust)` and sets `colMask 15`, and
-  the generator's `ColorMask A` path already reproduces that.
+*Symptom:* the eye reads as **over-bright** instead of as a dark, mostly transparent cornea.
+
+*Cause:* the family had never been transcribed. `Cornea-1` is on the project's
+`Custom/Subsurface/AlphaMaskComputeBuff` (census: `queue=2001`, `_Color=(0.80, 0.80, 0.80, 0.47)`,
+`_MainTex=S6EyesTr`), which the generator classified as one of the skin families and therefore shaded
+with the shared model. The shipped fragment is not a shading model at all:
+
+```hlsl
+sample r0.xyzw, v1.xyxx, t0.xyzw, s0
+mad_sat o0.w, r0.w, cb0[69].w, cb0[68].x   ; saturate(_MainTex.a * _Color.a + _AlphaAdjust)
+mov o0.xyz, l(0,0,0,0)                     ; RGB is hard black
+```
+
+Three instructions - and the additive pass is four: it samples `_MainTex` at a **constant `(1, 0)`**
+and writes the same black-plus-alpha. Constant because that pass has no uv of its own, which is also
+why the shipped vertex signature of that pass carries no `TEXCOORD 2` while the base pass does.
+
+The family declares exactly three properties (`_Color`, `_MainTex`, `_AlphaAdjust`), so it reads none
+of the inputs the shared model needs, and its passes write the whole RGBA target (`colMask 15`) - so
+nothing suppressed the shading our version produced: our pass 0 compiled to **74 instructions** with
+`mul o0.xyz, r0.xyzx, cb0[11].wwww` and the rest of the lighting stack, and pass 1 *added* a second
+shaded colour under `Blend One One`. That is the over-bright eye.
+
+*The fix* is a mask-only fragment in the same include, `VamFragmentMask`, selected per shader by a
+generator table (`MASK_ONLY_FAMILIES`) rather than by a property test: the render state cannot tell this
+family's passes from any other transparent pair, and the property list cannot tell it from the diffuse
+IBL families, which are equally short of inputs. It keeps the shipped formula,
+`saturate(_MainTex.a * _Color.a + _AlphaAdjust)`, writes zero to RGB, and samples at the interpolated uv
+in the base pass and at `VAM_MASK_CONSTANT_UV` in the additive one.
+
+*Verification so far:* both of the passes we now emit disassemble to the shipped sequence - `sample` /
+`mad_sat o0.w` / `mov o0.xyz, l(0,0,0,0)` - with pass 1 carrying the same literal
+`l(1.000000, 0.000000, 0.000000, 0.000000)`. Ours reads `t2` where the shipped program reads `t0`, and
+`cb0[0]`/`cb0[2]` where it reads `cb0[69]`/`cb0[68]`; those are the generator's own layout, as with the
+lash. **A visible run is still outstanding.**
+
+*One deliberate deviation:* our vertex stage fills `uvMain` through `_MainTex_ST`, while the shipped
+program binds no `_MainTex_ST` at all - fxc reports it unused. The two agree wherever a material leaves
+its tiling at the default, which the VaM eye material does.
+
+#### The third part
+
 - `EyeReflection-1` is on the bundle-only `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`
   with 6 passes, i.e. the original game shader, so its intensity is not a porting gap; it depends on
   the environment the scene sets (`_SpecCubeIBL=SkyCyber2SPEC`, `_ExposureIBL=(0.1, 0.02, 0.002, 1)`)

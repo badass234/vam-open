@@ -672,6 +672,36 @@ fixed4 VamFragmentAdd(vam_v2f i) : SV_Target {
 }
 
 // -----------------------------------------------------------------------------
+//  Mask-only passes
+//
+//  Not every family shades.  The alpha mask family has no lighting at all: its
+//  shipped fragment samples _MainTex, keeps the texel's alpha and writes zero to
+//  every colour channel.  The pass exists to fill the framebuffer's alpha, so the
+//  colour it would otherwise write is not discarded -- it lands, through the
+//  pass's own blend.  Shading it instead is what turns this family's material
+//  into a glowing surface.
+//
+//  Which pass reads the texture where is the shipped program's decision: its base
+//  pass samples at the interpolated uv, its additive pass at a constant one, which
+//  the generator passes in VAM_MASK_CONSTANT_UV.  Both keep the shipped alpha
+//  formula, saturate(_MainTex.a * _Color.a + _AlphaAdjust), the same one the other
+//  _AlphaAdjust families use (see VAM_SAMPLE_ALPHA above).
+// -----------------------------------------------------------------------------
+#ifdef VAM_MASK_ONLY
+#ifndef VAM_MASK_CONSTANT_UV
+    #define VAM_MASK_UV(i) ((i).uvMain)
+#else
+    #define VAM_MASK_UV(i) (VAM_MASK_CONSTANT_UV)
+#endif
+
+fixed4 VamFragmentMask(vam_v2f i) : SV_Target {
+    float alpha = saturate(tex2D(_MainTex, VAM_MASK_UV(i)).a * VAM_Color.a
+                           + VAM_AlphaAdjust);
+    return fixed4(0.0, 0.0, 0.0, alpha);
+}
+#endif
+
+// -----------------------------------------------------------------------------
 //  Shadow caster
 //
 //  TRANSFER_SHADOW_CASTER_NOPOS would use the unskinned v.vertex, so the shadow

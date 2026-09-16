@@ -213,6 +213,19 @@ and writes an output alpha of `0`. So the family macro pair
 `_AlphaAdjust`. Getting this wrong is what made the eyelashes render as solid cards: see
 `verification.md`, defect 3.
 
+**Some families do not shade at all.** The library's model is not universal, and one of the families
+the generator treats as skin is not a shading model: `Custom/Subsurface/AlphaMaskComputeBuff`'s shipped
+fragment is three instructions - sample `_MainTex`, `mad_sat o0.w, r0.w, cb0[69].w, cb0[68].x`, then
+`mov o0.xyz, l(0,0,0,0)`. Nothing in the *data* helps choose an entry point here: its render state is
+an ordinary transparent pair and its three properties (`_Color`, `_MainTex`, `_AlphaAdjust`) are the
+same short list a diffuse IBL family has. So `VamFragmentMask` is selected by the generator's own table
+of such shaders, `MASK_ONLY_FAMILIES`, on the same principle as `CUTOFF_IN_TRANSPARENT_PASS` - a fact
+read out of the shipped program because nothing else records it. The table's value is the set of passes
+whose fragment samples at a *constant* uv rather than the interpolated one, which is what this family's
+additive pass does. Shading this family with the shared model wrote a fully lit colour into a
+`SrcAlpha OneMinusSrcAlpha` pass and added a second one under `Blend One One`, which is the over-bright
+eye in `verification.md`, defect 3.
+
 Two Unity macro contracts cost real debugging, because they differ per keyword variant and neither
 is visible in a single-pass compile:
 
@@ -332,7 +345,10 @@ buffer set against the family it chose, and prints the shaders it left behind. C
 wrote 43 shaders (113 passes)
 ```
 
-- **31 `skin`** - the `*ComputeBuff` family this project reconstructs.
+- **31 `skin`** - the `*ComputeBuff` family this project reconstructs. One of them does not shade at
+  all: `Custom/Subsurface/AlphaMaskComputeBuff` is `skin` for its vertex path but is given the
+  mask-only fragment, picked by name in `MASK_ONLY_FAMILIES`. The classification answers which
+  vertex path a contract needs, not which fragment.
 - **12 `mesh`** - `Custom/Subsurface/` `Cull`, `NoCull`, `GlossCull`, `GlossNoCull`, `GlossNMCull`,
   `GlossNMNoCull`, `CutoutSeparateAlpha`, `TransparentCutoutSeparateAlpha`,
   `TransparentGlossSeparateAlpha`, `TransparentGlossNoCullSeparateAlpha`,

@@ -211,6 +211,19 @@ CUTOFF_IN_TRANSPARENT_PASS = {
     "Custom/Subsurface/TransparentGlossNoCullComputeBuff": {0},
 }
 
+# Shaders whose original fragment program is nothing but an alpha-mask write: it
+# samples _MainTex, keeps the texel's alpha and writes zero to every colour
+# channel.  They carry none of the shading inputs the shared model reads, so the
+# common fragment has nothing to work with and must not be used -- but the
+# property list alone cannot tell them from the diffuse IBL families, which are
+# equally short of inputs, and the render state cannot tell them from any other
+# transparent pass.  Read out of the shipped programs (see docs/verification.md);
+# the value is the set of pass indices whose fragment samples _MainTex at a
+# constant uv rather than at the interpolated one.
+MASK_ONLY_FAMILIES = {
+    "Custom/Subsurface/AlphaMaskComputeBuff": {1},
+}
+
 
 def cutoff_order(opaque_fb_index: int):
     """The cutoffs to look for, most likely first, for the n-th opaque pass.
@@ -324,11 +337,17 @@ def emit_pass(pas: dict, lightmode: str, props: list, opaque_fb_index: int,
         body.append("// drawn the ordinary way: the vertex stage transforms the mesh")
         body.append("#define VAM_MESH_SKIN")
     elif "tangents" not in bufs:
-        body.append("// hair meshes are bound without a tangent buffer")
+        body.append("// bound without a tangent buffer (the hair and eye meshes)")
         body.append("#define VAM_NO_TANGENTS")
     cutoff = cutoff_for(pas, lightmode, names, opaque_fb_index, shader_name, pass_index)
     if cutoff:
         body.append("#define VAM_PASS_CUTOFF " + cutoff)
+    mask_uv = MASK_ONLY_FAMILIES.get(shader_name)
+    if mask_uv is not None:
+        body.append("#define VAM_MASK_ONLY")
+        if pass_index in mask_uv:
+            body.append("#define VAM_MASK_CONSTANT_UV float2(1.0, 0.0)")
+        frag = "VamFragmentMask"
     body.append(f"#pragma vertex {vert}")
     if tess:
         body.append(f"#pragma hull {TESS_HULL}")
