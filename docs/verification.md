@@ -644,6 +644,69 @@ it is the one family whose pass 0 turned out to be a mask - see *Found by readin
 original run's reading therefore stands only against the bundle shader, which is the game's own and
 cannot itself be the over-brightness.
 
+#### The seam probe - every candidate but one, measured away
+
+The slot dump answered *what the values are*; the seam probe answers *what they do to the picture*. It
+lives in the editor gate (`SeamProbe` in `RebuildGate.cs`), freezes one frame of the Halloween scene,
+and for each override writes one scalar across every material whose shader declares it, re-renders,
+and reports both the changed pixels and a continuous `mean |rgb| distance` against the frozen
+baseline; a second pass moves the camera 0.55 m from the closest drawn **vertex pair between a
+tessellated and a plain part of the same skin**, which is the only place a joint is actually visible.
+Three corrections were needed before it measured anything: the scene's own lighting left the frame at
+a mean of **0.075**, so the probe now adds a directional light on the camera axis; a pixel count with
+no magnitude hides a 5 % rewrite of a frame, so the mean distance sits beside it; and the close-up
+aimed down the torso's mean normal - the shoulder covered by the arm - until it was moved onto the
+horizontal axis `edge - skin.position`.
+
+| override | slots | changed px | mean abs diff/1000 |
+| --- | --- | --- | --- |
+| `_Tess=0` | 7 | 962 (0.37 %) | 0.29 |
+| `_Tess=8` | 7 | 239 (0.09 %) | 0.07 |
+| `_TessPhong=0` | 7 | 967 (0.37 %) | 0.29 |
+| `_TessPhong=1` | 7 | 397 (0.15 %) | 0.13 |
+| `_SpecularBumpiness=0` | 16 | 16 (0.01 %) | 0.01 |
+| `_SpecularBumpiness=4` | 16 | 480 (0.18 %) | 0.17 |
+| `_DiffuseBumpiness=0` | 22 | 73 (0.03 %) | 0.04 |
+| `_DiffuseBumpiness=4` | 22 | 5408 (2.06 %) | 0.80 |
+| `_SpecInt=0` | 29 | 22514 (8.59 %) | 2.74 |
+| `_SpecInt=20` | 29 | 26895 (10.26 %) | 8.25 |
+| control (every property back) | - | **0** | **0.00** |
+
+Close up at the Torso-to-Forearms joint: `_TessPhong=0` **4398 px / 1.53**, `_Tess=0` **4388 px /
+1.53**, `_TessPhong=1` 1049 px / 0.63, `_SpecInt=0` 123908 px / 25.82, control 0 px / 0.00. Three
+readings, each from a number rather than a reading:
+
+* **The tessellation lever is one lever.** Zeroing the density and zeroing the Pn projection move the
+  frame by the same amount (962 against 967 px, 4388 against 4398), and doubling the density moves it
+  by a quarter of that. Subdivision on its own paints nothing; only the projection of the position
+  does, and `_TessPhong` behaves as the linear blend weight its `lerp` says it is.
+* **No scalar differs across the joint.** The slot dump already found the per-part values identical
+  (Done 19), and the one family-level knob that differs, the bumpiness pair, is worth 0.01 to 0.80 of
+  1000 - a factor of 30 to 100 below the tessellation lever. `_SpecInt` is the only lever with real
+  weight and it is not a mechanism.
+* **What is left is a difference in the code, not in the data.** The plain path transforms the buffer
+  normal and tangent **per vertex** (`UnityObjectToWorldNormal(normals[v.vid])`,
+  `UnityObjectToWorldDir(tanIn.xyz)`) and lets the rasteriser interpolate world-space values; the
+  tessellated control point binds no object-to-world matrix at all, forwards `verts[]`/`normals[]`/
+  `tangents[]` untouched in object space, and the domain interpolates them barycentrically and
+  transforms them per fragment. `normalize()` does not commute with interpolation, so the two families
+  disagree by a small rotation of the TBN at the same surface point. That is a smoothing function's
+  error in diffuse, which is a smooth function of the normal, and a visible step in a highlight, which
+  is not - which is exactly the reported shape of the defect.
+
+**An absolute "step" metric was built and abandoned**, and the reason is worth keeping: with the skin
+filling the frame, every row contains some large jump - median row maximum **2.953 of 3.0** at a 9-px
+span, 307 of 307 rows - because eyelashes, brows and blown highlights share the picture. The close-up
+pass therefore reports differences between frames, not steps within one.
+
+**The next measurement is a disassembly**, and it is bounded: dump the shipped **domain** program of a
+tessellated family (`Custom/Subsurface/GlossNMTessMappedFixedComputeBuff`) and compare it with
+`VamTessVaryings` - whether the shipped domain transforms the interpolated object-space normal and
+tangent, as this project reconstructs it, or whether the hull transforms the control points and the
+domain interpolates world-space values, which would make it agree with the plain family and make the
+reconstruction itself the seam. Evidence: `artifacts\seam1..seam5.seam.txt` with their frames; the
+absolute numbers above are `seam5`.
+
 ### Defect 2 - the scalp patch floating in the air
 
 Verdict: **the hair-card draw path, plus the three hair families being absent from the project.**
