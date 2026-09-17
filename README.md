@@ -1,4 +1,4 @@
-# VAMOpen 0.5.0-alpha
+# VAMOpen 0.6.0-alpha
 
 Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
 developers just keep taking money and releasing tiny fixes for years.

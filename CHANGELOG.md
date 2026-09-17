@@ -4,6 +4,53 @@ Notable changes to **OpenVaM**, the open rebuild of Virt-a-Mate. The project is 
 moves with each round of user-visible work. Every number below is reproduced by a gate or an instrument; the
 measurements behind them are in [`docs/`](docs/).
 
+## 0.6.0-alpha - 2026-09-17
+
+A plugin the installation cannot run used to flood the log for as long as its atom was loaded: one run
+of the built player holds **17 194** `NullReferenceException` lines, of which **8 595** come from
+`MacGruber.Breathing.Update` and **8 595** from `MacGruber.DriverBreathing.Update` - one per frame
+each. The plugin is neither missing nor refused: its own dynamic assembly fails at the constructor
+(`FieldAccessException` on a private field of its nested generic queue, `MiniQueue<T>.position`),
+`AddComponent` leaves the half-built component on the object, `Init` throws on top of it, and Unity
+keeps calling `Update`. `MVRPluginManager` now wraps creation and destroys the object it was building,
+switches off a plugin that throws its way out of `Init` (the panel's toggle stays usable), and shows
+the **first** failure of each plugin as a dialog instead of only a log line and a red button - the
+warning window the user asked for. The same path covers "Plugin file X does not exist". Measured after
+the change: the same boot logs **12** exception lines, **0** of them from either `Update`, and the
+smoke run's own verdict counts **6** errors and exceptions for the whole session.
+
+Those six are the plugin's own `LateRestoreFromJSON` throwing while `Atom.LateRestore` and
+`Atom.RestoreFromLast` walk the atom's storables - the object that failed `Init` is still registered.
+One-shots, not a loop.
+
+The scene browser's previews are now **verified end to end in a fresh player**, not inferred from the
+fix: 157 scenes listed, the loose scene and the `.var`-packaged ones alike resolving to a `.jpg` with
+`exists: True`, `decoded 1 thumbnails ... 512x512`, and `8 of 8 scene browser thumbnails are in the
+cache`. The instrument is `uFileBrowser.ThumbnailDiagnostics`, compiled in and dormant without
+`-vamopen-diag`, which reports what a browser asked for, what it resolved to and whether the decode
+succeeded.
+
+A shader looked up **by name** answered with an AssetRipper placeholder whenever this project had not
+transcribed that family, and the post-processing stack builds its materials by name - `Hidden/Post
+FX/*` among them - so a post-processing material would have been built out of a one-pass blit while
+the shipped implementation sat unread in `z_sha`. `VamShaderProvider.FindByName` now answers with this
+project's reconstruction where there is one and with the shipped original everywhere else, and
+`MaterialFactory` builds through it. The census found no drawn material in that state before or after,
+so this closes a path rather than changing a frame - and it is the path the post-processing item needs.
+
+`VamSkin()` no longer Gram-Schmidt-orthogonalises the tangent against the normal, because the shipped
+vertex programs never do: the plain SM40 path, the GPU-skinning SM40 path, the tessellation control
+point and the tessellation domain each spend one `dp3`/`rsq`/`mul` on the tangent and hand it to the
+bitangent cross as it comes, and the pixel stage never re-orthogonalises either. The extra rotation
+tilted every vertex's TBN away from the original's by the normal component the tangent carries. It is
+a candidate for the gloss/bump seam that is still visible, and it is a hand check - nothing in this
+round measured the seam.
+
+Two harness traps were paid for and closed: `Setup-RebuildProject.ps1`'s wipe took the
+`AddonPackages` and `Custom` junctions with it and left empty folders, so the editor scanned 0
+packages and dropped every packaged scene load in silence (`requested=True, taken=False,
+refused=False`); setup now re-makes the links and `Invoke-SmokeTest.ps1` refuses to start without them.
+
 ## 0.5.0-alpha - 2026-09-17
 
 Self-shadowing was missing because it did not exist: `VAM_LIGHT_ATTENUATION` was never transcribed, so point

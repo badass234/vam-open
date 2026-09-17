@@ -111,6 +111,20 @@ Matching the original's four atoms is expected, not a sign of a thin scene: the 
 in an almost empty `NewStart` and pulls the world in from asset bundles through
 `GlobalSceneOptions.LoadAssets`.
 
+**`errors and exceptions` counts a session, and plugins are what is in it.** The boot loads the
+installation's own `Saves\scene\MeshedVR\default.json`, which asks for `MacGruber.Breathing`, and that
+plugin cannot run under the dynamic assembly this project builds: its constructor throws
+`FieldAccessException` on a private field of its own nested generic queue, `AddComponent` leaves the
+half-built component on the object, `Init` throws on top of it, and Unity keeps calling `Update` - so
+a log for one scenario holds **8 595** `NullReferenceException` lines from `MacGruber.Breathing.Update`
+and **8 595** from `MacGruber.DriverBreathing.Update` (`artifacts\player-run-macgruber.log`: 94 736
+lines, 17 194 exception lines) where the same boot after the fix holds **0** from either
+(`artifacts\smoke-plugin-fix.log`: 3 945 lines, 12 exception lines, verdict `errors and exceptions: 6`).
+The six that remain are one-shots: the constructor, two `Atom` restores reaching the object that
+failed `Init`, and one second plugin whose `Init` throws. `MVRPluginManager` wraps creation, switches
+off a plugin that throws out of `Init`, and shows the first failure of each plugin in a dialog, so a
+broken plugin costs one dialog and a handful of lines instead of a line per frame.
+
 ### 4. Boot-log parity - `scripts\Compare-BootLogs.ps1`
 
 The original leaves a ground-truth log at
@@ -513,8 +527,14 @@ it is easy to mistake for the cause:
 
 What was not measured, and is what the seam now has to be: the per-material values the active
 character's 30 `GPUmaterials` entries actually carry, and the handedness (`float4.w`) of the skinned
-tangent buffer that `DAZSkinV2` writes, since `VamSkin()` Gram-Schmidt-orthogonalises the binormal
-around it.
+tangent buffer that `DAZSkinV2` writes.
+
+`VamSkin()` also used to Gram-Schmidt-orthogonalise the tangent against the normal, and **the shipped
+programs do not**: every keyword variant of the non-tessellated vertex stage spends exactly one
+`dp3`/`rsq`/`mul` on the tangent and hands it to the bitangent cross as it comes, the pixel stage never
+re-orthogonalises, and the hull forwards `tangents[vid]` unreformed (see *The tessellation stages*).
+The reconstruction now normalises and stops, so the rotation the seam was charged to is gone. Whether
+the seam moved is a hand check, not a measurement.
 
 #### Both of those are now measured, and both are clean
 

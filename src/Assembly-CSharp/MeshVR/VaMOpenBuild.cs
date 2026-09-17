@@ -9,7 +9,7 @@ namespace MeshVR
 	{
 		public const string Name = "VaMOpen";
 
-		public const string Version = "0.5.0-alpha";
+		public const string Version = "0.6.0-alpha";
 
 		public const string Label = Name + " " + Version;
 	}
