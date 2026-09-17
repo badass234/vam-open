@@ -21,6 +21,8 @@
     The reference set is the other half of making the sources compile. VaM's BCL is not shipped
     wholesale: Unity supplies the .NET 4.x facades itself, its own Boo.Lang is referenced by every
     UnityScript assembly, and only Mono.Cecil and System.Drawing are added back as ordinary plugins.
+    System.Drawing is not VaM's copy - that one is Mono 2.0 and cannot decode an image under the 4.x
+    runtime the rebuild uses, so the editor's own unityjit build is staged in its place.
 
     See docs\rebuild-project.md for the reasoning and the known dangling references.
 
@@ -37,6 +39,8 @@ param(
     [string]$SourceDir  = (Join-Path $PSScriptRoot '..\src'),
     [string]$TargetDir  = (Join-Path $PSScriptRoot '..\VaM_Rebuild'),
     [string]$ManagedDir = (Join-Path $PSScriptRoot '..\..\VaM_Data\Managed'),
+    # The editor's Data folder. Its Mono profile is where System.Drawing comes from (step 3).
+    [string]$EditorDataDir = (Join-Path ${env:ProgramFiles} 'Unity\Hub\Editor\2018.1.9f2\Editor\Data'),
     # Also copy the BCL extras VaM shipped (System.Windows.Forms, Mono.Posix, ...). They are the
     # runtime dependencies of mcs.dll - the C# compiler DynamicCSharp drives - and not something
     # Assembly-CSharp is compiled against, so they are opt-in: they can collide with the facades
@@ -49,13 +53,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-foreach ($d in $ExportDir, $SourceDir, $ManagedDir) {
+foreach ($d in $ExportDir, $SourceDir, $ManagedDir, $EditorDataDir) {
     if (-not (Test-Path -LiteralPath $d)) { throw "Not found: $d" }
 }
 
 $ExportDir  = (Resolve-Path -LiteralPath $ExportDir).Path
 $SourceDir  = (Resolve-Path -LiteralPath $SourceDir).Path
 $ManagedDir = (Resolve-Path -LiteralPath $ManagedDir).Path
+$EditorDataDir = (Resolve-Path -LiteralPath $EditorDataDir).Path
 $TargetDir  = [System.IO.Path]::GetFullPath($TargetDir)
 
 # Assets\Editor is not from the export - RebuildGate, RebuildPlayer and VaMInspector are ours, and
@@ -259,11 +264,23 @@ $unityProvidedBcl = @(
 #   The imported type `Boo.Lang.GenericGenerator<T>' is defined multiple times
 $unityProvidedProfile = 'Boo.Lang'
 
-# Neither is a facade Unity references: Mono.Cecil is needed by DynamicCSharp\Security, and
-# System.Drawing by ImageLoaderThreaded / MaterialOptions. Unity's 4.7.1-api profile forwards
-# System.Drawing.Color to an assembly it never references (CS1070 + CS0234), so VaM's copies have to
-# be shipped as ordinary editor plugins.
+# Neither is in the profile Unity compiles against: Mono.Cecil is needed by DynamicCSharp\Security,
+# and System.Drawing by ImageLoaderThreaded (scene and character thumbnails) and MaterialOptions
+# (UV templates). Both are staged as ordinary editor plugins.
 $requiredByOurCode = 'Mono.Cecil', 'System.Drawing'
+
+# System.Drawing is the one that does not come from VaM. VaM's copy is Mono's .NET 2.0 build
+# (System.Drawing, Version=2.0.0.0); on the .NET 4.x runtime this project uses, its
+# ComIStreamMarshaler+ManagedToNativeWrapper static constructor throws
+#   TypeInitializationException: The type initializer for 'ManagedToNativeWrapper' threw an exception.
+#     at System.Drawing.ComIStreamMarshaler+ManagedToNativeWrapper..cctor()
+# -> NullReferenceException, so every new Bitmap(Stream) fails and no scene or character thumbnail
+# ever decodes. Unity fills the player's Managed folder from MonoBleedingEdge\lib\mono\unityjit - its
+# System.dll, System.Core.dll and mscorlib.dll are byte-identical to that folder - so the matching
+# System.Drawing is taken from there. Assemblies still compiled against 2.0.0.0 (Bass.Net, NAudio)
+# are unified onto it by Mono's binder.
+$drawingSource = Join-Path $EditorDataDir 'MonoBleedingEdge\lib\mono\unityjit\System.Drawing.dll'
+if (-not (Test-Path -LiteralPath $drawingSource)) { throw "no editor System.Drawing: $drawingSource" }
 
 # The rest of the BCL VaM shipped - the runtime closure of mcs.dll, the C# compiler DynamicCSharp
 # drives. Assembly-CSharp does not compile against any of it, and each one can collide with Unity's
@@ -285,10 +302,26 @@ Get-ChildItem -LiteralPath $ManagedDir -Filter *.dll -File | Sort-Object Name | 
     if ($unityProvidedProfile -contains $name) { return }
     if ($bclExtras -contains $name -and -not $IncludeVaMBclExtras) { return }
     if ($unityProvided | Where-Object { $name -like "$_*" }) { return }
+    if ($name -eq 'System.Drawing') { return }   # replaced by the editor's build below
     Copy-Item -LiteralPath $_.FullName -Destination $pluginsDir
     $copied.Add($_.Name)
 }
+Copy-Item -LiteralPath $drawingSource -Destination $pluginsDir
+$copied.Add('System.Drawing.dll (editor unityjit)')
 Write-Host ("Copied {0} plugin assemblies to Assets\Plugins" -f $copied.Count)
+
+# The swap above is the whole point, so it is checked rather than assumed: a silent failure here is
+# a player that runs but shows no thumbnails, which is exactly the bug this replaces.
+foreach ($required in $requiredByOurCode) {
+    $staged = Join-Path $pluginsDir "$required.dll"
+    if (-not (Test-Path -LiteralPath $staged)) { throw "$required.dll was not staged into Assets\Plugins" }
+}
+$drawingName = [System.Reflection.AssemblyName]::GetAssemblyName((Join-Path $pluginsDir 'System.Drawing.dll'))
+if ($drawingName.Version.Major -lt 4) {
+    throw "Assets\Plugins\System.Drawing.dll is $($drawingName.FullName) - the .NET 2.0 build cannot decode images here"
+}
+Write-Host ("  System.Drawing {0} ({1:N0} B), from the editor's Mono profile" -f `
+    $drawingName.Version, (Get-Item -LiteralPath (Join-Path $pluginsDir 'System.Drawing.dll')).Length)
 
 # Native plugins and their data files. Unity copies everything under Assets\Plugins\<platform>\ into
 # the build's Plugins folder, which is exactly what VaM_Data\Plugins contains - bass.dll (via

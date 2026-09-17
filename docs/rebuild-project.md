@@ -203,21 +203,35 @@ editor. `scripts\Setup-RebuildProject.ps1` decides each managed assembly's fate:
   from `CharacterMotor.cs`). Marking the meta Standalone-only does not help, because the
   auto-reference ignores platforms - the copy has to be deleted.
 - **Shipped as ordinary editor plugins**: `Mono.Cecil` (used by `DynamicCSharp\Security`) and
-  `System.Drawing` (used by `ImageLoaderThreaded` / `MaterialOptions`). Unity's 4.7.1-api profile
-  forwards `System.Drawing.Color` to an assembly it never references (CS1070 + CS0234), so neither
-  can come from the profile.
+  `System.Drawing` (used by `ImageLoaderThreaded` / `MaterialOptions`). Neither is in the profile
+  Unity compiles against. `Mono.Cecil` comes from VaM unchanged. `System.Drawing` does not: VaM's
+  copy is Mono's .NET 2.0 build, and on the .NET 4.x runtime its
+  `ComIStreamMarshaler+ManagedToNativeWrapper` static constructor throws
+  (`TypeInitializationException` -> `NullReferenceException`), so every `new Bitmap(Stream)` fails -
+  no scene or character thumbnail ever decodes. The player's `Managed\` folder is filled from
+  `MonoBleedingEdge\lib\mono\unityjit\`, whose `System.dll`, `System.Core.dll` and `mscorlib.dll` are
+  byte-identical to the built player's, so `System.Drawing` is taken from that same folder and lands
+  at `System.Drawing, Version=4.0.0.0`. `Setup-RebuildProject.ps1` checks the staged identity and
+  throws if it is still 2.x. Assemblies still compiled against `2.0.0.0` (`Bass.Net`, `NAudio`) are
+  unified onto the 4.x assembly by Mono's binder.
 - **Left out by default**: the rest of the BCL VaM shipped - `mcs.dll`'s runtime closure
   (`Accessibility`, `System.Configuration`, `System.Data`, `System.EnterpriseServices`,
   `System.Security`, `System.Transactions`, `System.Windows.Forms`, `Mono.Data.Tds`, `Mono.Posix`,
-  `Mono.Security`, `Mono.WebBrowser`) and `System.Drawing`/`System.Configuration` themselves. Each
-  one can collide with Unity's facades. `-IncludeVaMBclExtras` copies them back for a player build
-  that turns out to need them.
+  `Mono.Security`, `Mono.WebBrowser`). Each one can collide with Unity's facades.
+  `-IncludeVaMBclExtras` copies them back for a player build that turns out to need them.
 - **Everything else** becomes `Assets\Plugins\*.dll` unchanged - the pristine binaries the game
   shipped, not machine-decompiled source.
 
 `Assets\Editor\RebuildGate.cs` is the batch entry point that proves all of this end to end; see
 `verification.md` for what each method checks and `scripts\Invoke-CompileGate.ps1` /
 `scripts\Invoke-SmokeTest.ps1` for how to run them.
+
+The `System.Drawing` pairing was measured, not assumed. A 30-line probe compiled with the editor's own
+compiler and run under `MonoBleedingEdge\bin\mono.exe` reproduces the player's exact
+`TypeInitializationException` -> `NullReferenceException` chain against VaM's 2.0 copy, and decodes the
+shipped `Saves\scene\MeshedVR\default.jpg` to `512x512 Format24bppRgb` against the `unityjit` copy. The
+same probe, compiled against `2.0.0.0` and resolved by the 4.x assembly, still decodes - which is why
+the swap cannot strand `Bass.Net` or `NAudio`.
 
 
 ## Deviations from the decompiled original

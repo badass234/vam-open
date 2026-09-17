@@ -111,6 +111,93 @@ public static class RebuildGate
         }
     }
 
+    /// <summary>
+    /// Which System.Drawing the game decodes images with is decided by what is staged in
+    /// Assets\Plugins: Unity's own profile offers no usable one, so the editor's
+    /// MonoBleedingEdge\lib\mono\unityjit build is copied there. VaM's copy is Mono's .NET 2.0 build,
+    /// and on this project's .NET 4.x runtime every new Bitmap(Stream) in it throws out of
+    /// ComIStreamMarshaler+ManagedToNativeWrapper..cctor - which is why no scene thumbnail ever
+    /// decoded. Decoding a real thumbnail here reports that failure in the compile gate's log instead
+    /// of leaving it to be noticed in the scene-selection menu.
+    /// </summary>
+    private static void ReportImageDecoder(string projectRoot, StringBuilder report)
+    {
+        string plugin = Path.Combine(projectRoot, "Assets", "Plugins", "System.Drawing.dll");
+        if (!File.Exists(plugin))
+        {
+            report.AppendLine("image decoder: WARNING - Assets\\Plugins\\System.Drawing.dll is missing");
+            return;
+        }
+
+        report.AppendLine(string.Format("image decoder: {0} ({1:N0} B)",
+                                        AssemblyName.GetAssemblyName(plugin).FullName, new FileInfo(plugin).Length));
+
+        string thumbnail = FindThumbnail(projectRoot);
+        if (thumbnail == null)
+        {
+            report.AppendLine("  no scene thumbnail to decode: no *.jpg under Saves\\scene");
+            return;
+        }
+
+        try
+        {
+            // Fully qualified: this file uses UnityEngine.Color and UnityEngine.Graphics, and
+            // importing System.Drawing would make both of those ambiguous.
+            using (Stream stream = File.OpenRead(thumbnail))
+            using (System.Drawing.Bitmap bitmap = new System.Drawing.Bitmap(stream))
+            {
+                report.AppendLine(string.Format("  decoded {0}: {1}x{2} {3}",
+                                                thumbnail, bitmap.Width, bitmap.Height, bitmap.PixelFormat));
+            }
+        }
+        catch (Exception e)
+        {
+            report.AppendLine(string.Format("  WARNING - {0} did not decode: {1}", Path.GetFileName(thumbnail), e));
+        }
+    }
+
+    /// <summary>
+    /// A scene thumbnail the editor can reach. The project only grows a Saves folder once the game has
+    /// been run from the editor, and this rebuild keeps the project inside the installation
+    /// (VAMOpen\VaM_Rebuild under the VaM folder), so the installation's own Saves - the one the
+    /// scene-selection menu draws its previews from - is one or two directories up. The search is
+    /// bounded to those three folders plus VAM_INSTALL when the environment names one.
+    /// </summary>
+    private static string FindThumbnail(string projectRoot)
+    {
+        List<string> roots = new List<string>();
+        string install = Environment.GetEnvironmentVariable("VAM_INSTALL");
+        if (!string.IsNullOrEmpty(install))
+        {
+            roots.Add(install);
+        }
+
+        string root = projectRoot;
+        for (int up = 0; up < 3 && root != null; up++)
+        {
+            roots.Add(root);
+            DirectoryInfo parent = Directory.GetParent(root);
+            root = parent == null ? null : parent.FullName;
+        }
+
+        foreach (string candidate in roots)
+        {
+            string scenes = Path.Combine(candidate, "Saves", "scene");
+            if (!Directory.Exists(scenes))
+            {
+                continue;
+            }
+
+            string[] files = Directory.GetFiles(scenes, "*.jpg", SearchOption.AllDirectories);
+            if (files.Length > 0)
+            {
+                return files[0];
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Path of the assembly the editor compiles the game's scripts into.</summary>
     private static string ScriptAssemblyPath()
     {
@@ -249,6 +336,7 @@ public static class RebuildGate
 
         ReportAssemblies(projectRoot, report);
         ReportScriptMarkers(report);
+        ReportImageDecoder(projectRoot, report);
         ReportBundles(projectRoot, report);
 
         report.AppendLine(string.Format("build scenes: {0}", EditorBuildSettings.scenes.Length));

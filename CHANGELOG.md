@@ -56,10 +56,33 @@ bundles. So the build after any linked one failed on `<exe>_Data\StreamingAssets
 The two link scripts are unaffected: .NET Framework's `Directory.Delete` takes the name away and
 nothing else, which is why only the editor-side code needed the Win32 call.
 
+The built player's scene-selection menu showed no previews, and the cause was one file the harness had
+been swapping in by mistake. Its log held **469** copies of a single exception, one per preview, out of
+`System.Drawing.ComIStreamMarshaler+ManagedToNativeWrapper..cctor()` through
+`System.Drawing.Bitmap..ctor (System.IO.Stream)` and
+`ImageLoaderThreaded+QueuedImage.ProcessFromStream`, and the log names this very build just above the first
+of them. `Setup-RebuildProject.ps1` was staging `VaM_Data\Managed\System.Drawing.dll`, Mono's .NET 2.0
+build (448 512 B), which lands in the player's `Managed\`, and that assembly's stream marshaller cannot
+initialise under the 4.x runtime, so every `new Bitmap(Stream)` threw. The player is Unity's `unityjit`
+profile - its `System.dll`, `System.Core.dll` and `mscorlib.dll` are byte-identical to
+`Editor\Data\MonoBleedingEdge\lib\mono\unityjit\` - and `System.Drawing` was the only file in
+`Managed\` not from there, so the profile's own build (483 840 B) is staged instead, behind a guard that
+refuses a 2.x identity. The `4.7.1-api` assembly is not an alternative: it is a 138 752 B forwarder, and
+referencing it beside a plugin of the same simple name is `error CS1703` (measured), its target
+`Facades\System.Drawing.Primitives.dll` carrying no `Bitmap`. Only `Bass.Net.dll` and `NAudio.dll` ever
+asked for `2.0.0.0`, and Mono's binder unifies them onto the newer file - measured with a probe compiled
+against the legacy assembly and run with this one beside it. `RebuildGate.Report` decodes one preview
+through whatever it staged, so the next swap that breaks the menu names itself in the compile gate's log
+rather than only in the game.
+
 **Re-run:** 7479/7479 programs, 0 unique compile errors, play gate clean, a player that builds and starts
-(261 920 172 B, `Scanned 18 packages`), and by hand the character darkens itself where it meets itself at
-about 100 FPS. Open: whether the amount matches the installation is a hand-run
-judgement read as right; the seam, the sheen and the **Marmoset IBL families** are untouched.
+(261 955 527 B, `Scanned 18 packages`), and a compile gate that decodes a real scene preview through the
+assembly it staged - `decoded ...default.jpg: 512x512 Format24bppRgb` - so the thumbnails are no longer a
+hand check. The rebuilt player logs 101 lines and **no** exception at all, where the previous one logged 473
+`Exception ` lines on the same startup path. And by hand the character darkens itself where it meets itself
+at about 100 FPS. Open: whether the amount matches the installation is a hand-run judgement read as right,
+and the user has not looked at the thumbnail menu himself yet; the seam, the sheen, the **Marmoset IBL
+families** and the **post-processing stubs** (`Hidden/Post FX/*`) are untouched.
 
 ## 0.4.0-alpha - 2026-09-17
 
