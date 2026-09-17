@@ -6,6 +6,95 @@ Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html). The 
 so the minor number moves with each round of user-visible work and only the major/minor pair is
 meant to be read as stable.
 
+## 0.4.0-alpha - 2026-09-17
+
+Every round so far has judged a picture taken in this project against a picture taken in the
+installation, and this one found that the two were never rendered under the same settings. The fix is
+five keys in one file and a gate that says which file it read, and it takes the sheen that the two
+rounds before it had put down to the quality preset and hands most of it back to the shader and to
+what is bound to it.
+
+### Round 6 - the same preset on both sides, and the part of the sheen the preset does not explain
+
+#### What works
+
+- **The gate reports the preset it ran at.** `RebuildGate.PresetDump`, called from `EnvironmentDump`
+  and therefore present in every play report, prints the resolved `QualitySettings` level with its
+  `antiAliasing` and `pixelLightCount`, the `UserPreferences.singleton` values, and the graphics keys
+  of the `prefs.json` in the working directory. That last one is read as raw text rather than through
+  SimpleJSON, because the half that could disagree is the file itself:
+  `UserPreferences.RestorePreferences` reads `prefs.json` relative to the process working directory,
+  so the editor reads the project's copy and a built player reads its own, and a key that is missing
+  or misspelled falls back to the code's default in silence.
+- **`scripts\New-RuntimeDataLinks.ps1` matches the editor's graphics keys to the installation's** and
+  prints each one. Nine keys are compared - the five a `QualityLevel` is made of, plus `shaderLOD`,
+  `mirrorReflections`, `realtimeReflectionProbes` and `softBodyPhysics` - and the ones that differ are
+  rewritten in place, so the project's `prefs.json` keeps its shape and keeps its input, HUD and
+  plugin settings. A second run prints `the editor already runs the installation preset`.
+  `-MatchGraphicsPrefs:$false` reports the differences without applying them. On this machine it
+  matched **5 of 9**:
+
+  | key | installation | editor project, before | editor project, after |
+  | --- | --- | --- | --- |
+  | `renderScale` | 1 | 2 | 1 |
+  | `msaaLevel` | 4 | 8 | 4 |
+  | `pixelLightCount` | 2 | 4 | 2 |
+  | `smoothPasses` | 2 | 4 | 2 |
+  | `glowEffects` | Low | High | Low |
+
+- **The two presets were then rendered side by side, and they are nearly the same picture.** The same
+  gate, the same scene (`Saves/scene/MeshedVR/default.json`), the same 40 s and the same camera,
+  once at the installation preset and once at the project's old one:
+
+  | measurement, framed on the body | installation preset | project preset, before |
+  | --- | --- | --- |
+  | mean luminance of the frame | 0.1447 | 0.1450 |
+  | share of the frame above 0.90 luminance | 1.471 % | 1.532 % |
+  | mean luminance over the lit skin | 0.7106 | 0.7144 (**+0.54 %**) |
+  | lit skin above 0.75 luminance | 45.81 % | **47.25 %** |
+  | pixels differing by more than 24/255 | 0.61 % of the frame, every one of them inside the body's bounding box | |
+
+  So the preset moves the surface in the direction the hand run reports - a flatter skin under
+  `smoothPasses` 4 and more per-pixel lights under `pixelLightCount` 4 - and it moves it by about
+  half a percent of mean luminance and 1.4 points of highlight coverage. Round 5 called the sheen *at
+  least partly* the preset and left the rest open; the size of that part is now known, and it is
+  small. The three candidates Round 4 listed as living outside the shader - the specular cube's
+  import colour space, the material's own intensities, and the bloom thresholds - are still the main
+  ones, and the two settings are still beside them.
+- **The capture has a known blind spot, and it is the resolution.** `RebuildGate.RenderToFile` renders
+  the camera into a fixed 1024x1024 temporary target with no anti-aliasing, so the two keys that
+  describe the resolution of a *view* rather than of a surface - `renderScale` and `msaaLevel` -
+  cannot appear in a framed capture at all. Three of the five keys, `pixelLightCount`, `smoothPasses`
+  and `glowEffects`, are the ones the comparison above actually exercised.
+
+#### Measurements re-run
+
+- `scripts\New-RuntimeDataLinks.ps1` - 5 of 9 graphics keys matched on the first run, and the second
+  run reports the editor already at the installation preset, with the installation's own `prefs.json`
+  untouched.
+- `scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 40 -Scene Saves/scene/MeshedVR/default.json`,
+  twice, once per preset - both runs `18 declared, 18 present, 0 missing` atoms and no error before
+  the load, and both now print the `preset:` block that says which of the two they were.
+
+#### Known issues
+
+- **The sheen is still diagnosed, not fixed**, and the round moved it rather than closing it. The
+  preset is now equal on both sides and the gate states it, so the next comparison is fair - but the
+  preset is not most of what the hand run sees, and the suspects are back where they were: the
+  specular cube's import colour space, the material's specular and fresnel intensities, the bloom
+  threshold, and the reconstructed gloss and Fresnel terms themselves.
+- The gloss/bump seam the hand run still reports at very low visibility has not been re-examined at
+  the lower preset either.
+- The hand run at the matched preset has not happened yet; this round measured with the gate's own
+  camera, not with the eye that reported the defect.
+
+#### Not done
+
+- The player's `prefs.json` is seeded from the installation by
+  `scripts\New-PlayerRuntimeLinks.ps1` and is not matched key by key the way the editor's now is, so a
+  player built from a project file that has drifted would drift with it.
+- No release page is published for this or the previous round.
+
 ## 0.3.0-alpha - 2026-09-17
 
 The first round that produces something other than an editor project: `VAMOpen.exe` builds in batch

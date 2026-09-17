@@ -22,8 +22,20 @@ hair: "Hair item ... is missing", and the character silently lost its hairstyle.
     saved scenes land there), so the originals' contents are COPIED into the project
     rather than linked — so that a build does not modify the install.
 
+prefs.json is the fifth of these and the only one that changes the render rather than what
+loads. The game reads it relative to its working directory and applies it in
+UserPreferences.RestorePreferences, so a built player runs the installation's preset while the
+editor runs the project's own: two copies, two presets, two renders of the same scene.
+pixelLightCount 4 against 2 is how many lights reach the pixel stage at all, and smoothPasses 4
+against 2 is how many times DAZSkinV2 Laplacian-smooths the body before it rebuilds the normals —
+which is the difference between skin and skin that looks lightly oiled. The graphics keys are
+therefore matched to the installation by default and printed one by one. Pass
+-MatchGraphicsPrefs:$false to only report the difference.
+
 .EXAMPLE
 .\scripts\New-RuntimeDataLinks.ps1
+.EXAMPLE
+.\scripts\New-RuntimeDataLinks.ps1 -MatchGraphicsPrefs:$false
 .EXAMPLE
 .\scripts\New-RuntimeDataLinks.ps1 -Remove
 #>
@@ -31,6 +43,7 @@ hair: "Hair item ... is missing", and the character silently lost its hairstyle.
 param(
     [string]$ProjectPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'VaM_Rebuild'),
     [string]$InstallRoot,
+    [bool]$MatchGraphicsPrefs = $true,
     [switch]$Remove
 )
 
@@ -142,6 +155,28 @@ function Sync-LocalCopy([string]$Source, [string]$Destination, [string]$Label) {
     else { Write-Host "$Label already in place" -ForegroundColor Green }
 }
 
+# The graphics keys of a QualityLevel, in the order UserPreferences declares them. They are the
+# whole of what a preset is: everything else in prefs.json is input, HUD and plugin settings.
+$graphicsKeys = @('renderScale', 'msaaLevel', 'pixelLightCount', 'shaderLOD', 'smoothPasses',
+                  'mirrorReflections', 'realtimeReflectionProbes', 'softBodyPhysics', 'glowEffects')
+
+# The value as it stands in the file, quotes included, so that a key can be replaced without
+# knowing whether it is written as a number, a string or a bool. The game writes all of them as
+# strings, and SimpleJSON parses the file either way.
+function Get-PrefToken([string]$Text, [string]$Key) {
+    $match = [regex]::Match($Text, '"' + [regex]::Escape($Key) + '"\s*:\s*("[^"]*"|[^,}\r\n]+)')
+    if ($match.Success) { return $match.Groups[1].Value.Trim() }
+    return $null
+}
+
+# Rewrites one key in place. SimpleJSON does not care about formatting, but the file is the game's
+# own output, so it keeps its shape instead of being re-serialized: a diff of this file should show
+# the values that changed and nothing else.
+function Set-PrefToken([string]$Text, [string]$Key, [string]$Token) {
+    $pattern = '"' + [regex]::Escape($Key) + '"(\s*:\s*)("[^"]*"|[^,}\r\n]+)'
+    return [regex]::Replace($Text, $pattern, ('"' + $Key + '"${1}' + $Token))
+}
+
 # ── AddonPackages: junction ──────────────────────────────────────────────────
 Connect-Junction -Link $packagesLink -Source $packagesSrc -Label 'var packages' -Remove:$Remove
 
@@ -171,6 +206,67 @@ if ($Remove) {
 else {
     Sync-LocalCopy -Source $prefsSrc -Destination $prefsLocal -Label 'package preferences'
     Sync-LocalCopy -Source $savesSrc -Destination $savesLocal -Label 'saved scenes'
+}
+
+# ── prefs.json: the graphics preset the editor runs at ───────────────────────
+# Two copies of the same file, read by the same code, and the one the editor finds is its own. That
+# is the first thing an editor-against-installation look comparison has to remove: while the two
+# presets differ, a sheen that is the preset and a sheen that is the shading are the same picture on
+# screen, and no amount of reading the shader can tell them apart.
+$installPrefs = Join-Path $InstallRoot 'prefs.json'
+$projectPrefs = Join-Path $ProjectPath 'prefs.json'
+
+if ($Remove) {
+    Write-Host "the editor's prefs.json is left as it is (the editor owns it, like Saves)"
+}
+elseif (-not (Test-Path -LiteralPath $installPrefs)) {
+    Write-Host "WARNING: the installation has no prefs.json ($installPrefs) - no preset to match" -ForegroundColor Yellow
+}
+elseif (-not (Test-Path -LiteralPath $projectPrefs)) {
+    Copy-Item -LiteralPath $installPrefs -Destination $projectPrefs
+    Write-Host "copied prefs.json from the installation: the editor now runs the installation's preset" -ForegroundColor Green
+}
+else {
+    $projectText = [IO.File]::ReadAllText($projectPrefs)
+    $installText = [IO.File]::ReadAllText($installPrefs)
+    $changed = @()
+
+    Write-Host 'graphics preset (installation -> editor project):'
+    foreach ($key in $graphicsKeys) {
+        $wanted = Get-PrefToken -Text $installText -Key $key
+        if (-not $wanted) { continue }
+
+        $current = Get-PrefToken -Text $projectText -Key $key
+        if (-not $current) {
+            Write-Host ("  {0,-24} {1,-6} {2}" -f $key, $wanted.Trim('"'), 'not in the editor file - the game would fall back to its own default') -ForegroundColor Yellow
+            continue
+        }
+
+        if ($current -eq $wanted) {
+            Write-Host ("  {0,-24} {1,-6} {2}" -f $key, $current.Trim('"'), 'same')
+            continue
+        }
+
+        if ($MatchGraphicsPrefs) {
+            $projectText = Set-PrefToken -Text $projectText -Key $key -Token $wanted
+            $changed += $key
+            Write-Host ("  {0,-24} {1,-6} {2}" -f $key, $wanted.Trim('"'), ("was " + $current.Trim('"'))) -ForegroundColor Green
+        }
+        else {
+            Write-Host ("  {0,-24} {1,-6} {2}" -f $key, $current.Trim('"'), ("the installation has " + $wanted.Trim('"'))) -ForegroundColor Yellow
+        }
+    }
+
+    if ($changed.Count -eq 0) {
+        Write-Host 'the editor already runs the installation preset' -ForegroundColor Green
+    }
+    elseif ($MatchGraphicsPrefs) {
+        [IO.File]::WriteAllText($projectPrefs, $projectText)
+        Write-Host ("editor prefs.json: matched {0} key(s) to the installation ({1})" -f $changed.Count, ($changed -join ', ')) -ForegroundColor Green
+    }
+    else {
+        Write-Host ("the editor runs a different preset in {0} key(s): {1} - drop -MatchGraphicsPrefs:`$false to match them" -f $changed.Count, ($changed -join ', ')) -ForegroundColor Yellow
+    }
 }
 
 Write-Host ''

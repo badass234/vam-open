@@ -1,4 +1,4 @@
-# VAMOpen 0.3.0-alpha
+# VAMOpen 0.4.0-alpha
 
 Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
 developers just keep taking money and releasing tiny fixes for years.
@@ -30,13 +30,14 @@ feature, but the ground the next rounds stand on.
 
 ## What's still in progress
 
-- Minor character material defects: characters still shine a little more than the original does.
-  Part of that is the quality preset rather than the shading - the project's `prefs.json` is the
-  `Max` preset while the installation runs `High`, and two of the five knobs that differ
-  (`pixelLightCount` and `smoothPasses`) both flatter the skin. The shipped bytecode rules the shader
-  out, so the next round looks at what is bound to it - the specular IBL cube's import colour space,
-  the specular/fresnel values the material carries, and the bloom threshold. The list is in
-  `CHANGELOG.md` under *Round 4*, and the preset in *Round 5*.
+- Minor character material defects: characters still shine a little more than the original does. The
+  quality preset used to be in the way of judging that, because the project ran `Max` while the
+  installation runs `High`; the two are now matched and every play report states the preset it ran
+  at, and with them equal the preset turns out to account for about half a percent of the skin's
+  brightness rather than for the look. The shipped bytecode rules the shader out, so what is left is
+  what is bound to it: the specular IBL cube's import colour space, the specular/fresnel values the
+  material carries, and the bloom threshold. The list is in `CHANGELOG.md` under *Round 4*, the
+  measurement under *Round 6*.
 - The `Marmoset/` set is not transcribed yet, and it is what the last 21 materials still draw: the live
   skin's `EyeReflection-1` (left with nothing to redirect to by
   `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`), the overlay helpers and
@@ -65,12 +66,19 @@ otherwise it will reissue the license file and the 2018.1 editor will reject the
 
 ```powershell
 scripts\Setup-RebuildProject.ps1
+scripts\New-RuntimeDataLinks.ps1       # links the installation's data and matches its graphics preset
 scripts\Invoke-CompileGate.ps1
 python scripts\Extract-VaMShaders.py --out artifacts\shader-blobs
 python scripts\New-VaMShaders.py
 python tools\check_shaders.py
 scripts\Invoke-ManualPlay.ps1
 ```
+
+`New-RuntimeDataLinks.ps1` is the step that makes an editor session read the same data the game does:
+`AddonPackages` and `Custom` as junctions, `Saves` and `AddonPackagesUserPrefs` as copies, and the
+graphics keys of `prefs.json` matched to the installation's preset. Skip the last part with
+`-MatchGraphicsPrefs:$false` if you want the editor on a higher preset; the play report prints the
+preset it ran at either way.
 
 The same project also builds as a standalone player, which needs neither Unity nor an open editor
 afterwards:

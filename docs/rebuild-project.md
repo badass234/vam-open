@@ -252,8 +252,23 @@ off.
 `scripts\New-RuntimeDataLinks.ps1` closes that gap: `AddonPackages` becomes a junction to the
 install's (0.84 GB, read-only, so a copy would only waste disk), while `AddonPackagesUserPrefs` -
 which the editor writes - is *copied* instead, so a session cannot modify the original install. With
-both in place the rebuild prints `Scanned 9 packages` and `Package changes detected`, like the
+both in place the rebuild prints `Scanned 18 packages` and `Package changes detected`, like the
 player. `-Remove` takes the junction back down.
+
+The same script also settles the graphics preset, because it is the one setting that decides what a
+comparison against the installation is even comparing. The game reads `prefs.json` relative to the
+process working directory (`UserPreferences.RestorePreferences`), so the editor applies the project's
+copy and a player applies the installation's, and the two copies were not the same preset: the
+installation's five graphics keys are the `High` preset of `UserPreferences.QualityLevels` to the
+digit, and the project's were `Max` with `msaaLevel` raised by hand from the preset's 2 to 8. Two of
+the differences flatter the skin in a way that looks like a shading defect - `pixelLightCount` is
+Unity's per-pixel light budget, and `smoothPasses` is the number of Laplacian smoothing passes
+`DAZSkinV2` runs over the body before it rebuilds the normals - so the script now compares the nine
+graphics keys and rewrites the ones that differ, printing each one rather than doing it silently.
+Pass `-MatchGraphicsPrefs:$false` to only report. The play report carries the same information from
+the other side: `RebuildGate.PresetDump` prints the resolved `QualitySettings`, the applied
+`UserPreferences` values and the graphics keys of the `prefs.json` it found, so a report always says
+which preset produced it.
 
 User content created during editor Play mode otherwise lands in `VaM_Rebuild\`, not in the game
 folder; junction any of the other directories the same way if the original content has to be visible

@@ -5,6 +5,7 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -1397,6 +1398,78 @@ public static class RebuildGate
                 sky.name, sky.gameObject.activeInHierarchy, sky.enabled,
                 DescribeTexture(sky.SpecularCube), DescribeTexture(sky.SkyboxCube),
                 sky.MasterIntensity, sky.SpecIntensity));
+        }
+
+        PresetDump(text);
+    }
+
+    /// <summary>
+    /// Reports the graphics preset this run is in, because the preset is not the shading.
+    ///
+    /// Two of the game's own settings move a body in the "smoother and lit harder" direction before a
+    /// shader ever sees it: pixelLightCount is Unity's per-pixel light budget, so a light outside it
+    /// contributes no per-pixel highlight at all, and smoothPasses is how many times DAZSkinV2
+    /// Laplacian-smooths the skin vertices before it rebuilds the normals (into "smoothOuterLoops",
+    /// DAZSkinV2.cs:394), so four passes leave a flatter and more mirror-like surface than two.
+    ///
+    /// Both come out of prefs.json, and the game reads that file relative to its working directory: the
+    /// installation's copy in a built player, the project's own copy in the editor. Two copies, two
+    /// presets, and a sheen that is the difference between them looks exactly like a sheen in the
+    /// shader - which is why the pair is printed here rather than assumed.
+    /// </summary>
+    private static void PresetDump(StringBuilder text)
+    {
+        text.AppendLine("preset:");
+        text.AppendLine(string.Format("  QualitySettings: level={0}, antiAliasing={1}, pixelLightCount={2}",
+            QualitySettings.names[QualitySettings.GetQualityLevel()],
+            QualitySettings.antiAliasing, QualitySettings.pixelLightCount));
+
+        UserPreferences preferences = UserPreferences.singleton;
+        if (preferences == null)
+        {
+            text.AppendLine("  UserPreferences.singleton: NONE - no prefs.json has been applied");
+        }
+        else
+        {
+            text.AppendLine(string.Format(
+                "  UserPreferences: renderScale={0:F2}, msaaLevel={1}, pixelLightCount={2}, smoothPasses={3}, shaderLOD={4}, glowEffects={5}",
+                preferences.renderScale, preferences.msaaLevel, preferences.pixelLightCount,
+                preferences.smoothPasses, preferences.shaderLOD, preferences.glowEffects));
+        }
+
+        text.AppendLine("  prefs.json in the working directory: " + PresetFileText());
+    }
+
+    /// <summary>
+    /// The graphics keys of the prefs.json the game read, or why there is none. Read as text rather
+    /// than through SimpleJSON so that a file the game could not parse still reports what it holds.
+    /// </summary>
+    private static string PresetFileText()
+    {
+        string path = Path.Combine(Directory.GetCurrentDirectory(), "prefs.json");
+        if (!File.Exists(path))
+        {
+            return "NONE at " + path + " (the game then writes its own defaults)";
+        }
+
+        string[] keys = { "renderScale", "msaaLevel", "pixelLightCount", "shaderLOD", "smoothPasses",
+                          "mirrorReflections", "realtimeReflectionProbes", "glowEffects" };
+        try
+        {
+            string json = File.ReadAllText(path);
+            StringBuilder values = new StringBuilder(path);
+            foreach (string key in keys)
+            {
+                Match match = Regex.Match(json, "\"" + key + "\"\\s*:\\s*(\"[^\"]*\"|[^,}\\r\\n]+)");
+                values.Append(string.Format("{0}{1}={2}", values.Length > path.Length ? ", " : " -> ", key,
+                    match.Success ? match.Groups[1].Value.Trim().Trim('"') : "?"));
+            }
+
+            return values.ToString();
+        }
+        catch (Exception e)
+        {
+            return path + " (unreadable: " + e.Message + ")";
         }
     }
 
