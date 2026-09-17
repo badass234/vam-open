@@ -6,6 +6,129 @@ Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html). The 
 so the minor number moves with each round of user-visible work and only the major/minor pair is
 meant to be read as stable.
 
+## 0.5.0-alpha - 2026-09-17
+
+The report was that the rebuilt character casts no shadow on itself. The claim turned out to be true
+of the port's shading model in a stronger sense than the report implies: `VAM_LIGHT_ATTENUATION` did
+not exist, so every point light in the scene went through AutoLight's built-in path, and the round
+before this one had measured the body against a shadows-off frame and read 0.6/255 - which is about
+what "no shadow term" looks like. VaM's own filter is now transcribed out of the release build's
+`MARMO_LINEAR + POINT + SHADOWS_CUBE` fragment program, and a one-frame switch that hands the same
+pixel back to Unity measures what it is worth. Reaching that measurement took two mistakes, both kept
+below because both were believed first, and one of them was made by the gates.
+
+### Round 7 - VaM's own point-light shadow filter, and the two errors that hid it
+
+#### What works
+
+- **The shipped filter is transcribed instruction for instruction.** `artifacts\_tmp\ship_point.asm`
+  is that fragment program, and the shadow half of it is lines 190-246: the cube uv projection, the
+  bias applied twice (once along the tap's own direction, once again inside the projection, floored at
+  0.005 rather than Unity's 1e-5), the 25-tap Poisson disk, the hash that rotates it, and the mix.
+  Two details are deliberately not Unity's, and both are the difference an eye can see:
+
+  | | VaM | Unity's built-in path |
+  | --- | --- | --- |
+  | what `_LightShadowData.x` does | sizes the disk, `(1 - x) * 0.1` | is the light's `shadowStrength` |
+  | what a tap contributes | averaged, `* 0.04` | lerped toward 1 by the shadow |
+  | consequence | a blurred edge is as dark as a hard one | a blurred edge is lighter |
+
+  The rest of `_LightShadowData` is AutoLight's own realtime-to-baked fade, so the port keeps
+  `UnityMixRealtimeAndBakedShadows` instead of reimplementing it.
+- **The disk is the shipped disk, verified rather than eyeballed.** The 25 taps in
+  `shader-src\VamGpuSkinning.cginc` are copied out of the blob's `dcl_immediateConstantBuffer`, and a
+  script compared all 25 pairs: **zero mismatches**.
+- **The control that proves authorship is a plain uniform, not a keyword.** `_VamShadowUnity` is
+  declared in the include and arrives through `Shader.SetGlobalFloat`; it is listed in no `Properties`
+  block and so adds no `shader_feature`, because a feature would double an already large variant set
+  to answer a question that lasts one frame. With it set, `VamPointShadowAttenuation` returns
+  `UnityComputeForwardShadows` and the same session draws Unity's filter.
+- **On lit body pixels the two filters are not the same picture.** The reference is the shadows-off
+  frame, the mask is every reference pixel above luma 32 (73 494 px), the delta is signed so positive
+  means darker, and both frames come from one build, one session and one camera:
+
+  | measurement, framed on the body | VaM's filter | Unity's filter |
+  | --- | --- | --- |
+  | mean delta on the lit mask | **+8.26/255** | +0.98/255 |
+  | median / p90 / p99 / max | +2.43 / +18.89 / +121.55 / +206.35 | +0.07 / +1.00 / +18.91 / +138.00 |
+  | share of the mask darker by more than 2 / 10 | 52.3 % / 20.8 % | 6.4 % / 1.9 % |
+  | pixels darker by more than 40 | **2 196** | 240 |
+  | 8x8 cell means, range | +0.00 ~ +30.36 | +0.00 ~ +6.30 |
+
+  So the darkening is 8.4x the mean and 9x the deep pixels of the built-in path, and its cells are
+  structured the way a contact shadow is - the deep ones sit where the body meets itself - rather than
+  the way an exposure change is. Under the installation's own `shadowStrength` of 0.10, the built-in
+  path had almost nothing to show, which is why the report was simply "there is no self-shadowing".
+  Re-running the pair on regenerated builds reproduces the mean to a few hundredths (+8.26, +8.26,
+  +8.23 over three runs against +0.98, +0.97, +0.96) and the cell range to a few tenths, but the counts
+  drift by about a percent: the reference frame is not bit-identical run to run either, which is what
+  the drifting mask size says (73 494, 73 435, 73 413 px) before any deep-pixel count is taken. So
+  across runs compare the mean, and read the counts as the run in front of you.
+- **The frame taken after the switch is put back is identical to the session frame** (max
+  |difference| 0), so the pair measures the filter and nothing else.
+- **One substitution, and it is named.** The shipped RNG begins by sampling a full-screen texture at
+  the screen-space uv, and that texture could not be identified: no ShaderLab text survives in the
+  bundle and no VaM script binds it. The port derives the seed chain from the pixel coordinate
+  instead, keeping the blob's own `m`, `sincos` and `frc` sequence, constants and order.
+  `AutoLight.cginc` is what makes the coordinate free: for a cube-shadow point light it declares
+  `unityShadowCoord3` holding `worldPos - _LightPositionRange.xyz` and leaves the slot it uses for
+  screen/depth shadows alone, so `i.pos` - the pixel coordinate - can carry the seed without stealing a
+  varying.
+
+#### The two errors that stood in the way, kept because both were believed first
+
+- **A statistic taken over the wrong pixels.** The 0.6/255 of the previous round came from averaging
+  the delta over the *whole frame*, dark background included, which dilutes a real contact shadow into
+  nothing. The question needs the statistic taken only where there was light to lose:
+  `tools\measure_shadow.py` masks on the reference's lit pixels, reports the signed delta there and an
+  8x8 cell breakdown, and writes a composite for the eye.
+- **A gate measuring a generated copy.** `VaM_Rebuild\Assets\VaMShaders\VamGpuSkinning.cginc` and
+  `VaM_Rebuild\Assets\Shader\*.shader` are **generated** by `scripts\New-VaMShaders.py` and are not
+  tracked; `shader-src\VamGpuSkinning.cginc` is the source of truth. A round that edits the include and
+  then runs the compile and play gates without running the generator **measures the previous round's
+  shaders**, and both gates are green while it does. That is what the control frame's bit-identical
+  result meant: the switch was not in the build, not that the filter was absent.
+  `scripts\New-VaMShaders.py` is now step 0 in the gate sequence `plan.md` documents, and the README
+  already listed it.
+
+#### Measurements re-run
+
+- `python scripts\New-VaMShaders.py`, then `python tools\check_shaders.py` -
+  **7479/7479 programs compiled, 0 failed**.
+- `scripts\Invoke-CompileGate.ps1` - verdict `OK`, **0 unique errors**,
+  `Assembly-CSharp.dll` 6 172 160 B, `VaMUnityScript.dll` 16 896 B.
+- `scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 60 -WarmupSeconds 20` on
+  `Saves/scene/MeshedVR/default.json` - 26 877-line log, report at `artifacts\play.report.txt`, all 30
+  shadow captures written, and no `Shader error`, no `Shader warning` and no `error CS` anywhere in it.
+- `tools\measure_shadow.py` on the frame pairs above, for every number in this section.
+- `scripts\Invoke-ManualPlay.ps1` on `Saves/scene/MeshedVR/default.json` - the hand run that closes the
+  report: the character darkens itself where it meets itself, at about 100 FPS, with no shader or
+  compile error in the log.
+
+#### Known issues
+
+- **The filter is proven, not tuned.** Whether its amount matches the installation's look is a hand-run
+  question - the scene has three point lights at `shadowStrength` 0.10 - and the deepest pixels
+  (p99 121/255 on 3.0 % of the lit body) are where the eye should look first, not the mean. The hand
+  run of 2026-09-17 looked there and read the amount as right; what no run can turn into a number is
+  the comparison itself, because the repository holds no reference frames from the installation.
+- **A reflection-level comparison of the two filters can never be pixel-exact**, because of the RNG
+  substitution above. The comparison this round makes is of the darkening they produce, which is
+  measurable.
+- The gloss/bump seam and the sheen are untouched by this round, and a hand run taken before it is no
+  longer a baseline for one taken after: the light term moved.
+- `_VamShadowUnity` is a global and is therefore live for every shader that includes the library. It is
+  set and restored inside one probe and left at 0 in every other frame, but it is a switch that can be
+  left on, so the probe owns both ends.
+
+#### Not done
+
+- The remaining **Marmoset IBL families** - the last entry in `UNTRANSCRIBED_FAMILIES`, and the only
+  thing left between the shipped materials and the project's shaders.
+- A side-by-side against the installation, which is a human task: the repository holds no reference
+  frames from it, so the comparison stays where the reference is. The instrument measurements cover
+  what can be covered from inside one build - two settings of one switch, one session, one camera.
+
 ## 0.4.0-alpha - 2026-09-17
 
 Every round so far has judged a picture taken in this project against a picture taken in the

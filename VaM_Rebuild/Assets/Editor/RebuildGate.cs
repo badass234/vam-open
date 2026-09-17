@@ -6,9 +6,11 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using SimpleJSON;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
 /// <summary>
@@ -1198,7 +1200,16 @@ public static class RebuildGate
         Texture texture = material.GetTexture(property);
         if (texture == null)
         {
-            text.AppendLine(string.Format("    {0} = NONE (a white texture is what the shader samples)", property));
+            // "NONE" is not the same as "nothing is sampled": with no value of
+            // its own the material falls back to the global of that name, the
+            // way the scenes hand a character its cube
+            // (Shader.SetGlobalTexture), and failing that to the default in the
+            // shader's own property block.
+            Texture global = Shader.GetGlobalTexture(property);
+            string fallback = global == null
+                ? "no value of its own, so the shader's own default is what it samples"
+                : "no value of its own, so the global " + DescribeTexture(global) + " is what it samples";
+            text.AppendLine(string.Format("    {0} = NONE ({1})", property, fallback));
             return;
         }
 
@@ -1325,7 +1336,194 @@ public static class RebuildGate
             text.AppendLine(string.Format("  ... {0} more character shaders", shaderNames.Count - dumpLimit));
         }
 
+        MaterialOptionDump(text);
         EnvironmentDump(text);
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// Which of the ten material options each option component can actually write, and which material
+    /// Unity answers the question with.
+    ///
+    /// All ten options pass the same pair of guards: one is registered only when
+    /// materialForDefaults.HasProperty(name) holds (MaterialOptions.cs:5353-5470), and written back only
+    /// when the same call holds on the same material (:5746-5830). One option can therefore be lost on its
+    /// own while the other nine land, and that loss is invisible in the shading itself - a value the
+    /// guards never let through looks exactly like a value the shader transformed away.
+    ///
+    /// The material the guards ask is not the material the writes go to. materialForDefaults is the DAZ
+    /// mesh's own material at the first param slot (DAZCharacterMaterialOptions.cs:443-455), while
+    /// SetMaterialParam writes skin.GPUmaterials (DAZCharacterMaterialOptions.cs:88-98). Both are printed
+    /// here with each guard's answer beside them: a guard answered by one material and a write landing on
+    /// another is a silent loss, and the option that is lost names the material that answered wrong.
+    /// </summary>
+    private static void MaterialOptionDump(StringBuilder text)
+    {
+        List<MaterialOptions> options = SceneObjects<MaterialOptions>();
+        text.AppendLine();
+        text.AppendLine(string.Format("material options ({0} in the scene):", options.Count));
+
+        for (int i = 0; i < options.Count && i < 24; i++)
+        {
+            MaterialOptions option = options[i];
+            Material defaults = (Material)InheritedField(option, "materialForDefaults");
+
+            text.AppendLine(string.Format("  {0}: type={1}, storeId={2}, overrideId={3}, enabled={4}, path={5}",
+                option.name, option.GetType().Name, InheritedField(option, "storeId"),
+                InheritedField(option, "overrideId"),
+                option.enabled, TransformPath(option.transform)));
+
+            DAZCharacterMaterialOptions character = option as DAZCharacterMaterialOptions;
+            DAZSkinV2 skin = character == null ? null : character.skin;
+            int[] slots = option.paramMaterialSlots;
+            Material written = skin != null && slots != null && slots.Length > 0 && slots[0] >= 0 && slots[0] < skin.numMaterials
+                ? skin.GPUmaterials[slots[0]] : null;
+
+            text.AppendLine(string.Format("    materialForDefaults={0} ({1})", Describe(defaults), ShaderOf(defaults)));
+            text.AppendLine(string.Format("    paramMaterialSlots={0}, skin={1}, GPUmaterials={2}",
+                SlotList(slots), Describe(skin), skin == null || skin.GPUmaterials == null
+                    ? "none" : skin.GPUmaterials.Length.ToString()));
+            text.AppendLine(string.Format("    first slot {0} material={1} ({2}), same object as defaults={3}",
+                slots == null || slots.Length == 0 ? -1 : slots[0], Describe(written), ShaderOf(written), written == defaults));
+
+            List<string> registeredNames = InheritedField(option, "floatParamNames") as List<string>;
+            text.AppendLine("    registered floats: " + (registeredNames == null
+                ? "none" : string.Join(", ", registeredNames.ToArray())));
+
+            for (int param = 1; param <= 10; param++)
+            {
+                JSONStorableFloat json = InheritedField(option, "param" + param + "JSONParam") as JSONStorableFloat;
+                string uniform = InheritedField(option, "param" + param + "Name") as string;
+                text.AppendLine(string.Format(
+                    "      param{0}: guard={1}, uniform={2}, display={3}, jsf={4}, jsfName={5}, jsfDefault={6}, current={7}, defaults={8}, written={9}, restorable={10}, restoreTime={11}, locked={12}, storeType={13}, storableIsOption={14}, altName={15}, min={16}, max={17}",
+                    param, Yes(InheritedField(option, "materialHasParam" + param)), uniform,
+                    InheritedField(option, "param" + param + "DisplayName"),
+                    json == null ? "none" : json.val.ToString("F4"),
+                    json == null ? "none" : json.name,
+                    json == null ? "none" : json.defaultVal.ToString("F4"),
+                    InheritedField(option, "param" + param + "CurrentValue"),
+                    uniform == null ? "n/a" : Float(defaults, uniform),
+                    uniform == null ? "n/a" : Float(written, uniform),
+                    json == null ? "none" : InheritedField(json, "isRestorable"),
+                    json == null ? "none" : InheritedField(json, "restoreTime"),
+                    json == null ? "none" : InheritedField(json, "locked"),
+                    json == null ? "none" : InheritedField(json, "storeType"),
+                    json == null ? "none" : (json.storable == option).ToString(),
+                    json == null ? "none" : (InheritedField(json, "altName") as string ?? "null"),
+                    InheritedField(option, "param" + param + "MinValue"),
+                    InheritedField(option, "param" + param + "MaxValue")));
+            }
+
+            if (slots != null && slots.Length > 4)
+            {
+                RestoreProbe(text, option, defaults, written);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Pushes three hand-built values through the option's own RestoreFromJSON - the same by-name path an
+    /// appearance preset uses - and prints what the storable and the material kept afterwards. A value that
+    /// survives in the storable but not in the material is dropped by the write path; a value that never
+    /// reaches the storable is dropped earlier, by the lookup or by the guard.
+    /// </summary>
+    private static void RestoreProbe(StringBuilder text, MaterialOptions option, Material defaults, Material written)
+    {
+        JSONClass payload = new JSONClass();
+        payload["Specular Intensity"].AsFloat = 9.9f;
+        payload["Gloss"].AsFloat = 7.7f;
+        payload["Global Illumination Filter"].AsFloat = 0.123f;
+        option.RestoreFromJSON(payload, true, true, null, false);
+
+        text.AppendLine(string.Format(
+            "    restore probe (Specular Intensity=9.9, Gloss=7.7, Global Illumination Filter=0.123): param2 jsf={0} defaults={1} written={2} callback={3} | param3 jsf={4} defaults={5} written={6} callback={7} | param9 jsf={8} defaults={9} written={10} callback={11}",
+            Val(InheritedField(option, "param2JSONParam")), Float(defaults, "_SpecInt"), Float(written, "_SpecInt"),
+            Callback(InheritedField(option, "param2JSONParam")),
+            Val(InheritedField(option, "param3JSONParam")), Float(defaults, "_Shininess"), Float(written, "_Shininess"),
+            Callback(InheritedField(option, "param3JSONParam")),
+            Val(InheritedField(option, "param9JSONParam")), Float(defaults, "_IBLFilter"), Float(written, "_IBLFilter"),
+            Callback(InheritedField(option, "param9JSONParam"))));
+    }
+
+    private static string Val(object json)
+    {
+        JSONStorableFloat value = json as JSONStorableFloat;
+        return value == null ? "none" : value.val.ToString("F4");
+    }
+
+    private static string Callback(object json)
+    {
+        JSONStorableFloat value = json as JSONStorableFloat;
+        return value == null ? "none" : Yes(value.setCallbackFunction != null);
+    }
+
+    /// <summary>The field or property of a name on an object or on any of its base types, public or not.</summary>
+    private static object InheritedField(object target, string name)
+    {
+        for (Type type = target.GetType(); type != null; type = type.BaseType)
+        {
+            FieldInfo field = type.GetField(name,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+            if (field != null)
+            {
+                return field.GetValue(target);
+            }
+
+            PropertyInfo property = type.GetProperty(name,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+            if (property != null && property.CanRead && property.GetIndexParameters().Length == 0)
+            {
+                return property.GetValue(target, null);
+            }
+        }
+
+        return null;
+    }
+
+    private static string Yes(object value)
+    {
+        return value is bool && (bool)value ? "yes" : "no";
+    }
+
+    private static string ShaderOf(Material material)
+    {
+        return material == null || material.shader == null ? "no shader" : material.shader.name;
+    }
+
+    /// <summary>The material's value for a uniform, or that the shader does not declare it at all.</summary>
+    private static string Float(Material material, string property)
+    {
+        if (material == null)
+        {
+            return "n/a";
+        }
+
+        return material.HasProperty(property) ? material.GetFloat(property).ToString("F4") : "absent";
+    }
+
+    private static string Has(Material material, string property)
+    {
+        if (material == null)
+        {
+            return "n/a";
+        }
+
+        return material.HasProperty(property) ? "yes" : "NO";
+    }
+
+    private static string SlotList(int[] slots)
+    {
+        if (slots == null)
+        {
+            return "none";
+        }
+
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < slots.Length; i++)
+        {
+            text.AppendFormat("{0}{1}", i == 0 ? string.Empty : ",", slots[i]);
+        }
+
         return text.ToString();
     }
 
@@ -1942,27 +2140,27 @@ public static class RebuildGate
     }
 
     /// <summary>
-    /// Renders the body from a corner, framed on the body and on the skeleton that is supposed to be
-    /// driving it, so that one frame shows whether the two are in the same place.
+    /// A camera framed on the body and on the skeleton that is supposed to be driving it, so that one frame
+    /// shows whether the two are in the same place. The caller owns the returned object and destroys it.
     /// </summary>
-    private static string CaptureSkin(DAZSkinV2 skin)
+    private static GameObject FramedBodyCamera(DAZSkinV2 skin, out Camera camera, out string note)
     {
-        if (skin == null)
-        {
-            return "picture: skipped, no skin in the scene owns a mesh";
-        }
+        camera = null;
+        note = null;
 
         Vector3[] drawn = ReadVertices(skin.rawVertsBuffer);
         Mesh mesh = skin.GetMesh();
         if (drawn == null || mesh == null)
         {
-            return "picture: skipped, the body has no drawn vertices";
+            note = "the body has no drawn vertices";
+            return null;
         }
 
         Bounds bounds;
         if (!PointsBounds(drawn, mesh.vertexCount, out bounds))
         {
-            return "picture: skipped, the body has no drawn vertices";
+            note = "the body has no drawn vertices";
+            return null;
         }
 
         DAZBone[] bones = Field(skin, "dazBones") as DAZBone[];
@@ -1978,23 +2176,48 @@ public static class RebuildGate
         float distance = radius / Mathf.Tan(45f * 0.5f * Mathf.Deg2Rad) * 1.5f;
 
         GameObject holder = new GameObject("RebuildGateCapture");
+        Camera framed = holder.AddComponent<Camera>();
+        framed.enabled = false;
+        framed.fieldOfView = 45f;
+        framed.nearClipPlane = Mathf.Max(0.01f, distance - radius * 3f);
+        framed.farClipPlane = distance + radius * 6f;
+        framed.clearFlags = CameraClearFlags.SolidColor;
+        framed.backgroundColor = new Color(0.1f, 0.1f, 0.14f, 1f);
+        framed.transform.position = bounds.center + new Vector3(0.7f, 0.4f, -1f).normalized * distance;
+        framed.transform.LookAt(bounds.center);
+
+        camera = framed;
+        note = string.Format("(framed on the body at {0} and its skeleton, from {1})",
+                             bounds.center.ToString("F2"), TransformPath(skin.transform));
+        return holder;
+    }
+
+    /// <summary>
+    /// Renders the body from a corner, framed on the body and on the skeleton that is supposed to be
+    /// driving it, so that one frame shows whether the two are in the same place.
+    /// </summary>
+    private static string CaptureSkin(DAZSkinV2 skin)
+    {
+        if (skin == null)
+        {
+            return "picture: skipped, no skin in the scene owns a mesh";
+        }
+
+        GameObject holder = null;
         try
         {
-            Camera camera = holder.AddComponent<Camera>();
-            camera.enabled = false;
-            camera.fieldOfView = 45f;
-            camera.nearClipPlane = Mathf.Max(0.01f, distance - radius * 3f);
-            camera.farClipPlane = distance + radius * 6f;
-            camera.clearFlags = CameraClearFlags.SolidColor;
-            camera.backgroundColor = new Color(0.1f, 0.1f, 0.14f, 1f);
-            camera.transform.position = bounds.center + new Vector3(0.7f, 0.4f, -1f).normalized * distance;
-            camera.transform.LookAt(bounds.center);
+            Camera camera;
+            string note;
+            holder = FramedBodyCamera(skin, out camera, out note);
+            if (holder == null)
+            {
+                return "picture: skipped, " + note;
+            }
 
             string file = RenderToFile(camera, 1024, 1024, string.Empty);
             return file == null
                 ? "picture: skipped, the run was not told where to log"
-                : string.Format("picture: {0} (framed on the body at {1} and its skeleton, from {2})",
-                                file, bounds.center.ToString("F2"), TransformPath(skin.transform));
+                : string.Format("picture: {0} {1}", file, note);
         }
         catch (Exception e)
         {
@@ -2002,8 +2225,80 @@ public static class RebuildGate
         }
         finally
         {
-            UnityEngine.Object.DestroyImmediate(holder);
+            if (holder != null)
+            {
+                UnityEngine.Object.DestroyImmediate(holder);
+            }
         }
+    }
+
+    /// <summary>
+    /// Renders the game's own view once per term of the shading sum, with the shader asked to put that
+    /// one term on the screen on its own. A report can only say which inputs look unusual, and an
+    /// input's size is not the size of the term it feeds, so the only way to tell a defect in the
+    /// indirect half from a defect in the direct half is to look at the halves. Term 0 is the
+    /// untouched image and is the reference the rest are read against.
+    /// </summary>
+    private static string TermFrames()
+    {
+        string[] names =
+        {
+            "0 all", "1 albedo", "2 specular", "3 fresnel",
+            "4 direct diffuse", "5 direct highlight", "6 reflection", "7 ambient"
+        };
+
+        Camera camera = ViewCamera();
+        if (camera == null)
+        {
+            return "terms: skipped, the scene has no enabled camera";
+        }
+
+        try
+        {
+            string[] files = new string[names.Length];
+            for (int term = 0; term < names.Length; term++)
+            {
+                Shader.SetGlobalFloat("_VamDebugTerm", term);
+                files[term] = RenderToFile(camera, 1024, 576, "-term-" + term);
+                if (files[term] == null)
+                {
+                    return "terms: skipped, the run was not told where to log";
+                }
+            }
+
+            return string.Format("terms: {0} ({1})", string.Join(", ", files), string.Join(", ", names));
+        }
+        catch (Exception e)
+        {
+            return "terms: could not be rendered - " + e.Message;
+        }
+        finally
+        {
+            Shader.SetGlobalFloat("_VamDebugTerm", 0f);
+        }
+    }
+
+    /// <summary>
+    /// The camera the game itself puts on screen, which is the one whose framing shows the defect the
+    /// way it is actually complained about. Falls back to any enabled camera in the scene.
+    /// </summary>
+    private static Camera ViewCamera()
+    {
+        Camera camera = Camera.main;
+        if (camera != null)
+        {
+            return camera;
+        }
+
+        foreach (Camera candidate in Camera.allCameras)
+        {
+            if (candidate.enabled && candidate.gameObject.activeInHierarchy)
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -2012,19 +2307,7 @@ public static class RebuildGate
     /// </summary>
     private static string CaptureView()
     {
-        Camera camera = Camera.main;
-        if (camera == null)
-        {
-            foreach (Camera candidate in Camera.allCameras)
-            {
-                if (candidate.enabled && candidate.gameObject.activeInHierarchy)
-                {
-                    camera = candidate;
-                    break;
-                }
-            }
-        }
-
+        Camera camera = ViewCamera();
         if (camera == null)
         {
             return "view: skipped, the scene has no enabled camera";
@@ -3125,6 +3408,297 @@ public static class RebuildGate
         return text.ToString();
     }
 
+    /// <summary>
+    /// What decides whether the character darkens itself. A directional light reaches a forward-rendered
+    /// surface as a screen-space shadow mask, and every receiver multiplies its light by that mask, so the
+    /// mask's shader is part of the answer: GraphicsSettings lets a plugin replace it, NGSS is shipped to do
+    /// exactly that, and the project's copy of the shader it installs is an AssetRipper stub - one pass
+    /// returning white, which is "nothing is ever in shadow".
+    /// </summary>
+    private static string ShadowReport()
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- shadows -----");
+
+        BuiltinShaderMode mode = GraphicsSettings.GetShaderMode(BuiltinShaderType.ScreenSpaceShadows);
+        Shader custom = GraphicsSettings.GetCustomShader(BuiltinShaderType.ScreenSpaceShadows);
+        report.AppendLine(string.Format(
+            "screen-space shadow shader: mode={0}, custom={1}, supported={2}, stub={3}",
+            mode, custom == null ? "None" : custom.name,
+            custom == null ? "n/a" : custom.isSupported.ToString(),
+            custom == null ? "n/a" : IsStubShader(custom).ToString()));
+        if (custom != null)
+        {
+            string assetPath = AssetDatabase.GetAssetPath(custom);
+            report.AppendLine(string.Format("  custom shader asset: {0}",
+                string.IsNullOrEmpty(assetPath) ? "built in, no asset" : assetPath));
+        }
+
+        report.AppendLine(string.Format(
+            "quality: shadows={0}, distance={1}, cascades={2}, resolution={3}, projection={4}, nearPlaneOffset={5}",
+            QualitySettings.shadows, QualitySettings.shadowDistance, QualitySettings.shadowCascades,
+            QualitySettings.shadowResolution, QualitySettings.shadowProjection, QualitySettings.shadowNearPlaneOffset));
+        report.AppendLine(string.Format("quality: pixelLightCount={0}, antiAliasing={1}, vSync={2}",
+            QualitySettings.pixelLightCount, QualitySettings.antiAliasing, QualitySettings.vSyncCount));
+
+        Camera camera = Camera.main;
+        report.AppendLine(string.Format(
+            "camera: {0}, renderingPath={1}, actualRenderingPath={2}, depthTextureMode={3}, far={4}, hdr={5}",
+            camera == null ? "none" : TransformPath(camera.transform),
+            camera == null ? "n/a" : camera.renderingPath.ToString(),
+            camera == null ? "n/a" : camera.actualRenderingPath.ToString(),
+            camera == null ? "n/a" : camera.depthTextureMode.ToString(),
+            camera == null ? "n/a" : camera.farClipPlane.ToString("F1"),
+            camera == null ? "n/a" : camera.allowHDR.ToString()));
+
+        List<Light> lights = SceneObjects<Light>();
+        report.AppendLine(string.Format("lights in the scene: {0}", lights.Count));
+        foreach (Light light in lights)
+        {
+            report.AppendLine(string.Format(
+                "  {0}: type={1}, enabled={2}, active={3}, intensity={4:F2}, shadows={5}, strength={6:F2}, bias={7:F3}",
+                TransformPath(light.transform), light.type, light.enabled, light.gameObject.activeInHierarchy,
+                light.intensity, light.shadows, light.shadowStrength, light.shadowBias));
+            report.AppendLine(string.Format("    renderMode={0}, shadowResolution={1}, cullingMask={2}",
+                light.renderMode, light.shadowResolution, light.cullingMask));
+        }
+
+        List<NGSS_Directional> directional = SceneObjects<NGSS_Directional>();
+        List<NGSS_ContactShadows> contacts = SceneObjects<NGSS_ContactShadows>();
+        report.AppendLine(string.Format("NGSS components in the scene: directional={0}, contactShadows={1}",
+            directional.Count, contacts.Count));
+        foreach (NGSS_Directional component in directional)
+        {
+            report.AppendLine(string.Format(
+                "  NGSS_Directional on {0}: enabled={1}, active={2}, keepOnDisable={3}, samplers={4}, softness={5:F2}",
+                TransformPath(component.transform), component.enabled, component.gameObject.activeInHierarchy,
+                component.KEEP_NGSS_ONDISABLE, component.SAMPLERS_COUNT, component.GLOBAL_SOFTNESS));
+            report.AppendLine(string.Format("    light={0}, isGraphicSet={1}, isNotSupported={2}",
+                component.GetComponent<Light>() == null ? "none" : component.GetComponent<Light>().type.ToString(),
+                Flag(component, "isGraphicSet"), Flag(component, "isNotSupported")));
+        }
+        foreach (NGSS_ContactShadows component in contacts)
+        {
+            report.AppendLine(string.Format("  NGSS_ContactShadows on {0}: enabled={1}, active={2}",
+                TransformPath(component.transform), component.enabled, component.gameObject.activeInHierarchy));
+        }
+
+        // The flags the body is drawn with. They are read at draw time from the mesh rather than from a
+        // renderer, so nothing in the hierarchy shows them.
+        List<DAZMesh> meshes = SceneObjects<DAZMesh>();
+        report.AppendLine(string.Format("DAZMesh components in the scene: {0}", meshes.Count));
+        foreach (DAZMesh mesh in meshes)
+        {
+            report.AppendLine(string.Format("  {0}: geometry={1}, cast={2}, receive={3}",
+                TransformPath(mesh.transform), mesh.geometryId, mesh.castShadows, mesh.receiveShadows));
+        }
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>
+    /// Whether the body's own surfaces darken each other, which no count in the report can answer. One frame
+    /// is rendered with the session's own settings and then again after changing a single input - dynamic
+    /// shadows switched off, every light's shadow strength forced to one, the ambient probe blacked out - with
+    /// every change undone and the unchanged frame rendered again in between. Each changed frame differs from
+    /// the frame before it in exactly one input, so the difference between two files is that input's
+    /// contribution to the picture and nothing else; each unchanged frame repeated after a change is what
+    /// says whether undoing the change actually took effect.
+    ///
+    /// The body is rendered as well as the game's own view: in the view the character is a part of the
+    /// picture, and the defect is about the character's own surface. The last frame of each pair is the
+    /// session's own rendering restored, so a pair whose two files are identical says the change was not in
+    /// the picture, and a pair whose changed frame is empty of difference says the same about the input.
+    /// </summary>
+    private static string ShadowProbe(DAZSkinV2 skin)
+    {
+        Camera camera = Camera.main;
+        if (camera == null)
+        {
+            foreach (Camera candidate in Camera.allCameras)
+            {
+                if (candidate.enabled && candidate.gameObject.activeInHierarchy)
+                {
+                    camera = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (camera == null)
+        {
+            return "shadow probe: skipped, the scene has no enabled camera";
+        }
+
+        ShadowQuality quality = QualitySettings.shadows;
+        List<Light> lights = SceneObjects<Light>();
+        float[] strengths = new float[lights.Count];
+        for (int i = 0; i < lights.Count; i++)
+        {
+            strengths[i] = lights[i].shadowStrength;
+        }
+
+        AmbientMode ambientMode = RenderSettings.ambientMode;
+        Color ambientLight = RenderSettings.ambientLight;
+        float ambientIntensity = RenderSettings.ambientIntensity;
+        SphericalHarmonicsL2 ambientProbe = RenderSettings.ambientProbe;
+        float unityRef = Shader.GetGlobalFloat("_VamShadowUnity");
+
+        GameObject holder = null;
+        StringBuilder probe = new StringBuilder();
+        try
+        {
+            if (skin != null)
+            {
+                Camera bodyCamera;
+                string note;
+                holder = FramedBodyCamera(skin, out bodyCamera, out note);
+                if (bodyCamera == null)
+                {
+                    holder = null;
+                    probe.AppendLine("shadow probe: no body frames - " + note);
+                }
+                else
+                {
+                    probe.AppendLine("shadow probe: body frames " + note);
+                }
+            }
+
+            probe.AppendLine(ShadowFrames(camera, holder, "session", "as the session renders it"));
+
+            QualitySettings.shadows = ShadowQuality.Disable;
+            probe.AppendLine(ShadowFrames(camera, holder, "off", "with dynamic shadows switched off"));
+            QualitySettings.shadows = quality;
+            probe.AppendLine(ShadowFrames(camera, holder, "session2",
+                "as the session renders it again, after switching shadows back on"));
+
+            foreach (Light light in lights)
+            {
+                light.shadowStrength = 1f;
+            }
+            probe.AppendLine(ShadowFrames(camera, holder, "strength",
+                "with every light's shadow strength forced to one"));
+            for (int i = 0; i < lights.Count; i++)
+            {
+                lights[i].shadowStrength = strengths[i];
+            }
+            probe.AppendLine(ShadowFrames(camera, holder, "session3",
+                "as the session renders it again, after putting the shadow strengths back"));
+
+            // RenderSettings is not where the skin's ambient comes from. VaM keeps its own packed probe
+            // in the _SH0.._SH8 globals and Sky rewrites them every frame, so the frame that shows the
+            // indirect half of the picture is the one with those globals - and the exposure that scales
+            // them - zeroed. The direct light keeps its own scale, which is _ExposureIBL.w.
+            RenderSettings.ambientMode = AmbientMode.Flat;
+            RenderSettings.ambientLight = Color.black;
+            RenderSettings.ambientIntensity = 0f;
+            RenderSettings.ambientProbe = new SphericalHarmonicsL2();
+            string[] ambientGlobals = { "_SH0", "_SH1", "_SH2", "_SH3", "_SH4",
+                                        "_SH5", "_SH6", "_SH7", "_SH8" };
+            Vector4[] ambientValues = new Vector4[ambientGlobals.Length];
+            for (int i = 0; i < ambientGlobals.Length; i++)
+            {
+                ambientValues[i] = Shader.GetGlobalVector(ambientGlobals[i]);
+                Shader.SetGlobalVector(ambientGlobals[i], Vector4.zero);
+            }
+            Vector4 exposureIBL = Shader.GetGlobalVector("_ExposureIBL");
+            Vector4 exposureLM = Shader.GetGlobalVector("_ExposureLM");
+            Shader.SetGlobalVector("_ExposureIBL", new Vector4(0f, exposureIBL.y, exposureIBL.z, exposureIBL.w));
+            Shader.SetGlobalVector("_ExposureLM", new Vector4(0f, exposureLM.y, exposureLM.z, exposureLM.w));
+            probe.AppendLine(ShadowFrames(camera, holder, "ambientoff",
+                "with VaM's own ambient probe blacked out"));
+
+            // The reflection is the other half of that indirect term, and _ExposureIBL.y is its scale.
+            Shader.SetGlobalVector("_ExposureIBL", new Vector4(0f, 0f, exposureIBL.z, exposureIBL.w));
+            probe.AppendLine(ShadowFrames(camera, holder, "reflectionoff",
+                "with the indirect reflection turned off as well"));
+            Shader.SetGlobalVector("_ExposureIBL", exposureIBL);
+            Shader.SetGlobalVector("_ExposureLM", exposureLM);
+            for (int i = 0; i < ambientGlobals.Length; i++)
+            {
+                Shader.SetGlobalVector(ambientGlobals[i], ambientValues[i]);
+            }
+            RenderSettings.ambientMode = ambientMode;
+            RenderSettings.ambientLight = ambientLight;
+            RenderSettings.ambientIntensity = ambientIntensity;
+            RenderSettings.ambientProbe = ambientProbe;
+            probe.AppendLine(ShadowFrames(camera, holder, "session4",
+                "as the session renders it again, after putting the ambient light back"));
+
+            // A forward-rendered surface learns it is in shadow from Unity's screen-space shadow pass,
+            // and NGSS ships to replace that pass: NGSS_Directional.Init sets ScreenSpaceShadows to
+            // UseCustom with Shader.Find("Hidden/NGSS_Directional"). The project's copy of that shader is
+            // an AssetRipper stub whose fragment returns white - "nothing is ever in shadow" - so one
+            // frame with Unity's own pass in its place is what says whether the stub is why the body does
+            // not darken itself.
+            BuiltinShaderMode installedMode = GraphicsSettings.GetShaderMode(BuiltinShaderType.ScreenSpaceShadows);
+            GraphicsSettings.SetShaderMode(BuiltinShaderType.ScreenSpaceShadows, BuiltinShaderMode.UseBuiltin);
+            probe.AppendLine(ShadowFrames(camera, holder, "ssbuiltin",
+                "with Unity's own screen-space shadow pass instead of the one the session installs"));
+            GraphicsSettings.SetShaderMode(BuiltinShaderType.ScreenSpaceShadows, installedMode);
+            probe.AppendLine(ShadowFrames(camera, holder, "session5",
+                "as the session renders it again, after putting the screen-space shadow pass back"));
+
+            // What the port itself contributes, as a difference inside one build rather than as a claim
+            // about the code: the same frame rendered through Unity's point-light cube filter instead of
+            // VaM's. The recovered filter reads the switch as a global, so nothing else in the frame
+            // moves with it, and it ships as zero.
+            Shader.SetGlobalFloat("_VamShadowUnity", 1f);
+            probe.AppendLine(ShadowFrames(camera, holder, "unityref",
+                "with Unity's own point-light cube filter instead of VaM's"));
+            Shader.SetGlobalFloat("_VamShadowUnity", unityRef);
+            probe.AppendLine(ShadowFrames(camera, holder, "session6",
+                "as the session renders it again, after putting VaM's own filter back"));
+
+            // The pair above is only readable by measurement: a contact shadow is a few tens of levels on
+            // the part of the body that is lit, which a whole-frame average dilutes into nothing.
+            probe.AppendLine(string.Format(
+                "shadow probe: measure a pair with `python tools\\measure_shadow.py \"{0}.shadow-body-off.png\" "
+                + "\"{0}.shadow-body-session2.png\" \"{0}.shadow-body-unityref.png\"`",
+                LogPathBase()));
+
+            return probe.ToString().TrimEnd('\r', '\n');
+        }
+        catch (Exception e)
+        {
+            return "shadow probe: could not be rendered - " + e.Message;
+        }
+        finally
+        {
+            QualitySettings.shadows = quality;
+            RenderSettings.ambientMode = ambientMode;
+            RenderSettings.ambientLight = ambientLight;
+            RenderSettings.ambientIntensity = ambientIntensity;
+            RenderSettings.ambientProbe = ambientProbe;
+            Shader.SetGlobalFloat("_VamShadowUnity", unityRef);
+            for (int i = 0; i < lights.Count; i++)
+            {
+                if (lights[i] != null)
+                {
+                    lights[i].shadowStrength = strengths[i];
+                }
+            }
+
+            if (holder != null)
+            {
+                UnityEngine.Object.DestroyImmediate(holder);
+            }
+        }
+    }
+
+    /// <summary>Renders one shadow-probe configuration from both cameras and names the files it wrote.</summary>
+    private static string ShadowFrames(Camera view, GameObject body, string label, string description)
+    {
+        string viewFile = RenderToFile(view, 1024, 576, ".shadow-" + label);
+        if (body == null)
+        {
+            return string.Format("shadow probe: {0} {1}", viewFile, description);
+        }
+
+        string bodyFile = RenderToFile(body.GetComponent<Camera>(), 1024, 1024, ".shadow-body-" + label);
+        return string.Format("shadow probe: {0} and {1} {2}", viewFile, bodyFile, description);
+    }
+
     private static string SkinReport()
     {
         StringBuilder report = new StringBuilder();
@@ -3252,8 +3826,11 @@ public static class RebuildGate
 
             report.AppendLine(DrawReport(subject));
             report.AppendLine(MaterialDump());
+            report.AppendLine(ShadowReport());
             report.AppendLine(CaptureSkin(subject));
+            report.AppendLine(TermFrames());
             report.AppendLine(CaptureView());
+            report.AppendLine(ShadowProbe(subject));
             if (subject != null)
             {
                 report.AppendLine(SpatialReport(subject));

@@ -47,6 +47,12 @@
 //      probe-volume path and Unity's baked-occlusion dot product are replaced
 //      by Unity's own lightmap/screen-space shadow macros, which the rebuilt
 //      project drives instead;
+//    * the point light's shadow filter is transcribed from the bytecode (see
+//      VamSampleShadowmapCube below) with one substitution: the original seeds
+//      the Poisson disk's rotation from a full-screen texture it reads at
+//      screen-space uv, and that texture is neither one of the material's own
+//      nor bound by any VaM script, so the seed here is a hash of the pixel's
+//      own screen position instead;
 //    * the per-vertex emissive term the original adds as `albedo * TEXCOORD6`
 //      is omitted -- that interpolator is masked to zero by the vertex program
 //      (`mov o4.x, l(0)` with the domain shader emitting `o7.xyz` as
@@ -601,23 +607,37 @@ vam_surface VamSurface(vam_v2f i) {
 // highlight that shares the gloss exponent.  The wrap bleeds the terminator
 // around the body (that is what makes VaM skin look translucent) and the
 // (0.5 + 0.5 * N.L)^2 lobe keeps the lit side from flattening out; the highlight
-// is faded out at the terminator so grazing light cannot produce one.
-float3 VamLightResponse(vam_surface s, float3 V, float3 L, float3 subdermis,
-                        float fres, float exponent, float specScale) {
+// is faded out at the terminator so grazing light cannot produce one.  The two
+// halves are written separately because the shipped programs compute them
+// separately, and VamLightResponse is their sum, which is what the passes shade
+// with.
+//
+// The wrapped diffuse half, on its own.
+float3 VamLightDiffuse(vam_surface s, float3 L, float3 subdermis) {
     // The light dirs are the *diffuse* normal's here, unlike the indirect terms.
     float ndl = saturate(dot(s.nrmDiff, L));
 
     float3 wrap = subdermis * 0.5;
     float3 inv = 1.0 - wrap;
-    float3 diffuse = 2.0 * (0.5 + 0.5 * ndl) * (0.5 + 0.5 * ndl)
-                   * inv * saturate(ndl * inv + wrap) * s.albedo;
+    return 2.0 * (0.5 + 0.5 * ndl) * (0.5 + 0.5 * ndl)
+         * inv * saturate(ndl * inv + wrap) * s.albedo;
+}
+
+// The Blinn-Phong half, on its own.
+float3 VamLightHighlight(vam_surface s, float3 V, float3 L, float fres,
+                         float exponent, float specScale) {
+    float ndl = saturate(dot(s.nrmDiff, L));
 
     // V points from the camera to the surface, so the half vector is L - V.
     float ndh = saturate(dot(s.nrmSpec, normalize(L - V)));
-    float3 highlight = pow(ndh, exponent) * min(ndl * 10.0, 1.0) * 0.5
-                     * s.spec * fres * specScale;
+    return pow(ndh, exponent) * min(ndl * 10.0, 1.0) * 0.5
+         * s.spec * fres * specScale;
+}
 
-    return diffuse + highlight;
+float3 VamLightResponse(vam_surface s, float3 V, float3 L, float3 subdermis,
+                        float fres, float exponent, float specScale) {
+    return VamLightDiffuse(s, L, subdermis)
+         + VamLightHighlight(s, V, L, fres, exponent, specScale);
 }
 
 // Everything gloss drives.  One value, a = 1 - (1-g)^2 = 2g - g^2 (g = 1 - the
@@ -644,6 +664,203 @@ void VamGlossTerms(float gloss, out float mip, out float exponent,
     exponent = exp2(1.0 + gg * (VAM_Shininess - 1.0));
     specScale = exponent * 0.159155 + 0.318310;
 }
+
+// The light vector the shipped programs build, per pixel, from the world
+// position.  Both of them keep `_WorldSpaceLightPos0` in a constant buffer
+// (cb2[0] in the base pass, cb2[0] in the additive one) and both take the pixel's
+// world position off the interpolator: the additive POINT variant computes
+// `add r0.xyz, -v7.xyzx, cb2[0].xyzx` with `v7` the world position, and the
+// base DIRECTIONAL variant computes `normalize(cb2[0].xyz)` -- the same
+// expression, because `.w` is zero for a directional light and one for a point
+// or spot light.  Using `_WorldSpaceLightPos0.xyz` on its own therefore reads
+// the point light's *position* as a direction, i.e. the direction from the world
+// origin to the light, which smears every point light's highlight over the whole
+// surface instead of letting it land where the geometry faces the light.
+float3 VamLightDirWS(float3 posWS) {
+    return _WorldSpaceLightPos0.xyz - posWS * _WorldSpaceLightPos0.w;
+}
+
+// -----------------------------------------------------------------------------
+//  Point-light shadows
+//
+//  VaM does not use Unity's point-light shadow filter.  The shipped
+//  MARMO_LINEAR + POINT + SHADOWS_CUBE fragment program keeps everything
+//  *around* the taps -- the distance projection, the shadow fade, the baked
+//  occlusion, the lerp between them -- exactly as AutoLight.cginc has it, but
+//  it replaces UnitySampleShadowmap's four fixed taps with twenty-five taps of
+//  a Poisson disk it rotates per pixel about the light direction, and it reads
+//  that disk out of the program's own immediate constant buffer.
+//
+//  The differences from Unity's cube filter are what the eye sees:
+//
+//    * shadow strength is not an attenuation factor here.  The blob reads
+//      _LightShadowData.x exactly once, to size the disk as
+//      (1 - strength) * 0.1, and then averages the raw taps, so a blurred
+//      shadow is as dark as a hard one.  Unity's filter does the opposite:
+//      four taps 1/128 apart and then lerp(_LightShadowData.r, 1, tap), which
+//      at this scene's strength of 0.1 lets at most a tenth of the light
+//      through and leaves the edges razor sharp;
+//    * the bias is applied twice, once as a push of the tap along its own
+//      direction and once inside the projection, and the projection's copy is
+//      floored at 0.005 rather than at Unity's 1e-5;
+//    * twenty-five taps of a disk a tenth of a scene unit in radius -- nine
+//      centimetres at this scene's strength of 0.1, on a character a metre and a
+//      half tall -- integrate to the soft self-shadowing the skin is supposed to
+//      have.  One tap four pixels wide does not, which is why the rebuilt body
+//      read as unshadowed.
+//
+//  The bytecode this was decoded from is disassembled at
+//  artifacts/_tmp/ship_point.asm (lines 195-246); docs/verification.md records
+//  the decode.
+// -----------------------------------------------------------------------------
+#if defined(SHADOWS_CUBE)
+
+// The shipped program's disk, verbatim from its dcl_immediateConstantBuffer.
+static const float2 VamShadowDisk[25] = {
+    float2(-0.635182,  0.217271), float2(-0.149961,  0.232067),
+    float2(-0.679780,  0.688492), float2(-0.775865, -0.253409),
+    float2(-0.473192, -0.283272), float2(-0.333008,  0.643006),
+    float2(-0.138415, -0.098302), float2(-0.818233, -0.564594),
+    float2(-0.919847,  0.065498), float2(-0.142209, -0.487211),
+    float2(-0.498083, -0.588560), float2(-0.332616, -0.849615),
+    float2( 0.306674, -0.140200), float2( 0.114832,  0.374455),
+    float2(-0.038857,  0.807133), float2( 0.410289,  0.696029),
+    float2( 0.556388,  0.337538), float2(-0.017866, -0.887376),
+    float2( 0.234991, -0.455844), float2( 0.620677, -0.155100),
+    float2( 0.664064, -0.569143), float2( 0.731273,  0.583017),
+    float2( 0.887971,  0.057152), float2( 0.312830, -0.830803),
+    float2( 0.868976, -0.339797)
+};
+
+// The per-pixel rotation, as the original's hash chain computes it: three
+// sin's over a matrix-like mix of the seed's channels, scaled by 43758.546875
+// and mapped to [0.0001, 10.0001) so that a tap never rotates backwards.  The
+// seed itself is the one value that could not be recovered -- the original
+// samples a full-screen four-channel texture at screen-space uv, and no VaM
+// script binds such a texture and the bundle carries no ShaderLab text to name
+// it, so the pixel's own screen position stands in.  What matters to the
+// filter is only that neighbouring pixels get decorrelated angles, which a
+// position hash gives.
+//
+// `position` is the fragment's SV_POSITION, which is already the pixel
+// coordinate and must not be divided by its own w the way a clip-space position
+// would be.  The third seed channel is a fixed irrational mix of the first two
+// so that the three sines do not share an argument.
+float3 VamShadowDiskRotation(float4 position) {
+    float2 pixel = position.xy;
+    float3 seed = float3(pixel, pixel.x * 0.618034 + pixel.y);
+
+    float3 scaled = seed * float3(45.543201, 12.989800, 78.233002);
+    float3 mixed = seed.zxy * float3(12.989800, 78.233002, 45.543201) - scaled;
+    return frac(sin(mixed) * 43758.546875) * 10.0 + 0.000100;
+}
+
+// One tap's projection.  The tap is first pushed back along its own direction
+// by the light's bias, the dominant axis of that pushed vector is taken, the
+// projection's own copy of the bias is subtracted from it -- floored, because
+// a flat shadow map there would divide by zero -- and reversed z is applied
+// last, which is what the `add r7.w, -r7.w, l(1.0)` in the blob is.
+float VamShadowTapDepth(float3 tapVec, float pushBias, float projectionBias) {
+    float3 absTap = abs(tapVec);
+    float inv = rsqrt(max(dot(absTap, absTap), 1e-12));
+    float3 pushed = max(absTap - absTap * inv * pushBias, 0.0);
+    float dominant = max(max(pushed.x, pushed.y), pushed.z) - max(projectionBias, 0.005);
+    float depth = _LightProjectionParams.y / dominant - _LightProjectionParams.x;
+#if defined(UNITY_REVERSED_Z)
+    depth = 1.0 - depth;
+#endif
+    return depth;
+}
+
+// The filter proper.  `vec` is the pixel in the light's space, i.e. the
+// interpolated world position relative to _LightPositionRange.xyz, which is
+// what AutoLight hands UnitySampleShadowmap for a cube.
+half VamSampleShadowmapCube(float3 vec, float4 position) {
+    float3 rotation = VamShadowDiskRotation(position);
+    float radius = (1.0 - _LightShadowData.x) * 0.1;
+
+    // Two tangents of the disk's plane, built as the cross products the blob
+    // builds and normalised *before* the radius is applied -- normalising the
+    // scaled vector instead would divide by zero (and so produce NaN taps) at
+    // zero radius, where the original degrades to a single hard tap on the
+    // pixel itself.
+    float3 tangentA = normalize(cross(vec, rotation));
+    float3 tangentB = normalize(cross(vec, tangentA));
+    tangentA *= radius;
+    tangentB *= radius;
+
+    float bias = _LightProjectionParams.z;
+    half lit = 0.0;
+    for (int tap = 0; tap < 25; ++tap) {
+        float3 tapVec = vec + tangentA * VamShadowDisk[tap].x
+                            + tangentB * VamShadowDisk[tap].y;
+        lit += UNITY_SAMPLE_TEXCUBE_SHADOW(_ShadowMapTexture,
+                                           float4(tapVec, VamShadowTapDepth(tapVec, bias, bias)));
+    }
+
+    // The average, not a lerp against the strength: at this scene's strength of
+    // 0.1 the disk is 9 cm in radius and every tap counts fully.
+    return lit * 0.04;
+}
+
+// The reconstruction's own control, not part of the shipped program: the gate
+// sets this to one to render the same frame through Unity's cube filter instead,
+// so that what the port changes is a measured difference between two frames of
+// one build rather than a claim about the code.  Zero - the value every session
+// ships with - is VaM's filter above.  Nothing declares it as a material
+// property, so it stays a global: shader-src is the only place it appears, and
+// RebuildGate.ShadowProbe is the only thing that writes it.
+uniform float _VamShadowUnity;
+
+// AutoLight's own UnityComputeForwardShadows, with the cube branch routed
+// through the filter above.  Every other branch -- and the fade, the baked
+// occlusion and the mix -- is AutoLight.cginc's text, and the blob has all of
+// it inlined instruction for instruction, so it is not re-derived here.
+half VamPointShadowAttenuation(vam_v2f i, float3 worldPos) {
+#if defined(SHADOWS_CUBE)
+    if (_VamShadowUnity > 0.5)
+    {
+        return UnityComputeForwardShadows(0, worldPos, UNITY_READ_SHADOW_COORDS(i));
+    }
+
+    float zDist = dot(_WorldSpaceCameraPos - worldPos, UNITY_MATRIX_V[2].xyz);
+    float fadeDist = UnityComputeShadowFadeDistance(worldPos, zDist);
+    half realtimeToBakedShadowFade = UnityComputeShadowFade(fadeDist);
+    half baked = UnitySampleBakedOcclusion(0, worldPos);
+    half realtime = VamSampleShadowmapCube(worldPos - _LightPositionRange.xyz, i.pos);
+    return UnityMixRealtimeAndBakedShadows(realtime, baked, realtimeToBakedShadowFade);
+#else
+    return UnityComputeForwardShadows(0, worldPos, UNITY_READ_SHADOW_COORDS(i));
+#endif
+}
+
+// AutoLight's POINT and POINT_COOKIE macros, verbatim except for the shadow
+// term.  POINT_COOKIE is tested first because AutoLight defines it after POINT
+// and thus wins when a point light carries a cookie.  Lights of any other type
+// keep Unity's macro untouched: VaM's shadow design is a point-light one, and
+// the shipped spot and directional variants really do filter with
+// UnitySampleShadowmap.
+#if defined(POINT_COOKIE)
+#   define VAM_LIGHT_ATTENUATION(destName, input, worldPos) \
+        unityShadowCoord3 lightCoord = mul(unity_WorldToLight, unityShadowCoord4(worldPos, 1)).xyz; \
+        fixed shadow = VamPointShadowAttenuation(input, worldPos); \
+        fixed destName = tex2D(_LightTextureB0, dot(lightCoord, lightCoord).rr).UNITY_ATTEN_CHANNEL * texCUBE(_LightTexture0, lightCoord).w * shadow;
+#elif defined(POINT)
+#   define VAM_LIGHT_ATTENUATION(destName, input, worldPos) \
+        unityShadowCoord3 lightCoord = mul(unity_WorldToLight, unityShadowCoord4(worldPos, 1)).xyz; \
+        fixed shadow = VamPointShadowAttenuation(input, worldPos); \
+        fixed destName = tex2D(_LightTexture0, dot(lightCoord, lightCoord).rr).UNITY_ATTEN_CHANNEL * shadow;
+#else
+#   define VAM_LIGHT_ATTENUATION(destName, input, worldPos) \
+        UNITY_LIGHT_ATTENUATION(destName, input, worldPos)
+#endif
+
+#else
+
+#   define VAM_LIGHT_ATTENUATION(destName, input, worldPos) \
+        UNITY_LIGHT_ATTENUATION(destName, input, worldPos)
+
+#endif // SHADOWS_CUBE
 
 float3 VamShade(vam_v2f i, vam_surface s, float3 V) {
     // ---- Fresnel -------------------------------------------------------------
@@ -690,9 +907,11 @@ float3 VamShade(vam_v2f i, vam_surface s, float3 V) {
 
     // ---- Main directional light ---------------------------------------------
     // Unity's 5.6+ helper derives the light and shadow coordinates from the
-    // world position, which is what the compute buffers hand us.
-    UNITY_LIGHT_ATTENUATION(atten, i, i.posWS);
-    float3 direct = VamLightResponse(s, V, normalize(_WorldSpaceLightPos0.xyz),
+    // world position, which is what the compute buffers hand us.  For point
+    // lights VAM_LIGHT_ATTENUATION is AutoLight's macro with the light's
+    // shadow filter swapped back to VaM's own -- see VamSampleShadowmapCube.
+    VAM_LIGHT_ATTENUATION(atten, i, i.posWS);
+    float3 direct = VamLightResponse(s, V, normalize(VamLightDirWS(i.posWS)),
                                      sub, fres, exponent, specScale)
                   * atten * _LightColor0.rgb;
 
@@ -704,8 +923,10 @@ float3 VamShade(vam_v2f i, vam_surface s, float3 V) {
     // (`mad o0.xyz, r2.xyzx, cb0[74].wwww, r0.xyzx`, the last arithmetic
     // instruction before `mov o0.w, l(1)`).
     float indirect = 1.0 - VAM_IBLFilter;
-    float3 iblPass = reflection * indirect + ambient * (indirect * s.albedo);
-    return iblPass * _ExposureIBL.w + direct;
+    float3 reflectionTerm = reflection * indirect * _ExposureIBL.w;
+    float3 ambientTerm = ambient * (indirect * s.albedo) * _ExposureIBL.w;
+
+    return reflectionTerm + ambientTerm + direct;
 }
 
 fixed4 VamFragment(vam_v2f i) : SV_Target {
@@ -736,12 +957,13 @@ fixed4 VamFragmentAdd(vam_v2f i) : SV_Target {
     float mip, exponent, specScale;
     VamGlossTerms(s.gloss, mip, exponent, specScale);
 
-    UNITY_LIGHT_ATTENUATION(atten, i, i.posWS);
-    float3 L = normalize(_WorldSpaceLightPos0.xyz);
+    VAM_LIGHT_ATTENUATION(atten, i, i.posWS);
+    float3 L = normalize(VamLightDirWS(i.posWS));
 
     float3 col = VamLightResponse(s, V, L, VAM_SubdermisColor.rgb, fres, exponent,
                                   specScale);
     col = col * _LightColor0.rgb * atten * _ExposureIBL.w;
+
     return fixed4(col, 1.0);
 }
 

@@ -260,15 +260,20 @@ With those, `Custom/Hair/` came out of `UNTRANSCRIBED_FAMILIES`, which now names
 
 `shader-src\VamGpuSkinning.cginc` holds the whole shading model: the two vertex stages (skinned
 forward pass, shadow caster), the surface fetch, the ambient/IBL terms, the specular response, the
-fragment stages and the shadow-caster fragment. It is a transcription of the body shader's bytecode,
-with the deviations listed in its header and repeated here: lightmap indirection is not transcribed
-(the 3-D LUT lookup, the probe-volume path and Unity's baked-occlusion dot are replaced by Unity's own
-lightmap / screen-space shadow macros), the per-vertex emissive term is omitted because the vertex
-program hard-codes that interpolator to zero, and the additive pass keeps a plain Lambert diffuse
-until its own DXBC blob is transcribed. Everything that decides the pose, the silhouette, the surface
+point light's shadow filter, the fragment stages and the shadow-caster fragment. It is a transcription
+of the body shader's bytecode, with the deviations listed in its header and repeated here: lightmap
+indirection is not transcribed (the 3-D LUT lookup, the probe-volume path and Unity's baked-occlusion
+dot are replaced by Unity's own lightmap / screen-space shadow macros), the per-vertex emissive term is
+omitted because the vertex program hard-codes that interpolator to zero, the point light's Poisson disk
+is seeded from a hash of the pixel's own position because the full-screen texture the original samples
+for its seed could not be identified, and the additive pass's response is derived rather than
+transcribed - its DXBC blob is a separate program for point/spot lights - and then compared against
+that blob instruction by instruction. Everything that decides the pose, the silhouette, the surface
 response and the base shading - the structured-buffer skinning, the normals, the Fresnel curve, the
-gloss-driven highlight and reflection mip, the two-source SH ambient, the shadow coordinates and the
-alpha cutoff - is a direct transcription, register for register.
+gloss-driven highlight and reflection mip, the two-source SH ambient, the shadow coordinates, the
+25-tap shadow disk and the alpha cutoff - is a direct transcription, register for register. The
+measurement that separates the transcribed filter from Unity's built-in one, and the two extraction
+errors it took to make it, are in `docs\verification.md`.
 
 The body pixel shader is the interesting one, and four of its registers are worth writing down
 because a "sensible" rewrite of any of them changes the look:
@@ -298,6 +303,17 @@ because a "sensible" rewrite of any of them changes the look:
   sky SH, `.y` the image-based reflection, `.w` everything. There is no `.z` use in this pass, and the
   two branches do not escape the master scale - the indirect term reaches the output as `ibl * .w`,
   while each direct-light term is pre-multiplied by the same `.w` inside the pass.
+- **The point light's shadow is a 25-tap disk, and two of its registers do not mean what Unity's
+  do.** `_LightShadowData.x` appears exactly **once** in the whole program - `add r4.w, -cb3[24].x,
+  l(1.0); mul r4.w, r4.w, l(0.1)` - so it sets the disk's radius as `(1 - x) * 0.1` and is *not* the
+  light's `shadowStrength`; the remaining three components are AutoLight's own realtime-to-baked fade
+  (`mad_sat` against `.z`/`.w`), which the port leaves to `UnityMixRealtimeAndBakedShadows`. And the
+  taps are **averaged** (`mul r4.w, r5.w, 0.04`) rather than lerped toward 1 per tap the way
+  `UnityComputeForwardShadows` does, so a blurred edge is exactly as dark as a hard one - the two
+  filters do not just differ in amount, they differ in kind. The depth bias is likewise applied twice,
+  once pushed along the tap's own direction and once again inside the projection, and its floor is
+  **0.005**, not Unity's 1e-5. `docs\verification.md` measures what those two differences are worth on
+  the body: +8.26/255 mean on the lit pixels against +0.98/255 for the built-in path.
 
 The bump map's alpha masks the X slope only - another quirk that is reproduced rather than fixed.
 

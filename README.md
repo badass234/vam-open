@@ -1,4 +1,4 @@
-# VAMOpen 0.4.0-alpha
+# VAMOpen 0.5.0-alpha
 
 Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
 developers just keep taking money and releasing tiny fixes for years.
@@ -19,6 +19,10 @@ contains the recovered code and the pipeline, and you point it at your own insta
 - Shaders: 88 reconstructed from the shipped DXBC bytecode - 256 passes, 6 805 compiled programs.
   Every drawn material of the character now draws with one of them instead of the bundle's copy.
 - Post-processing
+- Self-shadowing: the point lights' shadow filter is VaM's own, decoded from the released bytecode -
+  the 25-tap Poisson disk, the doubled depth bias, the averaging that makes a soft edge as dark as a
+  hard one. Against Unity's built-in filter, in one session under the same lights, it darkens the lit
+  body by 8.26/255 of mean luminance where the built-in path darkens it by 0.98/255.
 - A standalone `VAMOpen.exe` builds in batch mode and runs outside the editor: 10 scenes, D3D11, all
   18 `.var` packages registered, 312 FPS in its own benchmark scene.
 
@@ -26,7 +30,8 @@ Also, the shading model of the drawn body has been compared with the released bu
 bytecode, instruction by instruction, and matches it: the tangent frame, the normal map, the albedo
 override, the gloss and bump offsets, the highlight exponent and Fresnel curves, the SH ambient, the
 reflection, the direct light and the final composite. That is what 0.2.0 adds over 0.1.1 - not a new
-feature, but the ground the next rounds stand on.
+feature, but the ground the next rounds stand on - and 0.5.0 adds the point light's shadow filter to
+the same list, with the one substitution it needed named where it is made.
 
 ## What's still in progress
 
