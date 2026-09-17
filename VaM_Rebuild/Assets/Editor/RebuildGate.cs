@@ -3355,6 +3355,67 @@ public static class RebuildGate
         return report.ToString();
     }
 
+    /// <summary>How many characters the per-character dump covers before it starts counting them.</summary>
+    private const int MaxCharacterDumps = 6;
+
+    /// <summary>
+    /// Every character's own slots, not just the one the rest of the report calls the subject.
+    ///
+    /// A scene holds more than one person, and a defect that shows on one figure and not on another is
+    /// answered by two dumps side by side. The subject is the skin with the largest mesh, so on a scene
+    /// with a male and a female the second character has no dump anywhere - and the iris is a submesh of
+    /// the skin, drawn through GPUmaterials, so it lives in this list and not in a renderer of its own.
+    /// A slot whose map is absent prints "_MainTex=None" and one whose map arrived empty averages near
+    /// (1, 1, 1), which is what a white iris and a white pupil look like from the inside.
+    /// </summary>
+    private static string CharacterSlotReport()
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- every character's slots -----");
+        int shown = 0;
+        int skipped = 0;
+        foreach (DAZSkinV2 skin in SceneObjects<DAZSkinV2>())
+        {
+            Mesh mesh = skin.GetMesh();
+            if (mesh == null || !skin.gameObject.activeInHierarchy)
+            {
+                continue;
+            }
+
+            if (shown >= MaxCharacterDumps)
+            {
+                skipped++;
+                continue;
+            }
+
+            shown++;
+            DAZMesh dazMesh = skin.dazMesh;
+            report.AppendLine(string.Format(
+                "  {0}: {1} verts, geometry={2}, GPUmaterials={3}, dazMesh materials={4}, skin={5}",
+                TransformPath(skin.transform), mesh.vertexCount,
+                dazMesh == null ? "NULL" : dazMesh.geometryId,
+                skin.GPUmaterials == null ? 0 : skin.GPUmaterials.Length,
+                dazMesh == null || dazMesh.materials == null ? 0 : dazMesh.materials.Length,
+                skin.skin));
+            AppendWrapMaterials(report, "GPUmaterials", skin.GPUmaterials, skin.materialsEnabled);
+            AppendSlotTextures(report, skin.GPUmaterials, "GPUmaterials", new HashSet<int>());
+            if (dazMesh == null)
+            {
+                continue;
+            }
+
+            AppendWrapMaterials(report, "materials", dazMesh.materials, null);
+            AppendSlotTextures(report, dazMesh.materials, "materials", new HashSet<int>());
+        }
+
+        if (skipped > 0)
+        {
+            report.AppendLine(string.Format("  ... {0} more character(s) with a mesh, not dumped", skipped));
+        }
+
+        return report.ToString();
+    }
+
     /// <summary>
     /// Every wrap in the scene, with the state that decides whether its garment reaches the screen.
     ///
@@ -4140,6 +4201,7 @@ public static class RebuildGate
             }
 
             report.AppendLine(DrawReport(subject));
+            report.AppendLine(CharacterSlotReport());
             report.AppendLine(EyeReport());
             report.AppendLine(MaterialDump());
             report.AppendLine(ShadowReport());
