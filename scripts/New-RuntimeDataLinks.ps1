@@ -23,7 +23,11 @@ hair: "Hair item ... is missing", and the character silently lost its hairstyle.
     rather than linked — so that a build does not modify the install.
 
 prefs.json is the fifth of these and the only one that changes the render rather than what
-loads. The game reads it relative to its working directory and applies it in
+loads, and version is the sixth and the only one that changes what the content believes: see
+SuperController.SyncVersion, which reads <working directory>\version and derives the
+VAM_<major>_<minor>_<patch>_<build> defines from it. While the project has no such file the editor
+reports the imitate version and gates content as 1.20 - which matches nothing and shows up nowhere
+until a package takes a version branch. The game reads it relative to its working directory and applies it in
 UserPreferences.RestorePreferences, so a built player runs the installation's preset while the
 editor runs the project's own: two copies, two presets, two renders of the same scene.
 pixelLightCount 4 against 2 is how many lights reach the pixel stage at all, and smoothPasses 4
@@ -267,6 +271,27 @@ else {
     else {
         Write-Host ("the editor runs a different preset in {0} key(s): {1} - drop -MatchGraphicsPrefs:`$false to match them" -f $changed.Count, ($changed -join ', ')) -ForegroundColor Yellow
     }
+}
+
+# ── version: what the build reports about itself ──────────────────────────
+# The sixth copy, and the one that changes no file of the game's: SuperController.SyncVersion reads
+# <working directory>\version, and both the version line and the VAM_* defines the content branches
+# on come from it. Seeded from the installation and refreshed when the installation changes.
+$installVersion = Join-Path $InstallRoot 'version'
+$projectVersion = Join-Path $ProjectPath 'version'
+
+if ($Remove) {
+    Write-Host "the editor's version file is left as it is (like prefs.json)"
+}
+elseif (-not (Test-Path -LiteralPath $installVersion)) {
+    Write-Host "WARNING: the installation has no version file ($installVersion) - the editor will report the imitate version" -ForegroundColor Yellow
+}
+elseif ((Test-Path -LiteralPath $projectVersion) -and ((Get-FileHash -LiteralPath $installVersion).Hash -eq (Get-FileHash -LiteralPath $projectVersion).Hash)) {
+    Write-Host 'the editor already reports the installation version' -ForegroundColor Green
+}
+else {
+    Copy-Item -LiteralPath $installVersion -Destination $projectVersion -Force
+    Write-Host 'copied the version file: the editor now reports the installation version' -ForegroundColor Green
 }
 
 Write-Host ''

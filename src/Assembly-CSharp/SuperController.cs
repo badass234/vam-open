@@ -8333,8 +8333,11 @@ public class SuperController : MonoBehaviour
 
 	public void SyncVersionText()
 	{
-		string text = "VaM: ";
-		text = ((!foundVersion) ? (text + version) : (text + resolvedVersion));
+		string text = MeshVR.VaMOpenBuild.Label;
+		if (foundVersion)
+		{
+			text = text + " (content version: " + resolvedVersion + ")";
+		}
 		if (vamXIntalled)
 		{
 			text = text + " vamX: 1." + vamXVersion;

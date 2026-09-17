@@ -240,6 +240,11 @@ The editor path is a directory junction (`scripts\New-StreamingAssetsLink.ps1`, 
 down) pointing at `VaM_Data\StreamingAssets`. It sits next to `Assets`, not inside it, so Unity never
 imports it - the 261 bundles stay where the game put them and the project stays 247.8 MB.
 
+This junction is what makes the wiping in `scripts\Setup-RebuildProject.ps1` dangerous: PowerShell 5.1's
+`Remove-Item -Recurse` deletes the files *behind* a junction rather than the link, so the script unlinks
+`StreamingAssets` before it clears `VaM_Rebuild\` and relinks it afterwards. Never clear that folder by
+hand while the junction is up - `scripts\New-StreamingAssetsLink.ps1 -Remove` first.
+
 `Launcher.cs` sets `SettingsManager.APP_PATH = Directory.GetParent(Application.dataPath).FullName`, so
 `saves`, `Custom`, `AddonPackages` and friends resolve to the *install* root in a player and to the
 project root in the editor. `FileManager` does not even use that: it filters its package list with

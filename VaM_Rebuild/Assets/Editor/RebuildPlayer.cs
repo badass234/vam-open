@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using UnityEditor;
 using UnityEngine;
 
@@ -143,17 +144,75 @@ public static class RebuildPlayer
         foreach (string name in OwnedOutputs)
         {
             string path = Path.Combine(playerRoot, name);
-            if (Directory.Exists(path)) { Directory.Delete(path, true); }
+            if (Directory.Exists(path)) { DeleteTree(path); }
             else if (File.Exists(path)) { File.Delete(path); }
         }
     }
 
+    /// <summary>
+    /// Deletes a directory tree, unlinking junctions rather than walking through them.
+    /// </summary>
+    /// <remarks>
+    /// A player that has been through <c>New-PlayerRuntimeLinks.ps1</c> holds junctions:
+    /// <c>&lt;exe&gt;_Data\StreamingAssets</c> is the installation's 16.47 GB of bundles. Mono's
+    /// <c>Directory.Delete(path, true)</c> sees a junction as an ordinary subdirectory, so it either
+    /// throws <c>IOException: Directory ... is not empty</c> - which is what a second player build
+    /// used to do, taking the build with it - or removes the files behind the link, which are the
+    /// user's game and not ours.
+    /// </remarks>
+    private static void DeleteTree(string path)
+    {
+        if (IsJunction(path)) { UnlinkJunction(path); return; }
+
+        foreach (string child in Directory.GetDirectories(path))
+        {
+            if (IsJunction(child)) { UnlinkJunction(child); }
+            else { DeleteTree(child); }
+        }
+        Directory.Delete(path, true);
+    }
+
+    /// <summary>
+    /// Removes a junction, leaving whatever it points at alone.
+    /// </summary>
+    /// <remarks>
+    /// Neither shape of the BCL call can be used here. Mono's <c>Directory.Delete(path, false)</c>
+    /// answers a reparse point with <c>UnauthorizedAccessException</c> - measured, not assumed: the
+    /// first version of this helper did exactly that and the build died on it - and with
+    /// <c>recursive: true</c> it descends through the link, which is the one thing that must not
+    /// happen, because the link is the installation's 16.47 GB of bundles. <c>RemoveDirectory</c> is
+    /// the call that takes the name away and nothing else. (.NET Framework's <c>Directory.Delete</c>
+    /// does the same thing, which is why the PowerShell script that makes these links can use it.)
+    /// </remarks>
+    private static void UnlinkJunction(string path)
+    {
+        if (!RemoveDirectory(path))
+        {
+            throw new IOException(string.Format("could not unlink {0}: Win32 error {1}",
+                                                path, Marshal.GetLastWin32Error()));
+        }
+    }
+
+    private static bool IsJunction(string path)
+    {
+        return (new DirectoryInfo(path).Attributes & FileAttributes.ReparsePoint) != 0;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool RemoveDirectory(string path);
+
     private static long SizeOf(string directory)
     {
         long total = 0;
-        foreach (FileInfo file in new DirectoryInfo(directory).GetFiles("*", SearchOption.AllDirectories))
+        foreach (string file in Directory.GetFiles(directory))
         {
-            total += file.Length;
+            total += new FileInfo(file).Length;
+        }
+        // Junctions are skipped for the same reason they are unlinked: the player's own size does
+        // not include the gigabytes of game data that happen to be linked next to it.
+        foreach (string child in Directory.GetDirectories(directory))
+        {
+            if (!IsJunction(child)) { total += SizeOf(child); }
         }
         return total;
     }

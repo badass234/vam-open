@@ -46,6 +46,7 @@ VaM_Rebuild/Builds/
 VaM_Rebuild/Logs/
 VaM_Rebuild/UserSettings/
 VaM_Rebuild/prefs.json
+VaM_Rebuild/version
 VaM_Rebuild/*.csproj
 VaM_Rebuild/*.sln
 VaM_Rebuild/*.unityproj

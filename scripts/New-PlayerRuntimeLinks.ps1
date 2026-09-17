@@ -19,8 +19,8 @@ would only drift away from the install. Saves, AddonPackagesUserPrefs and prefs.
 the player, so they are COPIED instead: a run of this build must not modify the installation it
 borrows data from.
 
-Two of the copies are not about files at all - they are the difference between a player that runs and
-a player that runs the same game the editor does:
+Three of the copies are not about files at all - they are the difference between a player that runs
+and a player that runs the same game the editor does:
 
   * SuperController reads keyFilePath, Keys/1.21/key.json, relative to the working directory. Without
     that file the game registers only its restricted package set - the player scanned 9 of the 18
@@ -28,7 +28,13 @@ a player that runs the same game the editor does:
     It is copied and refreshed on every run, a stale key being exactly the 9-against-18 symptom;
   * prefs.json holds renderScale, msaaLevel, glowEffects and smoothPasses. Seeding it from the
     installation is what makes a player-against-installation comparison mean anything, since the same
-    scene renders differently at glowEffects High and glowEffects Low.
+    scene renders differently at glowEffects High and glowEffects Low;
+  * version is the installation's claim about itself, and SuperController.SyncVersion turns it into
+    more than the line of text it feeds: the VAM_<major>_<minor>_<patch>_<build> defines that the
+    content and the plugins branch on are derived from it. Without the file those defines come from
+    the editor's imitate version 1.20.0.3 while the label drops its second half, so the same package
+    can take a different branch in the two runs. Refreshed on every run, because an installation update
+    must not be reported as the version it used to be.
 
 A built player is useless without these links, and the links are useless without an install - this
 script is the "point it at your own installation" step, and it is all it takes.
@@ -181,6 +187,25 @@ function Sync-LocalCopy([string]$Source, [string]$Destination, [string]$Label) {
     else { Write-Host "$Label already in place" -ForegroundColor Green }
 }
 
+# The version file is refreshed rather than seeded for the same reason, and only written when the
+# bytes actually differ - it is encrypted, so there is nothing to compare by reading.
+function Sync-VersionFile([string]$Source, [string]$Destination) {
+    if (-not (Test-Path -LiteralPath $Source)) {
+        Write-Warning "no version file at $Source - the player will gate content as the 1.20.0.3 fallback"
+        return
+    }
+
+    if (Test-Path -LiteralPath $Destination) {
+        if ((Get-FileHash -LiteralPath $Source).Hash -eq (Get-FileHash -LiteralPath $Destination).Hash) {
+            Write-Host 'the version file already matches the installation' -ForegroundColor Green
+            return
+        }
+    }
+
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    Write-Host 'refreshed the version file: the VAM_* defines the content gates on follow it' -ForegroundColor Green
+}
+
 # Unlike Saves, the key file is refreshed rather than seeded: it is 25 bytes, the player writes to it
 # only when a key is typed into the game's own key screen, and a key that silently went stale costs
 # half the packages. A junction left behind by an earlier version of this script is replaced by the
@@ -206,7 +231,7 @@ foreach ($entry in $links) {
 }
 
 if ($Remove) {
-    Write-Host 'the local Saves, AddonPackagesUserPrefs, prefs.json and Keys copies are left as they are (player data, not links)'
+    Write-Host 'the local Saves, AddonPackagesUserPrefs, prefs.json, Keys and version copies are left as they are (player data, not links)'
     exit 0
 }
 
@@ -226,10 +251,12 @@ foreach ($entry in $copies) {
 
 Sync-RefreshedCopy -Source $keysSource -Destination (Join-Path $PlayerPath 'Keys') -Label 'key file'
 
+Sync-VersionFile -Source (Join-Path $InstallRoot 'version') -Destination (Join-Path $PlayerPath 'version')
+
 Write-Host ''
 Write-Host ("player ready: {0}" -f $exe) -ForegroundColor Green
 Write-Host ("  {0} var packages, Custom and the bundles are the installation's own" -f $packages.Count)
-Write-Host '  Saves, AddonPackagesUserPrefs, prefs.json and Keys are copies inside the player folder'
+Write-Host '  Saves, AddonPackagesUserPrefs, prefs.json, Keys and version are copies inside the player folder'
 if (Test-Path -LiteralPath (Join-Path $PlayerPath 'Keys')) {
     Write-Host '  the key file is in place: the game should register every package it scans for' -ForegroundColor Green
 }

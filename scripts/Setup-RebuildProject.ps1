@@ -24,7 +24,9 @@
 
     See docs\rebuild-project.md for the reasoning and the known dangling references.
 
-    Re-runnable: the target directory is rebuilt from scratch on every invocation.
+    Re-runnable: the target directory is rebuilt from scratch on every invocation, and the two
+    things inside it that are not the export's are carried across that wipe - Assets\Editor,
+    which is ours, and the StreamingAssets junction to the installation's bundles.
 
 .EXAMPLE
     scripts\Setup-RebuildProject.ps1
@@ -56,8 +58,38 @@ $SourceDir  = (Resolve-Path -LiteralPath $SourceDir).Path
 $ManagedDir = (Resolve-Path -LiteralPath $ManagedDir).Path
 $TargetDir  = [System.IO.Path]::GetFullPath($TargetDir)
 
+# Assets\Editor is not from the export - RebuildGate, RebuildPlayer and VaMInspector are ours, and
+# they are tracked. Re-runnable means the wipe has to carry them across it: without the stash a second
+# run deletes the editor assembly that both gates look their entry point up in, and the compile gate
+# then reports "the gate method never ran" - which reads like a broken project and is not one.
+$editorStash   = Join-Path ([System.IO.Path]::GetTempPath()) ('vamopen-editor-' + [guid]::NewGuid().ToString('N'))
+$stashedEditor = Join-Path $editorStash 'Editor'
+
+# <project>\StreamingAssets is a junction to the installation's 16.47 GB of bundles, created by
+# New-StreamingAssetsLink.ps1 after setup and easy to lose. It is unlinked before the wipe and
+# never walked through: deleting a tree that *contains* a junction recursively deletes the files
+# behind it, and those files are the user's game, not ours. The target is read back off the link,
+# so no install root is needed here, and the link is re-made once the export is back in place.
+$bundleLink   = Join-Path $TargetDir 'StreamingAssets'
+$bundleTarget = $null
+
 if (Test-Path -LiteralPath $TargetDir) {
     Write-Host "Removing existing $TargetDir"
+    if (Test-Path -LiteralPath (Join-Path $TargetDir 'Assets\Editor')) {
+        New-Item -ItemType Directory -Path $editorStash -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $TargetDir 'Assets\Editor') -Destination $stashedEditor -Recurse
+        $editorMeta = Join-Path $TargetDir 'Assets\Editor.meta'
+        if (Test-Path -LiteralPath $editorMeta) {
+            Copy-Item -LiteralPath $editorMeta -Destination (Join-Path $editorStash 'Editor.meta')
+        }
+        Write-Host ("  stashed Assets\Editor ({0} files)" -f @(Get-ChildItem -LiteralPath $stashedEditor -Recurse -File).Count)
+    }
+    $bundleItem = Get-Item -LiteralPath $bundleLink -Force -ErrorAction SilentlyContinue
+    if ($bundleItem -and ($bundleItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        $bundleTarget = @($bundleItem.Target)[0]
+        [IO.Directory]::Delete($bundleLink, $false)
+        Write-Host "  unlinked StreamingAssets -> $bundleTarget"
+    }
     Remove-Item -LiteralPath $TargetDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $TargetDir | Out-Null
@@ -68,6 +100,25 @@ Copy-Item -LiteralPath (Join-Path $ExportDir 'Assets')         -Destination $Tar
 Copy-Item -LiteralPath (Join-Path $ExportDir 'Packages')       -Destination $TargetDir -Recurse
 Copy-Item -LiteralPath (Join-Path $ExportDir 'ProjectSettings') -Destination $TargetDir -Recurse
 Write-Host "Copied AssetRipper export"
+
+# Back over whatever the export had there. The contents are copied rather than the directory, because
+# the destination may already exist and PowerShell would then nest the source inside it.
+if (Test-Path -LiteralPath $stashedEditor) {
+    $editorDir = Join-Path $TargetDir 'Assets\Editor'
+    New-Item -ItemType Directory -Path $editorDir -Force | Out-Null
+    Get-ChildItem -LiteralPath $stashedEditor -Force | Copy-Item -Destination $editorDir -Recurse -Force
+    $stashedMeta = Join-Path $editorStash 'Editor.meta'
+    if (Test-Path -LiteralPath $stashedMeta) {
+        Copy-Item -LiteralPath $stashedMeta -Destination (Join-Path $TargetDir 'Assets\Editor.meta') -Force
+    }
+    Remove-Item -LiteralPath $editorStash -Recurse -Force
+    Write-Host ("restored Assets\Editor ({0} files)" -f @(Get-ChildItem -LiteralPath $editorDir -Recurse -File).Count)
+}
+
+if ($bundleTarget) {
+    New-Item -ItemType Junction -Path $bundleLink -Target $bundleTarget | Out-Null
+    Write-Host ("relinked StreamingAssets -> {0}" -f $bundleTarget)
+}
 
 # The export does not carry a usable scripting runtime setting, and the default is the wrong one.
 # VaM shipped with the .NET 4.x runtime, and the decompiled sources are C# 6 (interpolated strings,
@@ -296,8 +347,20 @@ $shaderBlobs = Join-Path $PSScriptRoot '..\artifacts\shader-blobs'
 if ($python -and (Test-Path -LiteralPath $shaderGen)) {
     if (Test-Path -LiteralPath $shaderBlobs) {
         Write-Host ''
-        & $python.Source $shaderGen
-        if ($LASTEXITCODE -ne 0) { throw 'Shader generation failed' }
+        # New-VaMShaders.py reports the compute shaders it leaves pending on stderr, and this
+        # script runs with ErrorActionPreference 'Stop': that note arrives as a NativeCommandError
+        # and aborts setup before 'Project ready'. The exit code is the verdict, the text is just
+        # text, so the note is echoed rather than allowed to stop the rebuild.
+        $nativePreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $shaderLog = & $python.Source $shaderGen 2>&1
+            $shaderExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $nativePreference
+        }
+        $shaderLog | ForEach-Object { Write-Host "  $_" }
+        if ($shaderExitCode -ne 0) { throw 'Shader generation failed' }
     } else {
         Write-Warning ("No extracted shader bytecode at $shaderBlobs; Assets\Shader keeps the " +
                        "AssetRipper placeholders and characters will lose their pose. Run: " +
