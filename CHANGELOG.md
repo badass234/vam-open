@@ -51,6 +51,11 @@ Two harness traps were paid for and closed: `Setup-RebuildProject.ps1`'s wipe to
 packages and dropped every packaged scene load in silence (`requested=True, taken=False,
 refused=False`); setup now re-makes the links and `Invoke-SmokeTest.ps1` refuses to start without them.
 
+Release `0.6.0-alpha`: compile gate `verdict: OK`, 0 unique errors; player `verdict: OK`,
+**281 890 175 B**, and the panel string is in the shipped assembly as a literal -
+`VAMOpen_Data\Managed\Assembly-CSharp.dll` holds `VaMOpen 0.6.0-alpha` immediately followed by
+`(content version: ` and no longer contains `0.5.0-alpha`.
+
 ## 0.5.0-alpha - 2026-09-17
 
 Self-shadowing was missing because it did not exist: `VAM_LIGHT_ATTENUATION` was never transcribed, so point
