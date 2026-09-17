@@ -60,7 +60,11 @@
 //    * the additive pass keeps a plain Lambert diffuse plus the same highlight
 //      lobe as the base pass: its DXBC blob is a separate program for
 //      point/spot lights, so the response is derived rather than transcribed
-//      (the two were then compared instruction by instruction and agree).
+//      (the two were then compared instruction by instruction and agree);
+//    * the additive pass's alpha is not one value for all of it
+//      (VAM_ADD_ALPHA_SURFACE, set per pass by New-VaMShaders.py): where the
+//      pass blends `SrcAlpha One` the shipped program writes the surface's own
+//      alpha, and the literal 1.0 only where it blends `One One`.
 //  Everything that decides the pose, the silhouette, the surface response and
 //  the base shading -- the structured-buffer skinning, the normals, the
 //  Fresnel/highlight/reflection curves, the SH ambient, the shadow coordinates
@@ -926,8 +930,9 @@ float3 VamShade(vam_v2f i, vam_surface s, float3 V) {
     // feeds into it.  _ExposureIBL.w is the master exposure on the *indirect*
     // half only: the shipped blob multiplies the accumulated reflection and
     // ambient by it and then adds the untouched direct term
-    // (`mad o0.xyz, r2.xyzx, cb0[74].wwww, r0.xyzx`, the last arithmetic
-    // instruction before `mov o0.w, l(1)`).
+    // (`mad o0.xyz, r2.xyzx, cb0[74].wwww, r0.xyzx` -- the last arithmetic
+    // instruction of the opaque base pass, whose blob then writes
+    // `mov o0.w, l(1.000000)`).
     float indirect = 1.0 - VAM_IBLFilter;
     float3 reflectionTerm = reflection * indirect * _ExposureIBL.w;
     float3 ambientTerm = ambient * (indirect * s.albedo) * _ExposureIBL.w;
@@ -955,6 +960,18 @@ fixed4 VamFragment(vam_v2f i) : SV_Target {
 // then has nothing but the diffuse and highlight lobes.  (The blob is a
 // separate DXBC program, so this response is derived from the base pass, but it
 // was verified equivalent to `..._268` instruction by instruction.)
+//
+// The alpha slot is the pass's own business, and the shipped additive programs
+// disagree about it exactly where it becomes visible.  A pass whose colour blend
+// reads the alpha -- `Blend SrcAlpha One`, the transparent families -- writes the
+// surface's own alpha there, the same expression the base pass writes, so a
+// material that is meant to be invisible in this pass stays invisible: the male
+// cornea carries `_Color.a = 0` and `_AlphaAdjust = 0`, and lighting it up with
+// `1.0` painted the whole lens in its own colour (measured at 32470 pixels of
+// the frame around the pupil, against 0 for the original).  Every other additive
+// pass writes the constant `1.0`, which is what its blob's `mov o0.w, l(1.000000)`
+// does.  scripts/New-VaMShaders.py tells the two apart from the blend state and
+// sets VAM_ADD_ALPHA_SURFACE on the first group.
 fixed4 VamFragmentAdd(vam_v2f i) : SV_Target {
     vam_surface s = VamSurface(i);
     float3 V = normalize(i.posWS - _WorldSpaceCameraPos);
@@ -970,7 +987,11 @@ fixed4 VamFragmentAdd(vam_v2f i) : SV_Target {
                                   specScale);
     col = col * _LightColor0.rgb * atten * _ExposureIBL.w;
 
+#ifdef VAM_ADD_ALPHA_SURFACE
+    return fixed4(col, s.alpha);
+#else
     return fixed4(col, 1.0);
+#endif
 }
 
 // -----------------------------------------------------------------------------

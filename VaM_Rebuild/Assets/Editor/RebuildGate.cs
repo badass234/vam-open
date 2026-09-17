@@ -765,6 +765,15 @@ public static class RebuildGate
         // Two looks at the posed body, taken from the run's clock rather than in one pass: see the
         // note on AnimationSampleSeconds. The report waits for the second sample instead of writing
         // a still frame down as "the animation does not run".
+        // The eye probe needs frames of its own - see the note on EyeFrameProbe - so the run waits for it
+        // instead of reporting a half-probed eye.
+        StartEyeFrameProbe();
+        EyeFrameProbeTick();
+        if (!eyeFrameFinished)
+        {
+            return;
+        }
+
         if (playAnimationBones == null)
         {
             SampleAnimation();
@@ -3204,6 +3213,1366 @@ public static class RebuildGate
         return false;
     }
 
+    // TEMP probe: what each layer of an eye puts on the screen. A material dump names the inputs, and
+    // naming an input is not measuring it - an eye is half a dozen translucent layers stacked on one
+    // another, so the only way to say which of them paints an iris white is to take one layer away at a
+    // time and photograph what is left. The same measurement answers the one question the renderer list
+    // cannot: which of the small meshes floating around a head is painting the black balls.
+    private static readonly string[] EyeLayers =
+    {
+        "EyeReflection", "Lacrimal", "Tear", "Cornea", "Irises", "Pupil", "Sclera", "Eyelash"
+    };
+
+    private static readonly string[] StrayTokens =
+    {
+        "eye", "cornea", "sclera", "iris", "pupil", "lash", "tear"
+    };
+
+    private static string EyeProbeReport(DAZSkinV2 subject)
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- TEMP eye probe -----");
+        report.AppendLine("  Every pixel number below is nought and means nothing: this pass switches a layer off and");
+        report.AppendLine("  takes its shot inside one editor tick, and the frame it photographs was drawn before the");
+        report.AppendLine("  switch. The listing it prints is still worth reading; the measurements come from the");
+        report.AppendLine("  eyeframes file, which walks the same layers over real frames.");
+        try
+        {
+            report.AppendLine(EyeProbeBody(subject));
+        }
+        catch (Exception exception)
+        {
+            // The probe switches submeshes off and on again, so an exception that escapes it would
+            // leave a body part missing from every picture taken after this point - and it would cost
+            // the whole report, not this section of it.
+            report.AppendLine(string.Format("  the probe threw {0}: {1}", exception.GetType().Name, exception.Message));
+            report.AppendLine(exception.StackTrace == null ? string.Empty : exception.StackTrace.Trim());
+        }
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    private static string EyeProbeBody(DAZSkinV2 subject)
+    {
+        StringBuilder report = new StringBuilder();
+
+        int probed = 0;
+        Vector3 mid = Vector3.zero;
+        bool haveMid = false;
+        foreach (DAZSkinV2 skin in SceneObjects<DAZSkinV2>())
+        {
+            if (skin == null || !skin.gameObject.activeInHierarchy || skin.dazMesh == null)
+            {
+                continue;
+            }
+
+            Mesh mesh = skin.GetMesh();
+            int iris = SubMeshNamed(skin, "Irises");
+            if (mesh == null || iris < 0 || probed >= 2)
+            {
+                continue;
+            }
+
+            probed++;
+            report.AppendLine(EyeProbeOfSkin(skin, mesh, iris));
+            if (!haveMid)
+            {
+                Bounds box;
+                bool world;
+                Vector3[] drawn = DrawnVertices(skin, out world);
+                if (SubMeshBounds(mesh, iris, drawn, world ? Matrix4x4.identity : skin.transform.localToWorldMatrix, out box))
+                {
+                    mid = box.center;
+                    haveMid = true;
+                }
+            }
+        }
+
+        if (probed == 0)
+        {
+            report.AppendLine("  no skin in the scene has a submesh called Irises");
+        }
+
+        report.AppendLine(StrayMeshProbe(subject, mid, haveMid));
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>
+    /// One skin's eye: where it is on screen, what its layers are, and what each of them is worth in
+    /// pixels. The side the camera stands on is measured rather than assumed - the iris layer has to make
+    /// a difference from one side, so the series runs from whichever side it makes a difference from.
+    /// </summary>
+    private static string EyeProbeOfSkin(DAZSkinV2 skin, Mesh mesh, int iris)
+    {
+        StringBuilder report = new StringBuilder();
+        bool world;
+        Vector3[] drawn = DrawnVertices(skin, out world);
+        Bounds irisBox;
+        if (!SubMeshBounds(mesh, iris, drawn, world ? Matrix4x4.identity : skin.transform.localToWorldMatrix, out irisBox))
+        {
+            return string.Format("  {0}: the Irises submesh has no triangles", TransformPath(skin.transform));
+        }
+
+        Vector3 normal = SubMeshNormal(skin, mesh, iris);
+        string slug = SlugTail(TransformPath(skin.transform));
+        report.AppendLine(string.Format(
+            "  {0}: irises {1} at {2}, facing {3}, measured on {4}",
+            slug, irisBox.size.ToString("F3"), irisBox.center.ToString("F3"), normal.ToString("F3"),
+            world ? "the drawn vertices" : "the CPU mesh, which an unposed character leaves behind"));
+        report.AppendLine(EyeLayerLines(skin));
+
+        float radius = Mathf.Max(irisBox.extents.magnitude, 0.005f);
+        float distance = Mathf.Max(0.05f, radius / Mathf.Tan(15f * Mathf.Deg2Rad) * 1.2f);
+
+        GameObject holder = null;
+        try
+        {
+            Camera camera;
+            holder = ProbeCamera(irisBox.center, normal, distance, 30f, out camera);
+
+            Color[] frontFrame;
+            string frontFile = ProbeShot(camera, 512, 512, ".eye-" + slug + "-front", out frontFrame);
+            Aim(camera, irisBox.center, -normal, distance);
+            Color[] backFrame;
+            string backFile = ProbeShot(camera, 512, 512, ".eye-" + slug + "-back", out backFrame);
+            report.AppendLine(string.Format(
+                "    from the front {0}, mean {1}; from behind {2}, mean {3}",
+                ShotPath(frontFile), MeanText(frontFrame), ShotPath(backFile), MeanText(backFrame)));
+
+            SetSubMeshEnabled(skin, iris, false);
+            Aim(camera, irisBox.center, normal, distance);
+            Color[] frontGone;
+            string frontGoneFile = ProbeShot(camera, 512, 512, ".eye-" + slug + "-no-iris", out frontGone);
+            Aim(camera, irisBox.center, -normal, distance);
+            Color[] backGone;
+            string backGoneFile = ProbeShot(camera, 512, 512, ".eye-" + slug + "-no-iris-back", out backGone);
+            SetSubMeshEnabled(skin, iris, true);
+
+            bool fromFront = ChangedFraction(frontFrame, frontGone) >= ChangedFraction(backFrame, backGone);
+            report.AppendLine(string.Format(
+                "    irises off changes {0:P2} of the frame from the front {1} and {2:P2} from behind {3}, so the series runs from {4}",
+                ChangedFraction(frontFrame, frontGone), ShotPath(frontGoneFile),
+                ChangedFraction(backFrame, backGone), ShotPath(backGoneFile),
+                fromFront ? "the front" : "behind"));
+
+            Aim(camera, irisBox.center, fromFront ? normal : -normal, distance);
+            Color[] baseline = fromFront ? frontFrame : backFrame;
+            for (int i = 0; i < EyeLayers.Length; i++)
+            {
+                int index = SubMeshNamed(skin, EyeLayers[i]);
+                if (index < 0)
+                {
+                    report.AppendLine(string.Format("    no submesh called {0}", EyeLayers[i]));
+                    continue;
+                }
+
+                SetSubMeshEnabled(skin, index, false);
+                Color[] frame;
+                string file = ProbeShot(camera, 512, 512,
+                    string.Format(".eye-{0}-no-{1}", slug, EyeLayers[i]), out frame);
+                SetSubMeshEnabled(skin, index, true);
+                report.AppendLine(string.Format("    without {0} (submesh {1}, {2}): {3}",
+                    EyeLayers[i], index, ShotPath(file), PixelDiff(baseline, frame)));
+            }
+
+            report.AppendLine(string.Format("    the six overlays gone ({0}): {1}",
+                string.Join(" ", EyesOverlayLayers),
+                WithoutLayers(skin, camera, slug + "-no-overlays", baseline, EyesOverlayLayers)));
+            List<string> all = new List<string>(EyesOverlayLayers);
+            all.Add("Irises");
+            report.AppendLine(string.Format("    the overlays and the irises gone ({0}): {1}",
+                string.Join(" ", all),
+                WithoutLayers(skin, camera, slug + "-no-overlays-no-irises", baseline, all.ToArray())));
+            report.AppendLine(string.Format("    every eye layer gone ({0}): {1}",
+                string.Join(" ", EyeLayers),
+                WithoutLayers(skin, camera, slug + "-no-eye-at-all", baseline, EyeLayers)));
+        }
+        finally
+        {
+            if (holder != null)
+            {
+                UnityEngine.Object.DestroyImmediate(holder);
+            }
+
+            for (int i = 0; i < EyeLayers.Length; i++)
+            {
+                SetSubMeshEnabled(skin, SubMeshNamed(skin, EyeLayers[i]), true);
+            }
+        }
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    private const int EyeFrameSettleFrames = 3;
+    private const int EyeFrameSkinLimit = 4;
+    private const int EyeFrameSize = 512;
+    private const double EyeFrameSeconds = 45.0;
+
+    /// <summary>
+    /// One skin's eye probe spread over real frames. A submesh switched off inside a single editor tick
+    /// is still on screen, because the pixels come from the draw list the next LateUpdate submits: a shot
+    /// taken in the same tick as the switch shows the frame from before it. Measured that way every layer
+    /// of the eye comes out as "no pixels", which is the probe's fault and not the eye's.
+    /// </summary>
+    private sealed class EyeFrameProbe
+    {
+        public DAZSkinV2 Skin;
+        public Mesh Mesh;
+        public int Iris;
+        public string Slug;
+        public GameObject Holder;
+        public Camera Camera;
+        public Vector3 Normal;
+        public float Distance;
+        public Bounds Box;
+        public Vector3 Anchor;
+        public Vector3 Axis;
+        public string AimText = "no aim recorded";
+        public float IrisPixels;
+        public Color[] Baseline;
+        public Color[] NothingFrame;
+        public bool[] MeshEnabledAtStart;
+        public readonly List<string> Labels = new List<string>();
+        public readonly List<int[]> Groups = new List<int[]>();
+        public readonly List<string> SoloLayers = new List<string>();
+        public int Solo;
+        public int Step;
+        public int Phase;
+        public int DueFrame;
+        public int Shots;
+    }
+
+    private static readonly StringBuilder EyeFrameReportText = new StringBuilder();
+    private static readonly List<EyeFrameProbe> EyeFrameQueue = new List<EyeFrameProbe>();
+    private static EyeFrameProbe eyeFrameCurrent;
+    private static bool eyeFrameStarted;
+    private static bool eyeFrameFinished = true;
+    private static double eyeFrameDeadline;
+
+    /// <summary>Starts the frame-spread eye probe once, on the skins that have an eye to probe.</summary>
+    private static void StartEyeFrameProbe()
+    {
+        if (eyeFrameStarted)
+        {
+            return;
+        }
+
+        eyeFrameStarted = true;
+        eyeFrameFinished = false;
+        eyeFrameDeadline = EditorApplication.timeSinceStartup + EyeFrameSeconds;
+        EyeFrameReportText.AppendLine("----- eye probe, one layer at a time over real frames -----");
+
+        List<DAZSkinV2> skins = new List<DAZSkinV2>();
+        foreach (DAZSkinV2 skin in SceneObjects<DAZSkinV2>())
+        {
+            if (skin == null || !skin.gameObject.activeInHierarchy || skin.dazMesh == null)
+            {
+                continue;
+            }
+
+            if (skin.GetMesh() == null || SubMeshNamed(skin, "Irises") < 0 || skins.Contains(skin))
+            {
+                continue;
+            }
+
+            skins.Add(skin);
+        }
+
+        // The male the report was written for goes first, so a run cut short still answers his eye.
+        skins.Sort(delegate(DAZSkinV2 left, DAZSkinV2 right)
+        {
+            return EyeFramePriority(left).CompareTo(EyeFramePriority(right));
+        });
+
+        for (int i = 0; i < skins.Count && i < EyeFrameSkinLimit; i++)
+        {
+            EyeFrameProbe probe = BuildEyeFrameProbe(skins[i]);
+            if (probe != null)
+            {
+                EyeFrameQueue.Add(probe);
+            }
+        }
+
+        EyeFrameReportText.AppendLine(string.Format(
+            "  {0} skin(s) with an irises submesh, {1} of them queued", skins.Count, EyeFrameQueue.Count));
+        FreezeEyeFrameScene();
+        WriteEyeFrameReport();
+    }
+
+    private static float eyeFrameSceneTimeScale = 1f;
+    private static bool eyeFrameSceneFrozen;
+
+    /// <summary>
+    /// The scene animates its people, so two shots taken at different moments differ by the pose alone and
+    /// no layer can be told from another. Time is stopped for the length of the probe and put back after it.
+    /// </summary>
+    private static void FreezeEyeFrameScene()
+    {
+        if (EyeFrameQueue.Count == 0 || eyeFrameSceneFrozen)
+        {
+            return;
+        }
+
+        eyeFrameSceneTimeScale = Time.timeScale;
+        Time.timeScale = 0f;
+        eyeFrameSceneFrozen = true;
+        EyeFrameReportText.AppendLine(string.Format(
+            "  time stopped (was {0:F2}) so the pose holds still, and put back when the probe is done",
+            eyeFrameSceneTimeScale));
+    }
+
+    private static void ThawEyeFrameScene()
+    {
+        if (!eyeFrameSceneFrozen)
+        {
+            return;
+        }
+
+        Time.timeScale = eyeFrameSceneTimeScale;
+        eyeFrameSceneFrozen = false;
+    }
+
+    private static int EyeFramePriority(DAZSkinV2 skin)
+    {
+        string path = TransformPath(skin.transform);
+        if (path.IndexOf("male1", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return 0;
+        }
+
+        if (path.IndexOf("male", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return 1;
+        }
+
+        if (path.IndexOf("female10", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return 2;
+        }
+
+        return path.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0 ? 3 : 4;
+    }
+
+    private static EyeFrameProbe BuildEyeFrameProbe(DAZSkinV2 skin)
+    {
+        Mesh mesh = skin.GetMesh();
+        int iris = SubMeshNamed(skin, "Irises");
+        if (mesh == null || iris < 0)
+        {
+            return null;
+        }
+
+        bool world;
+        Vector3[] drawn = DrawnVertices(skin, out world);
+        Bounds box;
+        if (!SubMeshBounds(mesh, iris, drawn, world ? Matrix4x4.identity : skin.transform.localToWorldMatrix, out box))
+        {
+            return null;
+        }
+
+        EyeFrameProbe probe = new EyeFrameProbe();
+        probe.Skin = skin;
+        probe.Mesh = mesh;
+        probe.Iris = iris;
+        probe.Slug = SlugTail(TransformPath(skin.transform));
+        probe.Normal = SubMeshNormal(skin, mesh, iris);
+        probe.Box = box;
+
+        // The irises submesh holds both eyes and their box is centred on the bridge of the nose, so a camera
+        // aimed at the box looks at the face. One eye is aimed at instead, off its own bone, and the spot the
+        // irises geometry of that eye sits on is where the camera looks and what it stands on.
+        Transform bone = EyeBoneTransform(skin, "rEye");
+        if (bone == null)
+        {
+            bone = EyeBoneTransform(skin, "lEye");
+        }
+
+        Matrix4x4 toWorld = world ? Matrix4x4.identity : skin.transform.localToWorldMatrix;
+        Vector3 irisCentre;
+        Vector3 axis;
+        float irisRadius;
+        if (EyeGeometryAim(mesh, iris, drawn, toWorld, bone, out irisCentre, out axis, out irisRadius))
+        {
+            probe.AimText = string.Format("aimed at the irises geometry around {0} at {1}, axis {2}, radius {3:F4} m",
+                bone.name, irisCentre.ToString("F3"), axis.ToString("F2"), irisRadius);
+        }
+        else
+        {
+            irisCentre = box.center;
+            axis = probe.Normal;
+            irisRadius = Mathf.Max(box.extents.magnitude, 0.005f);
+            probe.AimText = string.Format("aimed at the irises box at {0} - {1}",
+                box.center.ToString("F3"), bone == null ? "the skin has no eye bone" : "its geometry is not around that bone");
+        }
+
+        probe.Anchor = irisCentre;
+        probe.Axis = axis;
+        probe.Distance = Mathf.Max(0.03f, irisRadius / Mathf.Tan(15f * Mathf.Deg2Rad) * 2.2f);
+        probe.IrisPixels = irisRadius / (probe.Distance * Mathf.Tan(15f * Mathf.Deg2Rad)) * (EyeFrameSize * 0.5f);
+        probe.Holder = ProbeCamera(irisCentre, axis, probe.Distance, 30f, out probe.Camera);
+        probe.AimText = string.Format("{0}, {1:F0} px across in the frame, camera {2:F3} m out",
+            probe.AimText, probe.IrisPixels, probe.Distance);
+
+        for (int i = 0; i < EyeLayers.Length; i++)
+        {
+            int index = SubMeshNamed(skin, EyeLayers[i]);
+            if (index < 0)
+            {
+                continue;
+            }
+
+            probe.Labels.Add(EyeLayers[i]);
+            probe.Groups.Add(new int[] { index });
+            probe.SoloLayers.Add(EyeLayers[i]);
+        }
+
+        probe.MeshEnabledAtStart = new bool[mesh.subMeshCount];
+        for (int i = 0; i < mesh.subMeshCount; i++)
+        {
+            probe.MeshEnabledAtStart[i] = skin.dazMesh.materialsEnabled == null
+                || i >= skin.dazMesh.materialsEnabled.Length
+                || skin.dazMesh.materialsEnabled[i];
+        }
+
+        AddEyeFrameGroup(probe, "overlays", EyesOverlayLayers);
+        List<string> overlaysAndIris = new List<string>(EyesOverlayLayers);
+        overlaysAndIris.Add("Irises");
+        AddEyeFrameGroup(probe, "overlays and irises", overlaysAndIris.ToArray());
+        AddEyeFrameGroup(probe, "every eye layer", EyeLayers);
+        return probe;
+    }
+
+    private static void AddEyeFrameGroup(EyeFrameProbe probe, string label, string[] tokens)
+    {
+        List<int> indices = new List<int>();
+        foreach (string token in tokens)
+        {
+            int index = SubMeshNamed(probe.Skin, token);
+            if (index >= 0 && !indices.Contains(index))
+            {
+                indices.Add(index);
+            }
+        }
+
+        if (indices.Count > 0)
+        {
+            probe.Labels.Add(label);
+            probe.Groups.Add(indices.ToArray());
+        }
+    }
+
+    /// <summary>Moves the frame-spread eye probe on by one step, once the frame it waits for has come.</summary>
+    private static void EyeFrameProbeTick()
+    {
+        if (eyeFrameFinished)
+        {
+            return;
+        }
+
+        if (EditorApplication.timeSinceStartup > eyeFrameDeadline)
+        {
+            EyeFrameReportText.AppendLine("  the probe ran out of time and stopped, so the layers it did not reach are unmeasured");
+            FinishEyeFrameProbe();
+            return;
+        }
+
+        if (eyeFrameCurrent == null)
+        {
+            if (EyeFrameQueue.Count == 0)
+            {
+                FinishEyeFrameProbe();
+                return;
+            }
+
+            eyeFrameCurrent = EyeFrameQueue[0];
+            EyeFrameQueue.RemoveAt(0);
+            EyeFrameReportText.AppendLine(string.Format("  {0}: irises box {1} wide at {2}, {3} submeshes, {4} steps to walk",
+                eyeFrameCurrent.Slug, eyeFrameCurrent.Box.size.ToString("F3"),
+                eyeFrameCurrent.Box.center.ToString("F3"), eyeFrameCurrent.Mesh.subMeshCount,
+                eyeFrameCurrent.Labels.Count));
+            EyeFrameReportText.AppendLine("    " + eyeFrameCurrent.AimText);
+            WriteEyeFrameReport();
+            eyeFrameCurrent.Phase = 0;
+            eyeFrameCurrent.DueFrame = Time.frameCount + EyeFrameSettleFrames;
+            return;
+        }
+
+        if (Time.frameCount < eyeFrameCurrent.DueFrame)
+        {
+            return;
+        }
+
+        AdvanceEyeFrameProbe(eyeFrameCurrent);
+    }
+
+    private static void AdvanceEyeFrameProbe(EyeFrameProbe probe)
+    {
+        if (probe.Phase == 0)
+        {
+            probe.Baseline = EyeFrameShot(probe, "baseline");
+            probe.Phase = 1;
+            probe.DueFrame = Time.frameCount + EyeFrameSettleFrames;
+            return;
+        }
+
+        if (probe.Phase == 1)
+        {
+            if (probe.Step < probe.Labels.Count)
+            {
+                int[] indices = probe.Groups[probe.Step];
+                for (int i = 0; i < indices.Length; i++)
+                {
+                    SetSubMeshEnabled(probe.Skin, indices[i], false);
+                }
+
+                probe.Phase = 2;
+                probe.DueFrame = Time.frameCount + EyeFrameSettleFrames;
+                return;
+            }
+
+            // With every submesh of the skin off the frame is the hole the eye sits in, so the pass after
+            // this one can put one layer back at a time and read what that one layer paints on its own.
+            if (probe.NothingFrame == null)
+            {
+                SetAllSubMeshes(probe, false);
+                probe.Phase = 4;
+                probe.DueFrame = Time.frameCount + EyeFrameSettleFrames;
+                return;
+            }
+
+            if (probe.Solo < probe.SoloLayers.Count)
+            {
+                SetAllSubMeshes(probe, false);
+                SetSubMeshEnabled(probe.Skin, SubMeshNamed(probe.Skin, probe.SoloLayers[probe.Solo]), true);
+                probe.Phase = 5;
+                probe.DueFrame = Time.frameCount + EyeFrameSettleFrames;
+                return;
+            }
+
+            RestoreSubMeshes(probe);
+            probe.Phase = 3;
+            probe.DueFrame = Time.frameCount + EyeFrameSettleFrames;
+            return;
+        }
+
+        if (probe.Phase == 4)
+        {
+            probe.NothingFrame = EyeFrameShot(probe, "nothing");
+            EyeFrameReportText.AppendLine("    every submesh off - each layer is measured against this frame on its own");
+            EyeFrameReportText.AppendLine(EyeAlphaTerms(probe));
+            probe.Phase = 1;
+            probe.DueFrame = Time.frameCount + EyeFrameSettleFrames;
+            return;
+        }
+
+        if (probe.Phase == 5)
+        {
+            string token = probe.SoloLayers[probe.Solo];
+            Color[] frame = EyeFrameShot(probe, "only-" + token);
+            EyeFrameReportText.AppendLine(string.Format("    only {0}, against the empty skin: {1}",
+                token, PixelDiff(probe.NothingFrame, frame)));
+            probe.Solo++;
+            probe.Phase = 1;
+            probe.DueFrame = Time.frameCount + EyeFrameSettleFrames;
+            return;
+        }
+
+        if (probe.Phase == 2)
+        {
+            Color[] frame = EyeFrameShot(probe, "no-" + probe.Labels[probe.Step].Replace(' ', '-'));
+            EyeFrameReportText.AppendLine(string.Format("    without {0}: {1}",
+                probe.Labels[probe.Step], PixelDiff(probe.Baseline, frame)));
+            EyeFrameReportText.AppendLine("      " + EyeRegionDeltas(probe, frame));
+            int[] indices = probe.Groups[probe.Step];
+            for (int i = 0; i < indices.Length; i++)
+            {
+                SetSubMeshEnabled(probe.Skin, indices[i], true);
+            }
+
+            probe.Step++;
+            probe.Phase = 1;
+            probe.DueFrame = Time.frameCount + EyeFrameSettleFrames;
+            return;
+        }
+
+        // The control: every layer back on, measured against the baseline frame. Anything but an empty
+        // difference here means the probe left the eye changed, or the scene moved under it, and its own
+        // numbers are dirty.
+        Color[] control = EyeFrameShot(probe, "all-layers-back-on");
+        EyeFrameReportText.AppendLine(string.Format(
+            "    every layer back on against the baseline: {0} (the control)", PixelDiff(probe.Baseline, control)));
+        EyeFrameReportText.AppendLine("      " + EyeRegionDeltas(probe, control));
+        FinishEyeFrameSkin(probe);
+    }
+
+    /// <summary>What each ring of the eye frame reads as, so a colour can be named rather than guessed.</summary>
+    private static string EyeRegionDeltas(EyeFrameProbe probe, Color[] frame)
+    {
+        return string.Format("pupil {0} | iris {1} | sclera {2} | around {3}",
+            EyeRegionDelta(probe.Baseline, frame, probe.IrisPixels, 0f, 0.35f),
+            EyeRegionDelta(probe.Baseline, frame, probe.IrisPixels, 0.55f, 0.95f),
+            EyeRegionDelta(probe.Baseline, frame, probe.IrisPixels, 1.15f, 1.45f),
+            EyeRegionDelta(probe.Baseline, frame, probe.IrisPixels, 1.6f, 1.9f));
+    }
+
+    private static Color[] EyeFrameShot(EyeFrameProbe probe, string suffix)
+    {
+        Color[] pixels;
+        string file = ProbeShot(probe.Camera, EyeFrameSize, EyeFrameSize,
+            string.Format(".eyeframe-{0}-{1}", probe.Slug, suffix), out pixels);
+        probe.Shots++;
+        EyeFrameReportText.AppendLine(string.Format("      {0} mean {1}", ShotPath(file), MeanText(pixels)));
+        EyeFrameReportText.AppendLine(string.Format("        pupil {0} | iris {1} | sclera {2} | around {3}",
+            EyeRegionText(pixels, probe.IrisPixels, 0f, 0.35f),
+            EyeRegionText(pixels, probe.IrisPixels, 0.55f, 0.95f),
+            EyeRegionText(pixels, probe.IrisPixels, 1.15f, 1.45f),
+            EyeRegionText(pixels, probe.IrisPixels, 1.6f, 1.9f)));
+        WriteEyeFrameReport();
+        return pixels;
+    }
+
+    /// <summary>Switches every submesh of a probe's skin off, so one layer can be put back on its own.</summary>
+    private static void SetAllSubMeshes(EyeFrameProbe probe, bool enabled)
+    {
+        for (int i = 0; i < probe.Mesh.subMeshCount; i++)
+        {
+            SetSubMeshEnabled(probe.Skin, i, enabled);
+        }
+    }
+
+    /// <summary>Puts the skin's submesh flags back to what they were before the probe touched them.</summary>
+    private static void RestoreSubMeshes(EyeFrameProbe probe)
+    {
+        for (int i = 0; i < probe.MeshEnabledAtStart.Length; i++)
+        {
+            SetSubMeshEnabled(probe.Skin, i, probe.MeshEnabledAtStart[i]);
+        }
+    }
+
+    /// <summary>
+    /// The terms the alpha of each eye layer is made of. VamSurface computes
+    /// alpha = _Color.a * diffuse.a + _AlphaAdjust, so a layer that paints where it should be invisible is
+    /// either carrying a colour alpha that is meant to hide it, or an adjust that lifts it.
+    /// </summary>
+    private static string EyeAlphaTerms(EyeFrameProbe probe)
+    {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < probe.SoloLayers.Count; i++)
+        {
+            int index = SubMeshNamed(probe.Skin, probe.SoloLayers[i]);
+            Material material = index >= 0 && probe.Skin.GPUmaterials != null
+                                && index < probe.Skin.GPUmaterials.Length
+                ? probe.Skin.GPUmaterials[index]
+                : null;
+            if (material == null)
+            {
+                text.AppendLine(string.Format("      {0}: no material at slot {1}", probe.SoloLayers[i], index));
+                continue;
+            }
+
+            Texture main = material.HasProperty("_MainTex") ? material.GetTexture("_MainTex") : null;
+            text.AppendLine(string.Format(
+                "      {0} slot {1}: shader={2}, _Color.a={3:F2}, _AlphaAdjust={4:F2}, _MainTex={5}",
+                probe.SoloLayers[i], index, ShaderOf(material),
+                material.HasProperty("_Color") ? material.GetColor("_Color").a : 1f,
+                material.HasProperty("_AlphaAdjust") ? material.GetFloat("_AlphaAdjust") : 0f,
+                main == null ? "None" : main.name));
+        }
+
+        return text.ToString().TrimEnd('\r', '\n');
+    }
+
+    private static void FinishEyeFrameSkin(EyeFrameProbe probe)
+    {
+        RestoreSubMeshes(probe);
+
+        if (probe.Holder != null)
+        {
+            UnityEngine.Object.DestroyImmediate(probe.Holder);
+            probe.Holder = null;
+        }
+
+        EyeFrameReportText.AppendLine(string.Format("    {0}: {1} shot(s) written beside the log",
+            probe.Slug, probe.Shots));
+        WriteEyeFrameReport();
+        eyeFrameCurrent = null;
+    }
+
+    private static void FinishEyeFrameProbe()
+    {
+        if (eyeFrameCurrent != null)
+        {
+            FinishEyeFrameSkin(eyeFrameCurrent);
+        }
+
+        for (int i = 0; i < EyeFrameQueue.Count; i++)
+        {
+            FinishEyeFrameSkin(EyeFrameQueue[i]);
+        }
+
+        EyeFrameQueue.Clear();
+        eyeFrameFinished = true;
+        ThawEyeFrameScene();
+        EyeFrameReportText.AppendLine("----- eye probe in frames done -----");
+        WriteEyeFrameReport();
+        Debug.Log(EyeFrameReportText.ToString());
+    }
+
+    private static void WriteEyeFrameReport()
+    {
+        string path = LogPathBase();
+        if (path == null)
+        {
+            return;
+        }
+
+        File.WriteAllText(path + ".eyeframes.txt", EyeFrameReportText.ToString());
+    }
+
+    private static readonly string[] EyesOverlayLayers =
+    {
+        "EyeReflection", "Lacrimal", "Tear", "Cornea", "Eyelash"
+    };
+
+    /// <summary>Every eye layer of a skin, in the order the draw list stacks them, with its own material.</summary>
+    private static string EyeLayerLines(DAZSkinV2 skin)
+    {
+        StringBuilder report = new StringBuilder();
+        Material[] named = skin.dazMesh.materials;
+        for (int i = 0; i < named.Length; i++)
+        {
+            if (named[i] == null || !MentionsToken(named[i].name, StrayTokens))
+            {
+                continue;
+            }
+
+            report.AppendLine(string.Format("    submesh {0}{1}: {2}", i,
+                skin.dazMesh.materialsEnabled != null && i < skin.dazMesh.materialsEnabled.Length
+                        && !skin.dazMesh.materialsEnabled[i] ? " disabled" : string.Empty,
+                SlotLine(named[i])));
+        }
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>Takes several layers off at once, measures the frame, and puts them all back.</summary>
+    private static string WithoutLayers(DAZSkinV2 skin, Camera camera, string slug, Color[] baseline, string[] tokens)
+    {
+        List<int> indices = new List<int>();
+        try
+        {
+            foreach (string token in tokens)
+            {
+                int index = SubMeshNamed(skin, token);
+                if (index >= 0 && !indices.Contains(index))
+                {
+                    SetSubMeshEnabled(skin, index, false);
+                    indices.Add(index);
+                }
+            }
+
+            Color[] frame;
+            string file = ProbeShot(camera, 512, 512, ".eye-" + slug, out frame);
+            return string.Format("{0}: {1}", ShotPath(file), PixelDiff(baseline, frame));
+        }
+        finally
+        {
+            for (int i = 0; i < indices.Count; i++)
+            {
+                SetSubMeshEnabled(skin, indices[i], true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The renderers that are neither the body nor the head but still sit where an eye is: a renderer
+    /// with an eye in its name, and any small renderer within a hand's width of the irises. Each one is
+    /// switched off in turn and the frame is compared, so "is this the black ball" is answered by the
+    /// pixels rather than by the name.
+    /// </summary>
+    private static string StrayMeshProbe(DAZSkinV2 subject, Vector3 mid, bool haveMid)
+    {
+        StringBuilder report = new StringBuilder();
+        List<Renderer> strays = new List<Renderer>();
+        List<string> notes = new List<string>();
+        foreach (Renderer renderer in SceneObjects<Renderer>())
+        {
+            if (renderer == null || !renderer.gameObject.activeInHierarchy)
+            {
+                continue;
+            }
+
+            string path = TransformPath(renderer.transform);
+            string materials = MaterialSummary(renderer.sharedMaterials);
+            Mesh mesh = StrayMesh(renderer);
+            bool named = MentionsToken(path, StrayTokens) || MentionsToken(materials, StrayTokens)
+                || MentionsToken(mesh == null ? string.Empty : mesh.name, StrayTokens);
+            Bounds box = renderer.bounds;
+            bool near = haveMid && Vector3.Distance(box.center, mid) <= 0.25f && box.extents.magnitude <= 0.15f;
+            if (!named && !near)
+            {
+                continue;
+            }
+
+            strays.Add(renderer);
+            notes.Add(string.Format(
+                "  {0} {1}: enabled={2}, active={3}, world={4}, {5} from the irises, {6}, materials={7}",
+                renderer is SkinnedMeshRenderer ? "SMR" : "MR", path, renderer.enabled,
+                renderer.gameObject.activeInHierarchy, BoxText(true, box),
+                haveMid ? Vector3.Distance(box.center, mid).ToString("F3") + " m" : "n/a",
+                named ? "named" : "unnamed but close", materials));
+            if (renderer.sharedMaterials != null && renderer.sharedMaterials.Length > 0
+                && renderer.sharedMaterials[0] != null)
+            {
+                notes.Add("      slot 0: " + SlotLine(renderer.sharedMaterials[0]));
+            }
+        }
+
+        report.AppendLine(string.Format(
+            "  {0} renderer(s) that are not the body but sit at an eye: the eyes report skips these, and any one of them can be the black ball",
+            strays.Count));
+        for (int i = 0; i < notes.Count && i < 60; i++)
+        {
+            report.AppendLine(notes[i]);
+        }
+
+        if (strays.Count > 30)
+        {
+            report.AppendLine(string.Format("    ... {0} more", strays.Count - 30));
+        }
+
+        if (strays.Count == 0 || LogPathBase() == null)
+        {
+            return report.ToString().TrimEnd('\r', '\n');
+        }
+
+        Vector3 center = Vector3.zero;
+        float radius = 0.05f;
+        foreach (Renderer renderer in strays)
+        {
+            center += renderer.bounds.center;
+        }
+
+        center /= strays.Count;
+        foreach (Renderer renderer in strays)
+        {
+            radius = Mathf.Max(radius, Vector3.Distance(center, renderer.bounds.center) + renderer.bounds.extents.magnitude);
+        }
+
+        Vector3 direction = subject == null ? Vector3.up : -subject.transform.forward;
+        if (haveMid)
+        {
+            direction = (mid - center).normalized;
+        }
+
+        float distance = radius / Mathf.Tan(22.5f * Mathf.Deg2Rad) * 1.3f;
+        GameObject holder = null;
+        try
+        {
+            Camera camera;
+            holder = ProbeCamera(center, direction, distance, 45f, out camera);
+            Color[] baseline;
+            string baselineFile = ProbeShot(camera, 640, 480, ".eye-strays-asis", out baseline);
+            report.AppendLine(string.Format("    all of them on {0}, mean {1}", ShotPath(baselineFile), MeanText(baseline)));
+
+            for (int i = 0; i < strays.Count && i < 12; i++)
+            {
+                bool wasEnabled = strays[i].enabled;
+                strays[i].enabled = false;
+                Color[] frame;
+                string file = ProbeShot(camera, 640, 480, string.Format(".eye-strays-{0}", i), out frame);
+                strays[i].enabled = wasEnabled;
+                report.AppendLine(string.Format("    without {0}: {1}", TransformPath(strays[i].transform), PixelDiff(baseline, frame)));
+            }
+        }
+        finally
+        {
+            if (holder != null)
+            {
+                UnityEngine.Object.DestroyImmediate(holder);
+            }
+        }
+
+        return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    private static Mesh StrayMesh(Renderer renderer)
+    {
+        SkinnedMeshRenderer skinned = renderer as SkinnedMeshRenderer;
+        if (skinned != null)
+        {
+            return skinned.sharedMesh;
+        }
+
+        MeshRenderer plain = renderer as MeshRenderer;
+        if (plain == null)
+        {
+            return null;
+        }
+
+        MeshFilter filter = plain.GetComponent<MeshFilter>();
+        return filter == null ? null : filter.sharedMesh;
+    }
+
+    /// <summary>The submesh whose material name matches, the exact name first and then as a substring.</summary>
+    private static int SubMeshNamed(DAZSkinV2 skin, string token)
+    {
+        if (skin.dazMesh == null || skin.dazMesh.materials == null)
+        {
+            return -1;
+        }
+
+        Material[] named = skin.dazMesh.materials;
+        for (int i = 0; i < named.Length; i++)
+        {
+            if (named[i] != null && string.Equals(named[i].name, token, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+
+        for (int i = 0; i < named.Length; i++)
+        {
+            if (named[i] != null && named[i].name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Switches one submesh of a skin off. Every route a skin draws through reads one of these two
+    /// arrays - the mesh renderer route and the morphed-mesh route both test dazMesh.materialsEnabled,
+    /// the compute-buffer route tests the skin's own copy of it - so both are written.
+    /// </summary>
+    private static void SetSubMeshEnabled(DAZSkinV2 skin, int index, bool enabled)
+    {
+        if (skin.dazMesh == null || index < 0 || skin.dazMesh.materialsEnabled == null
+            || index >= skin.dazMesh.materialsEnabled.Length)
+        {
+            return;
+        }
+
+        skin.dazMesh.materialsEnabled[index] = enabled;
+        if (skin.materialsEnabled != null && index < skin.materialsEnabled.Length)
+        {
+            skin.materialsEnabled[index] = enabled;
+        }
+    }
+
+    /// <summary>The vertices a skin is drawn from, and whether they are already in world space.</summary>
+    private static Vector3[] DrawnVertices(DAZSkinV2 skin, out bool world)
+    {
+        world = false;
+        Mesh mesh = skin.GetMesh();
+        Vector3[] drawn = ReadVertices(skin.rawVertsBuffer);
+        if (drawn != null && mesh != null && drawn.Length > mesh.vertexCount)
+        {
+            world = true;
+            return drawn;
+        }
+
+        return mesh == null ? null : mesh.vertices;
+    }
+
+    /// <summary>The world box of one submesh, measured on the vertices the draw call itself uses.</summary>
+    private static bool SubMeshBounds(Mesh mesh, int index, Vector3[] vertices, Matrix4x4 toWorld, out Bounds box)
+    {
+        box = new Bounds(Vector3.zero, Vector3.zero);
+        if (mesh == null || vertices == null || index < 0 || index >= mesh.subMeshCount)
+        {
+            return false;
+        }
+
+        int[] triangles = mesh.GetTriangles(index);
+        bool any = false;
+        Vector3 min = Vector3.zero;
+        Vector3 max = Vector3.zero;
+        for (int t = 0; t < triangles.Length; t++)
+        {
+            int vertex = triangles[t];
+            if (vertex < 0 || vertex >= vertices.Length)
+            {
+                continue;
+            }
+
+            Vector3 point = toWorld.MultiplyPoint3x4(vertices[vertex]);
+            if (!any)
+            {
+                min = point;
+                max = point;
+                any = true;
+            }
+            else
+            {
+                min = Vector3.Min(min, point);
+                max = Vector3.Max(max, point);
+            }
+        }
+
+        if (!any)
+        {
+            return false;
+        }
+
+        box = new Bounds((min + max) * 0.5f, max - min);
+        return true;
+    }
+
+    /// <summary>
+    /// The average drawn normal of a submesh, i.e. the way the surface it belongs to faces. The irises
+    /// are a flat piece, so their normal is the axis a camera has to stand on to see them.
+    /// </summary>
+    private static Vector3 SubMeshNormal(DAZSkinV2 skin, Mesh mesh, int index)
+    {
+        Vector3[] normals = ReadVertices(skin.normalsBuffer);
+        if (normals == null || mesh == null || index < 0 || index >= mesh.subMeshCount)
+        {
+            return skin.transform.forward;
+        }
+
+        int[] triangles = mesh.GetTriangles(index);
+        Vector3 sum = Vector3.zero;
+        for (int t = 0; t < triangles.Length; t++)
+        {
+            int vertex = triangles[t];
+            if (vertex >= 0 && vertex < normals.Length && normals[vertex] != Vector3.zero)
+            {
+                sum += normals[vertex];
+            }
+        }
+
+        return sum == Vector3.zero ? skin.transform.forward : sum.normalized;
+    }
+
+    /// <summary>One bone of the skin's own skeleton, e.g. rEye, or null when the skin does not have it.</summary>
+    private static Transform EyeBoneTransform(DAZSkinV2 skin, string name)
+    {
+        if (skin == null || skin.root == null)
+        {
+            return null;
+        }
+
+        DAZBone bone = skin.root.GetDAZBone(name);
+        return bone == null ? null : bone.transform;
+    }
+
+    /// <summary>
+    /// Where one eye's irises sit and which way they face, read off the geometry the draw call uses. The
+    /// submesh carries both eyes, so the triangles are narrowed down to the vertices that belong to the
+    /// given eye bone, which is also what tells the front of an eyeball from its back.
+    /// </summary>
+    private static bool EyeGeometryAim(Mesh mesh, int index, Vector3[] vertices, Matrix4x4 toWorld,
+        Transform bone, out Vector3 centre, out Vector3 axis, out float radius)
+    {
+        centre = Vector3.zero;
+        axis = Vector3.forward;
+        radius = 0f;
+        if (bone == null || mesh == null || vertices == null || index < 0 || index >= mesh.subMeshCount)
+        {
+            return false;
+        }
+
+        Vector3 eye = bone.position;
+        int[] triangles = mesh.GetTriangles(index);
+        HashSet<int> seen = new HashSet<int>();
+        List<Vector3> points = new List<Vector3>();
+        for (int t = 0; t < triangles.Length; t++)
+        {
+            int vertex = triangles[t];
+            if (vertex < 0 || vertex >= vertices.Length || seen.Contains(vertex))
+            {
+                continue;
+            }
+
+            Vector3 point = toWorld.MultiplyPoint3x4(vertices[vertex]);
+
+            // 2 cm around the bone holds this eye and stops short of the other one, 6.5 cm away.
+            if ((point - eye).sqrMagnitude > 0.0004f)
+            {
+                continue;
+            }
+
+            seen.Add(vertex);
+            points.Add(point);
+        }
+
+        if (points.Count < 16)
+        {
+            return false;
+        }
+
+        Vector3 sum = Vector3.zero;
+        for (int i = 0; i < points.Count; i++)
+        {
+            sum += points[i];
+        }
+
+        centre = sum / points.Count;
+        Vector3 outward = centre - eye;
+        if (outward.sqrMagnitude < 1E-06f)
+        {
+            return false;
+        }
+
+        axis = outward.normalized;
+        float widest = 0f;
+        for (int i = 0; i < points.Count; i++)
+        {
+            Vector3 offset = points[i] - centre;
+            Vector3 flat = offset - axis * Vector3.Dot(offset, axis);
+            widest = Mathf.Max(widest, flat.magnitude);
+        }
+
+        radius = Mathf.Max(widest, 0.002f);
+        return true;
+    }
+
+    /// <summary>The mean colour of a ring of the frame, measured in irises radii from its centre.</summary>
+    private static string EyeRegionText(Color[] pixels, float irisPixels, float from, float to)
+    {
+        double red;
+        double green;
+        double blue;
+        int count = EyeRegionMean(pixels, irisPixels, from, to, out red, out green, out blue);
+        if (count == 0)
+        {
+            return string.Format("({0:F2}-{1:F2} radii: off frame)", from, to);
+        }
+
+        return string.Format("({0:F3}, {1:F3}, {2:F3})", red / count, green / count, blue / count);
+    }
+
+    /// <summary>The same ring, as the change from one frame to another.</summary>
+    private static string EyeRegionDelta(Color[] before, Color[] after, float irisPixels, float from, float to)
+    {
+        double wasRed;
+        double wasGreen;
+        double wasBlue;
+        int wasCount = EyeRegionMean(before, irisPixels, from, to, out wasRed, out wasGreen, out wasBlue);
+        double isRed;
+        double isGreen;
+        double isBlue;
+        int isCount = EyeRegionMean(after, irisPixels, from, to, out isRed, out isGreen, out isBlue);
+        if (wasCount == 0 || isCount == 0)
+        {
+            return "(off frame)";
+        }
+
+        return string.Format("({0:+0.000;-0.000;+0.000}, {1:+0.000;-0.000;+0.000}, {2:+0.000;-0.000;+0.000})",
+            isRed / isCount - wasRed / wasCount,
+            isGreen / isCount - wasGreen / wasCount,
+            isBlue / isCount - wasBlue / wasCount);
+    }
+
+    private static int EyeRegionMean(Color[] pixels, float irisPixels, float from, float to,
+        out double red, out double green, out double blue)
+    {
+        red = 0.0;
+        green = 0.0;
+        blue = 0.0;
+        if (pixels == null || pixels.Length != EyeFrameSize * EyeFrameSize || irisPixels <= 0.01f)
+        {
+            return 0;
+        }
+
+        float inner = from * irisPixels;
+        float outer = to * irisPixels;
+        float middle = EyeFrameSize * 0.5f;
+        int count = 0;
+        for (int y = 0; y < EyeFrameSize; y++)
+        {
+            float offsetY = y + 0.5f - middle;
+            for (int x = 0; x < EyeFrameSize; x++)
+            {
+                float offsetX = x + 0.5f - middle;
+                float distance = Mathf.Sqrt(offsetX * offsetX + offsetY * offsetY);
+                if (distance < inner || distance > outer)
+                {
+                    continue;
+                }
+
+                Color pixel = pixels[y * EyeFrameSize + x];
+                red += pixel.r;
+                green += pixel.g;
+                blue += pixel.b;
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>A camera that no scene object owns, aimed at one point. The caller destroys the object.</summary>
+    private static GameObject ProbeCamera(Vector3 at, Vector3 direction, float distance, float fov, out Camera camera)
+    {
+        GameObject holder = new GameObject("RebuildGateProbe");
+        Camera probe = holder.AddComponent<Camera>();
+        probe.enabled = false;
+        probe.fieldOfView = fov;
+        probe.nearClipPlane = 0.004f;
+        probe.farClipPlane = distance * 6f + 2f;
+        probe.clearFlags = CameraClearFlags.SolidColor;
+        probe.backgroundColor = new Color(0.1f, 0.1f, 0.14f, 1f);
+        Aim(probe, at, direction, distance);
+        camera = probe;
+        return holder;
+    }
+
+    private static void Aim(Camera camera, Vector3 at, Vector3 direction, float distance)
+    {
+        camera.transform.position = at + direction.normalized * distance;
+        camera.transform.LookAt(at, Vector3.up);
+    }
+
+    /// <summary>Renders one camera into a PNG beside the report and hands back the pixels it wrote.</summary>
+    private static string ProbeShot(Camera camera, int width, int height, string suffix, out Color[] pixels)
+    {
+        pixels = null;
+        string path = LogPathBase();
+        if (path == null)
+        {
+            return null;
+        }
+
+        string file = path + suffix + ".png";
+        RenderTexture target = RenderTexture.GetTemporary(width, height, 24);
+        RenderTexture active = RenderTexture.active;
+        try
+        {
+            camera.targetTexture = target;
+            camera.Render();
+
+            RenderTexture.active = target;
+            Texture2D image = new Texture2D(width, height, TextureFormat.RGB24, false);
+            image.ReadPixels(new Rect(0f, 0f, width, height), 0, 0);
+            image.Apply();
+            pixels = image.GetPixels();
+            File.WriteAllBytes(file, image.EncodeToPNG());
+            UnityEngine.Object.DestroyImmediate(image);
+            return file;
+        }
+        finally
+        {
+            RenderTexture.active = active;
+            camera.targetTexture = null;
+            RenderTexture.ReleaseTemporary(target);
+        }
+    }
+
+    private static string ShotPath(string file)
+    {
+        return file == null ? "not written" : Path.GetFileName(file);
+    }
+
+    private static string MeanText(Color[] pixels)
+    {
+        if (pixels == null || pixels.Length == 0)
+        {
+            return "no frame";
+        }
+
+        double red = 0.0;
+        double green = 0.0;
+        double blue = 0.0;
+        for (int i = 0; i < pixels.Length; i++)
+        {
+            red += pixels[i].r;
+            green += pixels[i].g;
+            blue += pixels[i].b;
+        }
+
+        return string.Format("({0:F3}, {1:F3}, {2:F3})",
+            red / pixels.Length, green / pixels.Length, blue / pixels.Length);
+    }
+
+    private static float ChangedFraction(Color[] before, Color[] after)
+    {
+        if (before == null || after == null || before.Length != after.Length || before.Length == 0)
+        {
+            return 0f;
+        }
+
+        int changed = 0;
+        for (int i = 0; i < before.Length; i++)
+        {
+            if (Math.Abs(before[i].r - after[i].r) + Math.Abs(before[i].g - after[i].g)
+                + Math.Abs(before[i].b - after[i].b) > 0.03f)
+            {
+                changed++;
+            }
+        }
+
+        return (float)changed / before.Length;
+    }
+
+    /// <summary>
+    /// How much of a frame one layer was worth, and what colour it was. The mean is taken over the pixels
+    /// that changed, so a layer that paints black reads as black and a layer that only tinted reads as
+    /// the tint - which is the whole question for an eye.
+    /// </summary>
+    private static string PixelDiff(Color[] before, Color[] after)
+    {
+        if (before == null || after == null || before.Length != after.Length)
+        {
+            return "no comparison (a frame was not rendered)";
+        }
+
+        int changed = 0;
+        double wasRed = 0.0;
+        double wasGreen = 0.0;
+        double wasBlue = 0.0;
+        double isRed = 0.0;
+        double isGreen = 0.0;
+        double isBlue = 0.0;
+        for (int i = 0; i < before.Length; i++)
+        {
+            if (Math.Abs(before[i].r - after[i].r) + Math.Abs(before[i].g - after[i].g)
+                + Math.Abs(before[i].b - after[i].b) <= 0.03f)
+            {
+                continue;
+            }
+
+            changed++;
+            wasRed += before[i].r;
+            wasGreen += before[i].g;
+            wasBlue += before[i].b;
+            isRed += after[i].r;
+            isGreen += after[i].g;
+            isBlue += after[i].b;
+        }
+
+        if (changed == 0)
+        {
+            return "0 px of " + before.Length + " changed (this layer paints nothing here)";
+        }
+
+        return string.Format("{0} px of {1} ({2:P2}) were ({3:F3}, {4:F3}, {5:F3}) and are now ({6:F3}, {7:F3}, {8:F3})",
+            changed, before.Length, (float)changed / before.Length,
+            wasRed / changed, wasGreen / changed, wasBlue / changed,
+            isRed / changed, isGreen / changed, isBlue / changed);
+    }
+
+    /// <summary>A name for a file: the tail of the path, with everything that is not a letter a dash.</summary>
+    private static string SlugTail(string path)
+    {
+        StringBuilder slug = new StringBuilder();
+        foreach (char character in path)
+        {
+            slug.Append(char.IsLetterOrDigit(character) ? character : '-');
+        }
+
+        string text = slug.ToString().Trim('-');
+        while (text.Contains("--"))
+        {
+            text = text.Replace("--", "-");
+        }
+
+        return text.Length <= 28 ? text : text.Substring(text.Length - 28);
+    }
+
     /// <summary>The few properties that decide whether an eye reads as glass, as black, or as skin.</summary>
     private static string SlotLine(Material material)
     {
@@ -3684,7 +5053,7 @@ public static class RebuildGate
         // submeshes with their own material rather than one material seen twice. Every value the game
         // pushes at runtime has to print on the slot, or a difference between two parts cannot be
         // told from a value the dump simply omitted.
-        string[] scalars = { "_SpecColor", "_SpecInt", "_Shininess", "_Fresnel",
+        string[] scalars = { "_SpecColor", "_SpecInt", "_Shininess", "_Fresnel", "_AlphaAdjust",
                              "_DiffuseBumpiness", "_SpecularBumpiness", "_IBLFilter",
                              "_Tess", "_TessPhong" };
         foreach (string property in scalars)
@@ -4203,6 +5572,7 @@ public static class RebuildGate
             report.AppendLine(DrawReport(subject));
             report.AppendLine(CharacterSlotReport());
             report.AppendLine(EyeReport());
+            report.AppendLine(EyeProbeReport(subject));
             report.AppendLine(MaterialDump());
             report.AppendLine(ShadowReport());
             report.AppendLine(CaptureSkin(subject));

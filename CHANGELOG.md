@@ -6,17 +6,24 @@ reproduced by a gate or an instrument; the measurements behind them are in [`doc
 
 ## Unreleased
 
+- **The white iris was the additive pass's alpha slot.** On one male skin the iris and pupil read white where
+  every other one renders: the eye probe measured **32470 px** of the frame around the pupil at
+  `(0.573, 0.477, 0.141)`. Eight of the additive families blend `SrcAlpha One`, so their alpha is the weight
+  of the colour being added, and the shipped programs write the surface's own alpha there -
+  `saturate(texelA * _Color.a + _AlphaAdjust)`, or `saturate(alphaTexelA + _AlphaAdjust)` in the
+  separate-alpha ones - and the literal `1.0` only where the blend is `One One`. Ours wrote `1.0` in every
+  one of them, so a cornea with `_Color.a = 0` added its full colour over the iris.
+  `New-VaMShaders.py` now emits `VAM_ADD_ALPHA_SURFACE` from the pass's own `srcBlend` (**5** or **9**), and
+  the same probe measures **0 px** - the cornea paints exactly as much as the original's does, which is
+  nothing. Shader gate **7479/7479** programs.
 - **A chosen preset loaded nothing, and the path separator was the bug.** In *Person → Appearance Presets →
   Select Existing* picking a preset did nothing: `SyncPresetBrowsePath` loads only when
-  `PresetManager.CheckPresetExistance()` answers yes, and a `false` there is silent.
-  The composed name takes its store-relative half from `Path.GetDirectoryName`, which returns
-  **Windows** separators whatever it is handed, so a `\` landed inside a path the file manager spells in
-  `/`, and `FileManager.FileExists` - a dictionary hit with no separator normalisation - missed.
-  Measured by a
-  probe driving 7 stores with the paths the browser hands over: before, every store whose presets sit in a
-  subfolder answered `false` while that same path in `/` answered `true`; after `.Replace('\\', '/')` on both
-  `Path.GetDirectoryName` results, all 7 answer `true` and the reported store ran a real `LoadPreset()`.
-  `Skin` never broke: its subfolder arrives through another field.
+  `PresetManager.CheckPresetExistance()` answers yes, and a `false` there is silent. The composed name takes
+  its store-relative half from `Path.GetDirectoryName`, which returns **Windows** separators whatever it is
+  handed, so a `\` landed inside a path the file manager spells in `/`, and `FileManager.FileExists` - a
+  dictionary hit with no separator normalisation - missed. A probe driving 7 stores: before, every store
+  whose presets sit in a subfolder answered `false` while the same path in `/` answered `true`; after
+  `.Replace('\\', '/')` on the `Path.GetDirectoryName` results, all 7 answer `true`.
 
 ## 0.1.7-alpha
 

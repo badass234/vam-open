@@ -337,6 +337,27 @@ def mask_only(pas: dict) -> bool:
     return stage_globals(pas, "progFragment") <= MASK_ONLY_GLOBALS
 
 
+# The two blend factors that read the fragment's alpha: SrcAlpha and the
+# saturating form, which is SrcAlpha capped at one.
+SRC_ALPHA_BLENDS = (5, 9)
+
+
+def add_keeps_alpha(pas: dict) -> bool:
+    """Whether an additive pass fills the alpha slot with the surface's alpha.
+
+    Most additive programs write a constant `1.0` there -- the whole
+    `Blend One One` family, whose blend cannot see the value anyway.  The ones
+    that blend with a SrcAlpha factor write the alpha the base pass writes,
+    `saturate(texelA * _Color.a + _AlphaAdjust)`, because their blend reads it:
+    `Cornea` carries `_Color.a = 0`, and writing `1.0` there lights the whole
+    lens up in the material's own colour instead of leaving it untouched.  The
+    blend state separates the two groups exactly -- every SrcAlpha-factored
+    additive program ends in `mad_sat o0.w, ...` while the others end in
+    `mov o0.w, l(1.000000)` (work/pass-alpha-all.txt lists all of them).
+    """
+    return int(pas["state"]["rtBlend0"]["srcBlend"]["val"]) in SRC_ALPHA_BLENDS
+
+
 def pass_tessellates(pas: dict) -> bool:
     """Whether the contract carries a hull/domain pair for this pass.
 
@@ -448,6 +469,9 @@ def emit_pass(pas: dict, lightmode: str, props: list, family: str,
         if "_AlphaAdjust" in frag_globals:
             body.append("#define VAM_MASK_ADJUST")
         frag = "VamFragmentMask"
+    if frag == "VamFragmentAdd" and add_keeps_alpha(pas):
+        # The blend reads the alpha (see add_keeps_alpha).
+        body.append("#define VAM_ADD_ALPHA_SURFACE")
     body.append(f"#pragma vertex {vert}")
     if tess:
         body.append(f"#pragma hull {TESS_HULL}")

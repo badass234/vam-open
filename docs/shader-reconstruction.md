@@ -268,7 +268,11 @@ omitted because the vertex program hard-codes that interpolator to zero, the poi
 is seeded from a hash of the pixel's own position because the full-screen texture the original samples
 for its seed could not be identified, and the additive pass's response is derived rather than
 transcribed - its DXBC blob is a separate program for point/spot lights - and then compared against
-that blob instruction by instruction. Everything that decides the pose, the silhouette, the surface
+that blob instruction by instruction. The additive pass is also the one place where a pass needs to
+know something other than its own inputs: its alpha slot is the surface's own alpha in the families
+that blend `SrcAlpha One`, and the constant `1.0` everywhere else, so the generator emits
+`VAM_ADD_ALPHA_SURFACE` per pass from the pass's own blend state. Everything that decides the pose,
+the silhouette, the surface
 response and the base shading - the structured-buffer skinning, the normals, the Fresnel curve, the
 gloss-driven highlight and reflection mip, the two-source SH ambient, the shadow coordinates, the
 25-tap shadow disk and the alpha cutoff - is a direct transcription, register for register. The
@@ -325,6 +329,22 @@ and writes an output alpha of `0`. So the family macro pair
 `_Color.a * _MainTex.a` product rather than joining it. Families with no mask keep that product, plus
 `_AlphaAdjust`. Getting this wrong is what made the eyelashes render as solid cards: see
 `verification.md`, defect 3.
+
+**The additive pass carries the surface's alpha, but only where its blend reads one.** The library
+writes `1.0` there, which the shipped programs justify for the great majority of additive passes:
+they are `Blend One One`, the alpha is never looked at, and the blob's last write is
+`mov o0.w, l(1.000000)`. Eight families are not: their additive pass blends `SrcAlpha One`, so the
+alpha slot is the weight of the colour being added, and they write what their base pass writes -
+`saturate(texelA * _Color.a + _AlphaAdjust)` in the `Custom/Subsurface/Transparent*` pair
+(`mad_sat o0.w, r2.w, cb0[69].w, cb0[68].x`), and `saturate(alphaTexelA + _AlphaAdjust)` in the
+separate-alpha families (`add_sat r1.w, r3.w, cb0[68].x`, then `mov o0.w, r1.w`), which is the
+`_AlphaTex` rule above again. Both are exactly the alpha the pass's own macros already build, so this
+needs a define and not a second entry point: `add_keeps_alpha()` in `New-VaMShaders.py` reads the
+emitted `srcBlend` - `5` *SrcAlpha or `9` *SrcAlphaSaturate - emits `VAM_ADD_ALPHA_SURFACE`, and
+`VamFragmentAdd` returns `s.alpha` under it. The blend state is what the classification reads because
+the disassembly cannot answer the question: `Custom/Subsurface/Cull`'s second pass is `Zero Zero` and
+never writes `o0` at all. Writing the literal where the surface's own alpha belongs is what put a
+white iris on male 1: see `verification.md`, defect 3.
 
 **Some passes do not shade at all.** The library's model is not universal: a pass whose shipped
 fragment samples `_MainTex`, keeps the texel's alpha and writes `mov o0.xyz, l(0,0,0,0)` has no
@@ -597,7 +617,7 @@ python tools\check_shaders.py GlossNMCull # one family
 `tools\check_shaders.py` lifts every `CGPROGRAM` block out of the generated files and hands it to the
 Windows SDK's `fxc.exe` with the profile the pragmas ask for, once per entry point *and once per
 keyword set*. Compiling with one keyword set hides exactly the bugs above; with ten of them the sweep
-runs **6805/6805 programs, 0 failures**. A pass that declares `VamFragment` is also compiled once as
+runs **7479/7479 programs, 0 failures**. A pass that declares `VamFragment` is also compiled once as
 `VamFragmentAdd` and vice versa, so an ordinary forward pass is counted twice per keyword set; a mask
 pass declares `VamFragmentMask` and is counted once.
 

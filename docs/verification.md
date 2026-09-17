@@ -494,8 +494,10 @@ shipped bytecode shows the split computes the same shading on either side of the
 cannot open a seam. The one behavioural difference the split genuinely carries - the original
 tessellates the `TessMappedFixed` submeshes and our build did not - has since been closed (see
 *The tessellation stages* below); the geometry is now subdivided on both sides of the boundary, so if
-the seam survives it is data, or it is in the original too. The remaining shader-side deviation is the
-additive pass, which is equally wrong on both sides of the boundary and so cannot open one either.
+the seam survives it is data, or it is in the original too. The last shader-side deviation this
+section used to name - the additive pass - has since been both re-derived and repaired (see *The
+additive pass's alpha slot* below and Done 23), and it was identical on both sides of the boundary
+anyway, so it never could open one.
 
 The body is a single mesh of 28 submeshes, and those submeshes do not all land on the same family:
 
@@ -526,9 +528,11 @@ programs, and by comparing our program against the shipped one:
 * **The tangent frame is fed correctly.** `VAM_NO_TANGENTS` is defined for exactly one pass of the
   Cull family (SHADOWCASTER, whose original binds no tangent buffer); FORWARDBASE and FORWARDADD
   read `t2`, so the normal map is not evaluated in a fallback frame.
-* **The one remaining shader-side deviation is the additive pass**, which is still a plain Lambert
-  diffuse in ours (`VamGpuSkinning.cginc`, header). It is identical for both families, so it too
-  cannot open a seam, but it does make the per-light response wrong and stays on the list.
+* **The additive pass has been re-derived too, and its alpha slot repaired.** Its per-light response
+  was compared against the shipped additive blob instruction by instruction (Done 23) and its alpha
+  slot turned out to be the one thing in it that was wrong: it writes the surface alpha wherever the
+  pass blends `SrcAlpha One`, and a constant only where it blends `One One` - the body's two families
+  are both `One One`, so this was never a candidate for the seam either way.
 * **Material assignment cannot mix neighbours up either.** `MeshGPU.InitMaterials` sizes
   `GPUmaterials` from `dazMesh.materials.Length`, and both draw loops
   (`MeshGPU.DrawMesh`, `DAZSkinV2.DrawMeshGPU`) pass the same index as both the material slot and the
@@ -661,10 +665,11 @@ Two facts, and only the second one explains a scalp that is visible at all:
 
 ### Defect 3 - eyelash materials and the shiny eye
 
-Verdict: **mixed.** Two of the three parts are ours - both porting gaps, both fixed; the third is the
-original shader.
+Verdict: **mixed.** Three of the parts are ours - all three porting gaps, all three fixed (the lash
+mask, the cornea family, and the additive pass's alpha slot, the last of which is what the white iris
+on male 1 turned out to be); the fourth is the original shader.
 
-#### The lash alpha mask - **fixed** (cause found, pending a visible run)
+#### The lash alpha mask - **fixed and confirmed by hand**
 
 *Symptom:* the lashes render as **solid black cards** - the whole fringe is an opaque shape instead of
 separate strands.
@@ -716,9 +721,10 @@ families' pixel passes the same instruction stream up to renaming, 0 different. 
 emit now disassembles to the shipped instruction sequence - `_AlphaTex` is sampled at its own UV
 (`v3.zw`, previously the diffuse `v1`), and the `add_sat` / premultiply / `discard` chain is present.
 The sampler register numbers differ from the shipped side and always will, because ours are laid out by
-the generator; only `contract.json` names them. **A visible run is still outstanding.**
+the generator; only `contract.json` names them. **A visible run confirmed it**: `Invoke-ManualPlay.ps1`
+on the game's own boot scene draws the cards as strands instead of solid planes.
 
-#### The cornea - **fixed** (cause found, pending a visible run)
+#### The cornea - **fixed and measured**
 
 *Symptom:* the eye reads as **over-bright** instead of as a dark, mostly transparent cornea.
 
@@ -759,7 +765,67 @@ under-layer passes as a side effect; that is written up in *Found by reading the
 `mad_sat o0.w` / `mov o0.xyz, l(0,0,0,0)` - with pass 1 carrying the same literal
 `l(1.000000, 0.000000, 0.000000, 0.000000)`. Ours reads `t2` where the shipped program reads `t0`, and
 `cb0[0]`/`cb0[2]` where it reads `cb0[69]`/`cb0[68]`; those are the generator's own layout, as with the
-lash. **A visible run is still outstanding.**
+lash. **Measured** (below): the layer paints nothing on its own. The Danika cornea
+(`_Color.a = 0.47`, `_MainTex = S6EyesTr`) also measures **0 px** for `only Cornea`, and its
+`no-Cornea` frame differs from the baseline by **2153 px** of ≤ 0.003 in a colour whose queue is
+`2001` - that is the transparent sort seeing one slot fewer, not a draw, and it is the one number in
+this section that is an observation rather than a measurement.
+
+#### The additive pass's alpha slot - **fixed and measured**
+
+*Symptom:* male 1's iris and pupil read **white** (the user's report, and the one skin it shows on).
+The eye probe measured the frame around the pupil at `(0.573, 0.477, 0.141)` where the original has
+to paint nothing.
+
+*Cause:* the include's `VamFragmentAdd` wrote the constant `1.0` in the alpha slot, and **not every
+shipped additive pass does**. The additive pass is `Blend SrcAlpha One` in the families that blend,
+so its alpha is not padding there, it is the weight of the colour it adds, and the shipped programs
+in those families write the **same** expression the base pass writes -
+`saturate(texelA * _Color.a + _AlphaAdjust)`:
+
+```hlsl
+; Custom/Subsurface/TransparentComputeBuff, add pass (blob 084)
+mad_sat o0.w, r2.w, cb0[69].w, cb0[68].x   ; cb0[69].w = _Color.a, cb0[68].x = _AlphaAdjust
+; Custom/Hair/MainSeparateAlphaMimicAlphaComputeBuff, pass 1
+add_sat r1.w, r3.w, cb0[68].x
+mov     o0.w, r1.w
+; Custom/Subsurface/TransparentSeparateAlphaComputeBuff, pass 1   (_AlphaTex family)
+add_sat o0.w, r1.w, cb0[68].x
+```
+
+`Cornea-1` on male 1 is `_Color.a = 0`, `_AlphaAdjust = 0`, `_MainTex = None` (Unity binds white, so
+`texelA = 1`), i.e. its alpha is **0 in both passes** and the original's additive pass adds
+`colour * 0`. Ours added `colour * 1` under a blend that multiplies by alpha, so the whole lens
+painted its own colour on top of the iris.
+
+*How the two groups are told apart:* by the pass's own blend state, not by the family name -
+`srcBlend ∈ {5 SrcAlpha, 9 SrcAlphaSaturate}` identifies exactly the **8 families, 16 generated
+shader files** that write the surface alpha (the two `Custom/Hair/Main*SeparateAlpha*` pairs, the two
+`Custom/Subsurface/Transparent*` pairs); the other additive passes are `One One` and do write the
+literal `mov o0.w, l(1.000000)` that our constant stood for. The disassembly cannot be the
+classifier: `Custom/Subsurface/Cull` pass 1 is `Zero Zero` and its blob **never writes `o0` at all**,
+so "no `mad_sat`" is not the same question as "alpha does not matter".
+
+*The fix* is a define rather than a second fragment: `scripts/New-VaMShaders.py` emits
+`#define VAM_ADD_ALPHA_SURFACE` on an additive pass whose `srcBlend` reads alpha, and
+`shader-src\VamGpuSkinning.cginc`'s `VamFragmentAdd` returns `s.alpha` under it and `1.0` otherwise.
+The 5 non-`SrcAlpha` families that also declare `VamFragmentMask` are untouched by construction: a
+mask pass has no additive variant.
+
+*Verified by measurement* - the eye probe run before and after, same scene, same skin, frozen pose
+(`artifacts\eyeframes3.eyeframes.txt` and `artifacts\eyeframes4.eyeframes.txt`):
+
+| probe line, male 1 | before | after |
+|---|---|---|
+| `only Cornea, against the empty skin` | **32470 px** `(0.573, 0.477, 0.141)` | **0 px** |
+| `without Cornea` | 10216 px `(0.586, 0.482, 0.004)` -> `(0.135, 0.097, 0.004)` | 0 px |
+| `baseline` pupil region | `(0.496, 0.372, 0.008)` | `(0.163, 0.103, 0.007)` |
+| `all-layers-back-on` against the baseline (the control) | 0 px | 0 px |
+
+The two frames are not merely close: `only-Cornea.png` hashes **identically** to `nothing.png`, and
+`no-Cornea.png` to `baseline.png` - the cornea now draws exactly as much as the original's does,
+which is nothing. The control staying at 0 px says the probe itself did not drift between the runs,
+and the shader gate reports **7479/7479 programs, 0 failed**.
 
 *One deliberate deviation:* our vertex stage fills `uvMain` through `_MainTex_ST`, while the shipped
 program binds no `_MainTex_ST` at all - fxc reports it unused. The two agree wherever a material leaves
@@ -933,9 +999,12 @@ Checked with the compile gate, which now compiles a tessellated pass as its four
 control point at `vs_5_0`, hull at `hs_5_0`, domain at `ds_5_0`, fragment at `ps_5_0` - with
 `SHADER_TARGET 50`, the model the original's hull and domain were built for:
 
-*Current state*: `4414/4414 programs compiled, 0 failed`, 57 shaders, 168 passes, 15 of them
-tessellated. The count was 3023 until the eye's alpha-mask family stopped being compiled as the
-shared fragment as well as its own, and 4444 until the hair's three mask passes did the same - a pass
+*Current state*: `7479/7479 programs compiled, 0 failed`, over the 88 shaders the generator emits
+(`python scripts\New-VaMShaders.py --list`: 256 passes, 15 of them tessellated - the five
+`*TessMapped*` families, three passes each). The count was 3023 until the eye's alpha-mask family
+stopped being compiled as the shared fragment as well as its own, 4444 until the hair's three mask
+passes did the same, and 6805 until the hair families' and the plain materials' twins were
+transcribed too - a pass
 that declares `VamFragment` is compiled a second time as `VamFragmentAdd`, so a mask pass declaring
 `VamFragmentMask` costs one program per keyword set instead of two.
 
