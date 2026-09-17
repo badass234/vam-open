@@ -11,6 +11,7 @@ using MeshVR;
 using MeshVR.Hands;
 using SimpleJSON;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.UI;
 using UnityEngine.XR;
 using Valve.VR;
@@ -269,6 +270,24 @@ public class UserPreferences : MonoBehaviour
 
 	[SerializeField]
 	private ShaderLOD _shaderLOD = ShaderLOD.High;
+
+	[HideInInspector]
+	public UIPopup screenResolutionPopup;
+
+	[SerializeField]
+	private string _screenResolution = string.Empty;
+
+	private AlertUI _screenResolutionAlert;
+
+	private int _pendingScreenResolutionWidth;
+
+	private int _pendingScreenResolutionHeight;
+
+	private int _syncedScreenResolutionWidth = -1;
+
+	private int _syncedScreenResolutionHeight = -1;
+
+	private bool _syncedScreenResolutionFullScreen;
 
 	public Camera normalCamera;
 
@@ -817,6 +836,18 @@ public class UserPreferences : MonoBehaviour
 					shaderLODPopup.currentValue = _shaderLOD.ToString();
 				}
 			}
+		}
+	}
+
+	public string screenResolution
+	{
+		get
+		{
+			return _screenResolution;
+		}
+		set
+		{
+			SetScreenResolutionFromString(value);
 		}
 	}
 
@@ -2169,6 +2200,7 @@ public class UserPreferences : MonoBehaviour
 		jSONClass["desktopVsync"].AsBool = _desktopVsync;
 		jSONClass["pixelLightCount"].AsInt = _pixelLightCount;
 		jSONClass["shaderLOD"] = _shaderLOD.ToString();
+		jSONClass["screenResolution"] = _screenResolution;
 		jSONClass["smoothPasses"].AsInt = _smoothPasses;
 		jSONClass["mirrorReflections"].AsBool = _mirrorReflections;
 		jSONClass["realtimeReflectionProbes"].AsBool = _realtimeReflectionProbes;
@@ -2329,6 +2361,10 @@ public class UserPreferences : MonoBehaviour
 					if (jSONNode["shaderLOD"] != null)
 					{
 						SetShaderLODFromString(jSONNode["shaderLOD"]);
+					}
+					if (jSONNode["screenResolution"] != null)
+					{
+						_screenResolution = jSONNode["screenResolution"];
 					}
 					if (jSONNode["smoothPasses"] != null)
 					{
@@ -2867,6 +2903,10 @@ public class UserPreferences : MonoBehaviour
 			alternateMotionHandModelControl.leftHandChoice = "SphereKinematic";
 			alternateMotionHandModelControl.linkHands = true;
 		}
+		_screenResolutionAlert = null;
+		_pendingScreenResolutionWidth = 0;
+		_pendingScreenResolutionHeight = 0;
+		SyncScreenResolutionPopup();
 		_disableSave = false;
 		SavePreferences();
 	}
@@ -3047,6 +3087,350 @@ public class UserPreferences : MonoBehaviour
 		catch (ArgumentException)
 		{
 			UnityEngine.Debug.LogError("Attempted to set shader lod " + lod + " which is not a valid lod string");
+		}
+	}
+
+	private const int ScreenResolutionMaxEntries = 6;
+
+	private const float ScreenResolutionAspectTolerance = 0.02f;
+
+	private const float ScreenResolutionAlertSeconds = 10f;
+
+	private static string GetScreenResolutionString(int width, int height)
+	{
+		return width + "x" + height;
+	}
+
+	private static string GetCurrentScreenResolutionString()
+	{
+		return GetScreenResolutionString(Screen.width, Screen.height);
+	}
+
+	private static bool IsVirtualRealityDisplayActive()
+	{
+		return XRSettings.enabled && XRSettings.isDeviceActive;
+	}
+
+	private static bool TryParseScreenResolution(string resolution, out int width, out int height)
+	{
+		width = 0;
+		height = 0;
+		if (resolution == null)
+		{
+			return false;
+		}
+		string text = resolution.Trim();
+		int num = text.IndexOf(' ');
+		if (num > 0)
+		{
+			text = text.Substring(0, num);
+		}
+		string[] array = text.Split('x', 'X');
+		if (array.Length != 2)
+		{
+			return false;
+		}
+		int num2;
+		int num3;
+		if (!int.TryParse(array[0].Trim(), out num2) || !int.TryParse(array[1].Trim(), out num3))
+		{
+			return false;
+		}
+		if (num2 <= 0 || num3 <= 0)
+		{
+			return false;
+		}
+		width = num2;
+		height = num3;
+		return true;
+	}
+
+	private List<string> BuildScreenResolutionValues()
+	{
+		List<string> list = new List<string>();
+		Resolution currentResolution = Screen.currentResolution;
+		float num = ((currentResolution.height > 0) ? (((float)currentResolution.width) / (float)currentResolution.height) : (((float)Screen.width) / (float)Screen.height));
+		Resolution[] resolutions = Screen.resolutions;
+		if (resolutions != null)
+		{
+			for (int i = 0; i < resolutions.Length; i++)
+			{
+				Resolution resolution = resolutions[i];
+				if (resolution.width < 640 || resolution.height < 480)
+				{
+					continue;
+				}
+				if (Mathf.Abs(((float)resolution.width) / (float)resolution.height - num) > ScreenResolutionAspectTolerance)
+				{
+					continue;
+				}
+				string item = GetScreenResolutionString(resolution.width, resolution.height);
+				if (!list.Contains(item))
+				{
+					list.Add(item);
+				}
+			}
+		}
+		list.Sort(CompareScreenResolutionsByAreaDescending);
+		if (list.Count > ScreenResolutionMaxEntries)
+		{
+			list.RemoveRange(ScreenResolutionMaxEntries, list.Count - ScreenResolutionMaxEntries);
+		}
+		string text = GetCurrentScreenResolutionString();
+		if (!list.Contains(text))
+		{
+			list.Insert(0, text);
+			if (list.Count > ScreenResolutionMaxEntries + 1)
+			{
+				list.RemoveRange(ScreenResolutionMaxEntries + 1, list.Count - ScreenResolutionMaxEntries - 1);
+			}
+		}
+		return list;
+	}
+
+	private static int GetScreenResolutionArea(string resolution)
+	{
+		int num;
+		int num2;
+		if (!TryParseScreenResolution(resolution, out num, out num2))
+		{
+			return 0;
+		}
+		return num * num2;
+	}
+
+	private static int CompareScreenResolutionsByAreaDescending(string a, string b)
+	{
+		return GetScreenResolutionArea(b).CompareTo(GetScreenResolutionArea(a));
+	}
+
+	private static bool IsScreenResolutionSupported(int width, int height)
+	{
+		Resolution[] resolutions = Screen.resolutions;
+		if (resolutions == null || resolutions.Length == 0)
+		{
+			return true;
+		}
+		for (int i = 0; i < resolutions.Length; i++)
+		{
+			if (resolutions[i].width == width && resolutions[i].height == height)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private void SyncScreenResolutionPopup()
+	{
+		SyncScreenResolutionPopup(null);
+	}
+
+	private void SyncScreenResolutionPopup(string resolutionOverride)
+	{
+		string text = ((resolutionOverride != null) ? resolutionOverride : GetCurrentScreenResolutionString());
+		_screenResolution = text;
+		if (screenResolutionPopup == null)
+		{
+			return;
+		}
+		List<string> list = BuildScreenResolutionValues();
+		if (!list.Contains(text))
+		{
+			list.Insert(0, text);
+		}
+		screenResolutionPopup.SetPopupValues(list.ToArray(), null);
+		screenResolutionPopup.currentValueNoCallback = text;
+	}
+
+	public void SetScreenResolutionFromString(string resolution)
+	{
+		ApplyScreenResolution(resolution, true);
+	}
+
+	private void ApplyScreenResolution(string resolution, bool prompt)
+	{
+		int num;
+		int num2;
+		if (!TryParseScreenResolution(resolution, out num, out num2))
+		{
+			SyncScreenResolutionPopup();
+			return;
+		}
+		if (IsVirtualRealityDisplayActive())
+		{
+			SyncScreenResolutionPopup();
+			return;
+		}
+		string text = GetScreenResolutionString(num, num2);
+		if (num == Screen.width && num2 == Screen.height)
+		{
+			SyncScreenResolutionPopup(text);
+			return;
+		}
+		if (prompt)
+		{
+			ShowScreenResolutionAlert(text);
+		}
+		Screen.SetResolution(num, num2, Screen.fullScreen);
+		_syncedScreenResolutionWidth = num;
+		_syncedScreenResolutionHeight = num2;
+		_syncedScreenResolutionFullScreen = Screen.fullScreen;
+		SyncScreenResolutionPopup(text);
+		SavePreferences();
+	}
+
+	private void ShowScreenResolutionAlert(string resolution)
+	{
+		string text = "Screen resolution changed to " + resolution + ".\nKeep this resolution?";
+		if (_screenResolutionAlert != null)
+		{
+			_screenResolutionAlert.SetText(text);
+			_screenResolutionAlert.SetAutoClose(ScreenResolutionAlertSeconds, ScreenResolutionAlertRevertCallback);
+			return;
+		}
+		if (SuperController.singleton == null)
+		{
+			return;
+		}
+		_pendingScreenResolutionWidth = Screen.width;
+		_pendingScreenResolutionHeight = Screen.height;
+		AlertUI alertUI = SuperController.singleton.Alert(text, ScreenResolutionAlertKeepCallback, ScreenResolutionAlertRevertCallback, ScreenResolutionAlertSeconds, ScreenResolutionAlertRevertCallback);
+		if (alertUI == null)
+		{
+			_pendingScreenResolutionWidth = 0;
+			_pendingScreenResolutionHeight = 0;
+			return;
+		}
+		alertUI.SetOKButtonText("Keep");
+		alertUI.SetCancelButtonText("Revert");
+		alertUI.autoCloseCountdownFormat = "Reverting to the previous resolution in {0} seconds...";
+		alertUI.SetText(text);
+		_screenResolutionAlert = alertUI;
+	}
+
+	private void ScreenResolutionAlertKeepCallback()
+	{
+		_screenResolutionAlert = null;
+		_pendingScreenResolutionWidth = 0;
+		_pendingScreenResolutionHeight = 0;
+		SyncScreenResolutionPopup();
+	}
+
+	private void ScreenResolutionAlertRevertCallback()
+	{
+		_screenResolutionAlert = null;
+		int num = _pendingScreenResolutionWidth;
+		int num2 = _pendingScreenResolutionHeight;
+		_pendingScreenResolutionWidth = 0;
+		_pendingScreenResolutionHeight = 0;
+		if (num > 0 && num2 > 0)
+		{
+			ApplyScreenResolution(GetScreenResolutionString(num, num2), false);
+		}
+		else
+		{
+			SyncScreenResolutionPopup();
+		}
+	}
+
+	private static Text FindScreenResolutionPopupLabel(UIPopup popup)
+	{
+		if (popup == null)
+		{
+			return null;
+		}
+		if (popup.labelText != null)
+		{
+			return popup.labelText;
+		}
+		Text[] componentsInChildren = popup.GetComponentsInChildren<Text>(true);
+		if (componentsInChildren == null)
+		{
+			return null;
+		}
+		for (int i = 0; i < componentsInChildren.Length; i++)
+		{
+			Text text = componentsInChildren[i];
+			if (text == null)
+			{
+				continue;
+			}
+			if (popup.topButton != null && text.transform.IsChildOf(popup.topButton.transform))
+			{
+				continue;
+			}
+			if (popup.popupPanel != null && text.transform.IsChildOf(popup.popupPanel))
+			{
+				continue;
+			}
+			return text;
+		}
+		return null;
+	}
+
+	private void CreateScreenResolutionPopup()
+	{
+		if (screenResolutionPopup != null || physicsUpdateCapPopup == null)
+		{
+			return;
+		}
+		Transform transform = physicsUpdateCapPopup.transform.parent;
+		if (transform == null)
+		{
+			return;
+		}
+		GameObject gameObject = UnityEngine.Object.Instantiate(physicsUpdateCapPopup.gameObject, transform, false);
+		if (gameObject == null)
+		{
+			return;
+		}
+		gameObject.name = "Screen Resolution Popup";
+		UIPopup component = gameObject.GetComponent<UIPopup>();
+		if (component == null)
+		{
+			UnityEngine.Object.Destroy(gameObject);
+			return;
+		}
+		RectTransform component2 = gameObject.GetComponent<RectTransform>();
+		if (component2 != null)
+		{
+			component2.anchoredPosition = new Vector2(-42.5f, -815f);
+		}
+		Text text = FindScreenResolutionPopupLabel(component);
+		if (text != null)
+		{
+			text.text = "Screen Resolution";
+		}
+		screenResolutionPopup = component;
+	}
+
+	private void InitScreenResolutionUI()
+	{
+		CreateScreenResolutionPopup();
+		if (screenResolutionPopup == null)
+		{
+			return;
+		}
+		UIPopup uIPopup = screenResolutionPopup;
+		uIPopup.onValueChangeHandlers = (UIPopup.OnValueChange)Delegate.Combine(uIPopup.onValueChangeHandlers, new UIPopup.OnValueChange(SetScreenResolutionFromString));
+		screenResolutionPopup.gameObject.SetActive(!IsVirtualRealityDisplayActive());
+		_syncedScreenResolutionWidth = Screen.width;
+		_syncedScreenResolutionHeight = Screen.height;
+		_syncedScreenResolutionFullScreen = Screen.fullScreen;
+		int num;
+		int num2;
+		if (TryParseScreenResolution(_screenResolution, out num, out num2) && IsScreenResolutionSupported(num, num2))
+		{
+			ApplyScreenResolution(_screenResolution, false);
+		}
+		else
+		{
+			if (_screenResolution != null && _screenResolution.Length > 0)
+			{
+				SuperController.LogError("Screen resolution '" + _screenResolution + "' from the preferences file is not supported by this display, keeping " + GetCurrentScreenResolutionString());
+			}
+			SyncScreenResolutionPopup();
 		}
 	}
 
@@ -4660,6 +5044,7 @@ public class UserPreferences : MonoBehaviour
 		{
 			DAZDefaultContentFolderText.text = _DAZDefaultContentFolder;
 		}
+		InitScreenResolutionUI();
 	}
 
 	private void Awake()
@@ -4688,6 +5073,27 @@ public class UserPreferences : MonoBehaviour
 		{
 			SyncShadows();
 		}
+	}
+
+	private void Update()
+	{
+		if (screenResolutionPopup == null)
+		{
+			return;
+		}
+		bool flag = !IsVirtualRealityDisplayActive();
+		if (screenResolutionPopup.gameObject.activeSelf != flag)
+		{
+			screenResolutionPopup.gameObject.SetActive(flag);
+		}
+		if (Screen.width == _syncedScreenResolutionWidth && Screen.height == _syncedScreenResolutionHeight && Screen.fullScreen == _syncedScreenResolutionFullScreen)
+		{
+			return;
+		}
+		_syncedScreenResolutionWidth = Screen.width;
+		_syncedScreenResolutionHeight = Screen.height;
+		_syncedScreenResolutionFullScreen = Screen.fullScreen;
+		SyncScreenResolutionPopup();
 	}
 
 	private void OnEnable()

@@ -23,8 +23,12 @@ group any errors by category.
 
 The runner repairs the one recoverable failure, and repeats the run once; see *When a gate lies* below.
 
+**Before every run: `scripts\Sync-Sources.ps1`.** The gate compiles `VaM_Rebuild\Assets\Scripts`, which
+is a copy of `src\`, so a gate run without the sync answers about the tree that was copied last - see
+failure mode E below.
+
 *Current state*: `----- RebuildGate OK -----`, 0 errors, 0 unique errors, `Assembly-CSharp.dll`
-6 163 968 B, `VaMUnityScript.dll` 16 896 B, `Assembly-CSharp-Editor.dll` present.
+6 188 544 B, `VaMUnityScript.dll` 16 896 B, `Assembly-CSharp-Editor.dll` present.
 
 ### 2. Scene integrity - `scripts\Invoke-SmokeTest.ps1 -Method InspectScene`
 
@@ -312,6 +316,31 @@ python scripts\New-VaMShaders.py
 git --no-pager diff --numstat -- shader-src/VamGpuSkinning.cginc   # what has not shipped yet
 fc.exe /b shader-src\VamGpuSkinning.cginc VaM_Rebuild\Assets\VaMShaders\VamGpuSkinning.cginc
 ```
+
+**Failure mode E - the gate compiles a copy of the sources.** The same shape as D, one level up and
+without a generator to blame: `src\Assembly-CSharp` is the tree under version control and the tree a
+person edits, while Unity compiles `VaM_Rebuild\Assets\Scripts\Assembly-CSharp`, which
+`Setup-RebuildProject.ps1` fills from `src\` when the project is first set up. The two are separate
+copies - no hardlink, no symlink - so an edit in `src\` is invisible to the compiler until something
+copies it across, and both gates then answer green about the older tree, with every number they print
+being true about the wrong files. Measured when a user-visible setting failed to appear in a build:
+
+| | `src\Assembly-CSharp\UserPreferences.cs` | `VaM_Rebuild\Assets\Scripts\Assembly-CSharp\UserPreferences.cs` |
+|---|---|---|
+| size | 129 969 B | 118 911 B |
+| timestamp | the round's edits | two days earlier |
+| `screenResolution` occurrences | 130 | 0 |
+| builds on the new code | 0 | 1 (`Assembly-CSharp.dll`, 6 180 864 B, predating the edits) |
+
+`scripts\Sync-Sources.ps1` closes it and belongs in every loop that touches code: it copies the `*.cs`
+files of `Assembly-CSharp` and `Assembly-UnityScript` from `src\` into the project, never writes or
+deletes a `.cs.meta` (a scene resolves its class through that GUID, `docs\rebuild-project.md`),
+re-reads both trees and prints `verdict: OK - N source(s)` only when every file matches byte for byte,
+and compares the newest source against `Assets\Scripts\Assembly-CSharp.dll`, reporting
+`Assembly-CSharp.dll: STALE - the assembly predates the sources` instead of letting the next gate
+report on a stale build. Its first run: `copied 5, deleted 0, already identical 2820`. After it,
+`Assembly-CSharp.dll` was **6 188 544 B** at 19:37:19, newer than every source, and the gate's
+`verdict: OK` with 0 unique errors was about the tree that had been edited.
 
 ## What the harness cannot show
 
@@ -982,7 +1011,7 @@ Two sets are therefore left alone **on purpose**, and a future reader should not
   optimiser (`GPUTools/MeshedVR/HairOpt`), the sky (`Marmoset/Skydome`) and the particles
   (`Marmoset/Diffuse IBL`) all answer through a placeholder that keeps more passes than the shader it
   would replace, so the redirection must not touch them until the families themselves are transcribed
-  (item 4).
+  (item 3).
 
 ## Found by measuring: VaM's own point-light shadow filter, and who computes the darkening
 

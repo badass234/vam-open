@@ -4,6 +4,44 @@ Notable changes to **OpenVaM**, the open rebuild of Virt-a-Mate. The project is 
 moves with each round of user-visible work. Every number below is reproduced by a gate or an instrument; the
 measurements behind them are in [`docs/`](docs/).
 
+## 0.7.0-alpha - 2026-09-17
+
+The in-game preferences had no screen resolution setting, so there is one now: a list of what the
+display actually reports, a confirmation popup, and a ten-second revert for whoever picks a mode their
+monitor cannot show. The panels live in the game's asset bundles and not in this repository, so the row
+is not in any prefab this project owns - `UserPreferences.InitScreenResolutionUI` clones the
+`Physics Update Cap Popup` row at runtime, places it below `Desktop Vsync Toggle`, renames its label to
+`Screen Resolution` and drives it as the resolution control. What is listed is `Screen.resolutions`
+filtered to a 640x480 floor and to the current display's aspect ratio within 0.02, deduplicated, sorted
+by area and cut to six entries plus the current mode first; the value is written to `prefs.json` as
+`screenResolution` and reapplied at boot only when the display still offers that mode. The popup is
+`AlertUI` with Keep and Revert buttons and a countdown, `Reverting to the previous resolution in N
+seconds...`, and a second change reuses the alert that is open instead of stacking another one. In VR
+the row hides itself and a change is refused.
+
+**The round's real find is that the project had been compiling a copy of the sources.** `src\` is where
+this project is edited; `VaM_Rebuild\Assets\Scripts\` is where Unity compiles, and `Setup-RebuildProject.ps1`
+makes the second out of the first once, so every edit in `src\` needed a copy that nothing performed.
+Measured: `UserPreferences.cs` at 129 969 B in `src` against 118 911 B in the project, two days apart,
+with zero occurrences of `screenResolution` in the project's copy, and a built `Assembly-CSharp.dll` of
+6 180 864 B timestamped before the edits. The compile gate had returned `verdict: OK` for those edits -
+correctly, about a tree nobody had edited. `scripts\Sync-Sources.ps1` is now the step between editing and
+gating: it mirrors `*.cs` into the project for both assemblies, never touches a `.cs.meta` (a scene finds
+its class by that GUID), verifies every file byte for byte (`copied 5, deleted 0, already identical 2820`,
+`verdict: OK - 2825 source(s)`), and compares the newest source against the assembly's timestamp so a
+stale build is reported rather than trusted - its first run said `Assembly-CSharp.dll: STALE - the
+assembly predates the sources`.
+
+Release `0.7.0-alpha`, tagged: sources in sync, compile gate `verdict: OK` with 0 unique errors,
+`Assembly-CSharp.dll` at **6 188 544 B**, player `verdict: OK` over 10 scenes with `VAMOpen.exe` at
+**648 704 B** and **231 024 085 B** of `VAMOpen_Data`. The new code is verified in the shipped
+`VAMOpen_Data\Managed\Assembly-CSharp.dll` by byte search rather than in the editor - `0.7.0-alpha` three
+times as UTF-16, `Keep this resolution?` and `Reverting to the previous resolution in ` once each -
+because PowerShell's `Select-String -Encoding Unicode` answers "not found" on a binary that holds the
+string. `New-PlayerRuntimeLinks.ps1` had never been run for this player and the build said so
+(`runtime data missing: VAMOpen_Data\StreamingAssets`); the bundles are linked now and the player
+registers all 18 `.var` packages. The reported result of the built player's own run: the setting works.
+
 ## 0.6.0-alpha - 2026-09-17
 
 A plugin the installation cannot run used to flood the log for as long as its atom was loaded: one run

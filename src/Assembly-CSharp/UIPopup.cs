@@ -294,6 +294,34 @@ public class UIPopup : MonoBehaviour, ISelectHandler, IDeselectHandler, IEventSy
 		}
 	}
 
+	public void SetPopupValues(string[] values, string[] displayValues)
+	{
+		int num = ((values != null) ? values.Length : 0);
+		_popupValues = new string[num];
+		_displayPopupValues = new string[num];
+		useDifferentDisplayValues = displayValues != null && displayValues.Length == num;
+		for (int i = 0; i < num; i++)
+		{
+			_popupValues[i] = ((values[i] != null) ? values[i] : string.Empty);
+			_displayPopupValues[i] = ((useDifferentDisplayValues && displayValues[i] != null) ? displayValues[i] : _popupValues[i]);
+		}
+		_numPopupValues = num;
+		_filterCompareValues = null;
+		if (useFiltering)
+		{
+			_filterCompareValues = new string[num];
+			for (int j = 0; j < num; j++)
+			{
+				string text = (useDifferentDisplayValues ? _displayPopupValues[j] : _popupValues[j]);
+				_filterCompareValues[j] = ((text != null) ? text.ToLower() : string.Empty);
+			}
+		}
+		SyncFilter();
+		ClearPanel();
+		CreatePanelButtons();
+		SyncSlider();
+	}
+
 	public string[] popupValues => _popupValues;
 
 	public string[] displayPopupValues => _displayPopupValues;

@@ -7652,6 +7652,15 @@ public class SuperController : MonoBehaviour
 		}
 	}
 
+	public static AlertUI AlertUser(string alert, UnityAction okCallback, UnityAction cancelCallback, float autoCloseSeconds, UnityAction autoCloseCallback)
+	{
+		if (_singleton != null)
+		{
+			return _singleton.Alert(alert, okCallback, cancelCallback, autoCloseSeconds, autoCloseCallback);
+		}
+		return null;
+	}
+
 	public void OpenErrorLogPanel()
 	{
 		if (!_mainHUDVisible)
@@ -7904,6 +7913,29 @@ public class SuperController : MonoBehaviour
 				component.SetCancelButton(cancelAlertCallback);
 			}
 		}
+	}
+
+	public AlertUI Alert(string alertMessage, UnityAction okAlertCallback, UnityAction cancelAlertCallback, float autoCloseSeconds, UnityAction autoCloseCallback)
+	{
+		if (!(okAndCancelAlertPrefab != null))
+		{
+			return null;
+		}
+		Transform parent = SyncToDisplayChoice(DisplayUIChoice.Auto);
+		GameObject gameObject = UnityEngine.Object.Instantiate(okAndCancelAlertPrefab, parent, false);
+		if (gameObject == null)
+		{
+			return null;
+		}
+		AlertUI component = gameObject.GetComponent<AlertUI>();
+		if (component != null)
+		{
+			component.SetText(alertMessage);
+			component.SetOKButton(okAlertCallback);
+			component.SetCancelButton(cancelAlertCallback);
+			component.SetAutoClose(autoCloseSeconds, autoCloseCallback);
+		}
+		return component;
 	}
 
 	public void Alert(string alertMessage, UnityAction okAlertCallback, DisplayUIChoice displayUIChoice = DisplayUIChoice.Auto)

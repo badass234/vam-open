@@ -1,4 +1,4 @@
-# VAMOpen 0.6.0-alpha
+# VAMOpen 0.7.0-alpha
 
 Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
 developers just keep taking money and releasing tiny fixes for years.
@@ -25,6 +25,9 @@ contains the recovered code and the pipeline, and you point it at your own insta
   body by 8.26/255 of mean luminance where the built-in path darkens it by 0.98/255.
 - A standalone `VAMOpen.exe` builds in batch mode and runs outside the editor: 10 scenes, D3D11, all
   18 `.var` packages registered, 312 FPS in its own benchmark scene.
+- An in-game screen resolution setting, in the preferences panel next to the physics and vsync rows:
+  the modes the display reports, a confirmation popup, and a ten-second revert if the answer never
+  comes.
 
 Also, the shading model of the drawn body has been compared with the released build's own shader
 bytecode, instruction by instruction, and matches it: the tangent frame, the normal map, the albedo
@@ -71,6 +74,7 @@ otherwise it will reissue the license file and the 2018.1 editor will reject the
 
 ```powershell
 scripts\Setup-RebuildProject.ps1
+scripts\Sync-Sources.ps1               # after any edit in src\, and before a gate
 scripts\New-RuntimeDataLinks.ps1       # links the installation's data and matches its graphics preset
 scripts\Invoke-CompileGate.ps1
 python scripts\Extract-VaMShaders.py --out artifacts\shader-blobs
@@ -78,6 +82,12 @@ python scripts\New-VaMShaders.py
 python tools\check_shaders.py
 scripts\Invoke-ManualPlay.ps1
 ```
+
+`Sync-Sources.ps1` is easy to miss and expensive to skip: Unity compiles `VaM_Rebuild\Assets\Scripts\`,
+not `src\`, and `Setup-RebuildProject.ps1` performs that copy once. The sync mirrors `*.cs` from `src\`
+into the project, never touches a `.cs.meta` (a scene resolves its class through that GUID), verifies
+every file byte for byte, and reports whether `Assembly-CSharp.dll` is older than the newest source. A
+green compile gate without it is green about whatever was copied last.
 
 `New-RuntimeDataLinks.ps1` is the step that makes an editor session read the same data the game does:
 `AddonPackages` and `Custom` as junctions, `Saves` and `AddonPackagesUserPrefs` as copies, and the
@@ -116,8 +126,8 @@ Stage details are in `docs\`, the source of truth for status is in `CHANGELOG.md
 | `shader-src\VamGpuSkinning.cginc` | the reconstructed GPU-skinning shading library (see [`docs/shader-reconstruction.md`](docs/shader-reconstruction.md)) |
 | `VaM_Rebuild\Assets\Editor\` | the only code written by hand: `RebuildGate.cs` boots the game in batch mode and prints a verdict, `RebuildPlayer.cs` builds the standalone player |
 | `VaM_Rebuild\ProjectSettings`, `VaM_Rebuild\Packages` | Unity project settings, including the .NET 4.x scripting runtime the decompiled code needs |
-| `scripts\` | the pipeline: project setup, shader extraction and generation, compilation gate, smoke runs, log comparison |
-| `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison, shader pre-flight) |
+| `scripts\` | the pipeline: source sync into the Unity project, project setup, shader extraction and generation, compilation gate, smoke runs, log comparison |
+| `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison, shader pre-flight, UI bundle probes) |
 | `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity, shader reconstruction |
 | `CHANGELOG.md` | what each release contains: what works, what does not, what is known broken |
 

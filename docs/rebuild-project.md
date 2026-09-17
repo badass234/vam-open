@@ -104,6 +104,19 @@ AssetRipper writes metas lazily: only 2 165 of the 2 820 scripts in those two fo
 because only referenced GUIDs get a meta. The other 655 scripts are referenced by nothing, so Unity
 is free to assign them fresh GUIDs.
 
+**The copy is a copy, not a view.** `Setup-RebuildProject.ps1` fills
+`VaM_Rebuild\Assets\Scripts\Assembly-CSharp` out of `src\Assembly-CSharp`, and there is no hardlink
+and no symlink between the two: an edit in `src\` reaches the compiler only after something copies it
+there. Measured once the divergence was noticed: `UserPreferences.cs` at 129 969 B in `src` against
+118 911 B in the project, two days apart, and a green compile gate that was green about the older
+tree. `scripts\Sync-Sources.ps1` is that missing step and is meant to be run after every edit in
+`src\` and before any gate: it copies the `*.cs` files of both assemblies into the project, leaves
+every `.cs.meta` untouched on the project side because a scene reaches its class through that GUID,
+re-reads both trees and refuses to report `OK` unless each file is byte-for-byte equal, and compares
+the newest source's timestamp with `Assets\Scripts\Assembly-CSharp.dll`, printing
+`STALE - the assembly predates the sources` when the build no longer reflects the tree. Run without
+it, a gate answers about whatever was copied last.
+
 ## Reference integrity
 
 `tools\check_asset_guids.py --project VaM_Rebuild` walks `Assets`, collects the GUIDs defined by
