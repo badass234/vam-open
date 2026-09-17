@@ -4,6 +4,20 @@ Notable changes to **OpenVaM**, the open rebuild of Virt-a-Mate. The project is 
 last number counts patches inside the `0.1` line while the first two stand still. Every number below is
 reproduced by a gate or an instrument; the measurements behind them are in [`docs/`](docs/).
 
+## Unreleased
+
+- **A chosen preset loaded nothing, and the path separator was the bug.** In *Person → Appearance Presets →
+  Select Existing* picking a preset did nothing: `SyncPresetBrowsePath` loads only when
+  `PresetManager.CheckPresetExistance()` answers yes, and a `false` there is silent.
+  The composed name takes its store-relative half from `Path.GetDirectoryName`, which returns
+  **Windows** separators whatever it is handed, so a `\` landed inside a path the file manager spells in
+  `/`, and `FileManager.FileExists` - a dictionary hit with no separator normalisation - missed.
+  Measured by a
+  probe driving 7 stores with the paths the browser hands over: before, every store whose presets sit in a
+  subfolder answered `false` while that same path in `/` answered `true`; after `.Replace('\\', '/')` on both
+  `Path.GetDirectoryName` results, all 7 answer `true` and the reported store ran a real `LoadPreset()`.
+  `Skin` never broke: its subfolder arrives through another field.
+
 ## 0.1.7-alpha
 
 Everything since the first public alpha: the boot scene loads, and the character, its skin, hair, clothing and

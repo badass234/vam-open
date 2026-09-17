@@ -212,7 +212,13 @@ namespace MeshVR
 				}
 				if (text.Contains("/"))
 				{
-					presetSubPath = Path.GetDirectoryName(text) + "/";
+					// Path.GetDirectoryName answers with Windows separators whatever separators the input
+					// used, and every path this is concatenated into is written with forward slashes.
+					// Unnormalised, a preset one folder below its store folder produced a name like
+					// "Pkg:Creator\Store/Name" and therefore a path like
+					// "Pkg:/Custom/.../Creator\Store/Preset_Name.vap", which FileManager.FileExists does
+					// not resolve, so CheckPresetExistance answered no and the preset never loaded.
+					presetSubPath = Path.GetDirectoryName(text).Replace('\\', '/') + "/";
 					presetSubName = Path.GetFileName(text);
 				}
 				else
@@ -432,7 +438,9 @@ namespace MeshVR
 				string empty2 = string.Empty;
 				if (text3.Contains("/"))
 				{
-					empty = Path.GetDirectoryName(text3) + "/";
+					// The same separator normalisation as the presetName setter: this folder name is the
+					// one that ends up inside the emitted preset name.
+					empty = Path.GetDirectoryName(text3).Replace('\\', '/') + "/";
 					empty2 = Path.GetFileName(text3);
 				}
 				else
