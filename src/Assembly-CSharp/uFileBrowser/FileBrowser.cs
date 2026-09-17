@@ -968,6 +968,7 @@ namespace uFileBrowser
 				}
 			}
 			component.Set(this, text2, path, dir, writeable, hidden, hiddenModifiable, favorite, allowUseFileAsTemplateSelect, allowUseFileAsTemplateSelect && isTemplate, isTemplateModifiable);
+			ThumbnailDiagnostics.DiagnoseFileButton(component, path);
 			if (ImageLoaderThreaded.singleton != null)
 			{
 				Transform transform = null;

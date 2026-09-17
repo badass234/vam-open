@@ -10,11 +10,14 @@ namespace MeshVR
 	/// Recovers a shader the game shipped in the z_sha bundle.
 	///
 	/// DAZSkinV2 skins a mesh on the GPU by swapping every material onto
-	/// "&lt;name&gt;ComputeBuff", and it looks that name up with Shader.Find, which only ever sees
-	/// the shaders the rebuilt project itself defines. AssetRipper wrote a stub for every one of
-	/// them, so a family this project has not transcribed yet - the Marmoset IBL set - would
-	/// be shaded by the wrong library instead. The originals still ship in z_sha, the bundle every
-	/// material in the game resolves its shaders from, so they are read from there instead.
+	/// "&lt;name&gt;ComputeBuff", and it looks that name up with Shader.Find, which answers from
+	/// everything in the project - including the placeholder AssetRipper leaves for each family
+	/// this project has not transcribed yet. A placeholder compiles, reports itself supported and
+	/// looks like any other shader to a material, so the substitution is silent. The originals
+	/// still ship in z_sha, the bundle every material in the game resolves its shaders from, so
+	/// this class answers a name with the project's reconstruction where there is one and with the
+	/// shipped original everywhere else, and hands out a placeholder only when the bundle has
+	/// nothing of that name either.
 	/// </summary>
 	public static class VamShaderProvider
 	{
@@ -22,15 +25,11 @@ namespace MeshVR
 
 		private const string ComputeBuffSuffix = "ComputeBuff";
 
-		private const float RetryInterval = 5f;
-
 		private static readonly Dictionary<string, Shader> cache = new Dictionary<string, Shader>();
 
 		private static readonly HashSet<string> warned = new HashSet<string>();
 
 		private static Dictionary<string, Shader> bundleIndex;
-
-		private static float nextAttemptTime;
 
 		/// <summary>The "&lt;paramref name="shaderName"/&gt;ComputeBuff" variant of a shader.</summary>
 		public static Shader FindComputeBuff(string shaderName)
@@ -49,7 +48,21 @@ namespace MeshVR
 			return FindByName(shaderName + ComputeBuffSuffix);
 		}
 
-		/// <summary>A shader of this name: the project's own first, then the shipped original.</summary>
+		/// <summary>
+		/// A shader of this name: the project's own reconstruction where this project has one, and
+		/// the shipped original everywhere else.
+		///
+		/// Shader.Find answers as readily with a placeholder as with a reconstruction, and picking
+		/// the placeholder draws a substitute rather than the shader that was asked for. That is not
+		/// hypothetical: each of the 14 families this project still leaves to AssetRipper is a
+		/// one-pass blit, and Hidden/Post FX/* is among them, so a post-processing material built by
+		/// name out of Shader.Find is built out of a blit. No drawn material on the boot scene was
+		/// found in that state - the census counted 0 of them both before and after this class was
+		/// wired into MaterialFactory, and the reports are otherwise identical - so this closes a
+		/// path rather than changing a frame. A family <see cref="VamProjectShaders"/> lists is the
+		/// project's own; a placeholder is what answers for every other name, so those are read out
+		/// of the bundle instead.
+		/// </summary>
 		public static Shader FindByName(string shaderName)
 		{
 			if (string.IsNullOrEmpty(shaderName))
@@ -62,44 +75,56 @@ namespace MeshVR
 				return shader;
 			}
 			shader = Shader.Find(shaderName);
-			if (shader == null)
+			if (shader != null && VamProjectShaders.Defines(shaderName))
 			{
-				// A miss is not cached: the scene bundles may still be loading.
-				if (Time.realtimeSinceStartup < nextAttemptTime)
-				{
-					return null;
-				}
-				nextAttemptTime = Time.realtimeSinceStartup + RetryInterval;
-				shader = LookupBundle(shaderName);
+				cache[shaderName] = shader;
+				return shader;
 			}
-			if (shader == null)
+			Dictionary<string, Shader> shipped = BundleIndex();
+			if (shipped == null)
 			{
-				if (warned.Add(shaderName))
-				{
-					Debug.LogWarning(string.Format(
-						"[VamShaderProvider] {0} is defined by no project shader and is not in the {1} bundle.",
-						shaderName, ShaderBundleName));
-				}
-				return null;
+				// The bundle has not loaded yet. A miss is not cached, and neither is this: the
+				// shipped original can still arrive and take the placeholder's place.
+				return shader;
 			}
-			cache[shaderName] = shader;
-			return shader;
+			Shader original;
+			if (shipped.TryGetValue(shaderName, out original) && original != null)
+			{
+				cache[shaderName] = original;
+				return original;
+			}
+			if (shader != null)
+			{
+				cache[shaderName] = shader;
+				return shader;
+			}
+			if (warned.Add(shaderName))
+			{
+				Debug.LogWarning(string.Format(
+					"[VamShaderProvider] {0} is defined by no project shader and is not in the {1} bundle.",
+					shaderName, ShaderBundleName));
+			}
+			return null;
 		}
 
 		/// <summary>
-		/// Points a material at this project's shader of the same name, and answers whether it moved.
+		/// Points a material at the shader of that name this project would use, and answers whether
+		/// it moved.
 		///
-		/// A material that came out of a bundle holds its shader as a serialized reference, so it
-		/// keeps the bundle's own copy of the family even once this project defines one - the census
-		/// reads those slots as "bundle (project defines one)", and they are what still makes the
-		/// shipped game data necessary for the character to look right. Shader.Find answers only
-		/// from the project's assets, so re-pointing the material is the whole fix.
+		/// Two different materials are wrong in the same way. One came out of a bundle, so it holds
+		/// the bundle's own copy of the family as a serialized reference and keeps it even once this
+		/// project reconstructs the family - the census reads those slots as "bundle (project defines
+		/// one)". The other holds an AssetRipper placeholder, which compiles and reports itself
+		/// supported while drawing far less than the original; that is the state a material built in
+		/// code by name lands in, and no material on the boot scene was measured in it, so this
+		/// redirects the path rather than a material. <see cref="FindByName"/> answers with the
+		/// reconstruction where there is one and with the shipped original everywhere else, and it
+		/// answers with the placeholder only when the bundle has nothing of that name either, so a
+		/// shader it answers with is the one the material should hold.
 		///
-		/// Only a family <see cref="VamProjectShaders"/> lists is moved. Shader.Find answers with an
-		/// AssetRipper placeholder just as happily as with a reconstruction, and one of those draws
-		/// far less than the original does - the hair's optimised path is on GPUTools/MeshedVR/HairOpt,
-		/// which is a placeholder here - so a name that is not really reconstructed is left on the
-		/// bundle's copy, which is the shipped shader and correct.
+		/// A material already on the right shader is not touched. The hair's optimised path is one of
+		/// those: GPUTools/MeshedVR/HairOpt is a placeholder here, the bundle has it, so the material
+		/// out of the bundle already holds the shipped shader and stays where it is.
 		/// </summary>
 		public static bool UseProjectShader(Material material)
 		{
@@ -108,16 +133,16 @@ namespace MeshVR
 				return false;
 			}
 			Shader current = material.shader;
-			if (current == null || !VamProjectShaders.Defines(current.name))
+			if (current == null)
 			{
 				return false;
 			}
-			Shader project = Shader.Find(current.name);
-			if (project == null || project == current)
+			Shader resolved = FindByName(current.name);
+			if (resolved == null || resolved == current)
 			{
 				return false;
 			}
-			material.shader = project;
+			material.shader = resolved;
 			return true;
 		}
 
@@ -191,17 +216,6 @@ namespace MeshVR
 			// sharedMaterials lets the material instance keep its properties and its per-renderer
 			// binding; the shader is the only thing that was wrong.
 			return UseProjectShaders(renderer.sharedMaterials);
-		}
-
-		private static Shader LookupBundle(string shaderName)
-		{
-			Dictionary<string, Shader> index = BundleIndex();
-			Shader shader;
-			if (index != null && index.TryGetValue(shaderName, out shader))
-			{
-				return shader;
-			}
-			return null;
 		}
 
 		/// <summary>

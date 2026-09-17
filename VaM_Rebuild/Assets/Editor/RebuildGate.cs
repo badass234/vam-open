@@ -10,6 +10,7 @@ using SimpleJSON;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.PostProcessing;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
@@ -1578,6 +1579,12 @@ public static class RebuildGate
         return material == null || material.shader == null ? "no shader" : material.shader.name;
     }
 
+    /// <summary>A float in the one form two slots can be compared in, whatever locale the editor runs under.</summary>
+    private static string Scalar(float value)
+    {
+        return value.ToString("F3", CultureInfo.InvariantCulture);
+    }
+
     /// <summary>The material's value for a uniform, or that the shader does not declare it at all.</summary>
     private static string Float(Material material, string property)
     {
@@ -3089,6 +3096,124 @@ public static class RebuildGate
     /// unlit simpleMaterial, which is what a fullbright body without shadows is - is then what the eye
     /// sees, at the place that renderer's transform puts it.
     /// </summary>
+    /// <summary>
+    /// Every renderer in the scene that draws an eye or a hair item, and where each one actually is.
+    ///
+    /// The draw list below skips meshes under 3000 vertices, so the smallest geometry in a scene is the one
+    /// no report lists: an eye is a few hundred vertices, and a second copy of it can sit at the top of the
+    /// head with nothing anywhere saying so. The world box is printed next to the transform because the two
+    /// ways an eye ends up in the wrong place - a stale skinning buffer and a bone the renderer never bound -
+    /// are identical in the hierarchy, and both differ from a correct eye only here.
+    /// </summary>
+    private static string EyeReport()
+    {
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- eyes and hair -----");
+        AppendSmallMeshes(report, "eyes", new string[] { "eye", "cornea", "sclera", "iris", "pupil", "lash" });
+        AppendSmallMeshes(report, "hair", new string[] { "hair", "scalp" });
+        return report.ToString();
+    }
+
+    /// <summary>The renderers whose path, mesh or material names one of the tokens, with their world placement.</summary>
+    private static void AppendSmallMeshes(StringBuilder report, string label, string[] tokens)
+    {
+        List<string> lines = new List<string>();
+        foreach (SkinnedMeshRenderer renderer in SceneObjects<SkinnedMeshRenderer>())
+        {
+            Mesh mesh = renderer.sharedMesh;
+            string path = TransformPath(renderer.transform);
+            string materials = MaterialSummary(renderer.sharedMaterials);
+            if (!MentionsToken(path, tokens) && !MentionsToken(mesh == null ? string.Empty : mesh.name, tokens)
+                && !MentionsToken(materials, tokens))
+            {
+                continue;
+            }
+
+            lines.Add(string.Format(
+                "  SMR {0}: enabled={1}, active={2}, visible={3}, verts={4}, world={5}, position={6}, scale={7}, layer={8}, rootBone={9}, bones={10}, updateWhenOffscreen={11}",
+                path, renderer.enabled, renderer.gameObject.activeInHierarchy, renderer.isVisible,
+                mesh == null ? -1 : mesh.vertexCount, BoxText(true, renderer.bounds),
+                renderer.transform.position.ToString("F2"),
+                renderer.transform.lossyScale.ToString("F3"),
+                renderer.gameObject.layer,
+                renderer.rootBone == null ? "none" : TransformPath(renderer.rootBone),
+                renderer.bones == null ? 0 : renderer.bones.Length,
+                renderer.updateWhenOffscreen));
+
+            Material[] slots = renderer.sharedMaterials;
+            for (int i = 0; slots != null && i < slots.Length; i++)
+            {
+                if (slots[i] != null)
+                {
+                    lines.Add(string.Format("      slot {0}: {1}", i, SlotLine(slots[i])));
+                }
+            }
+        }
+
+        foreach (MeshRenderer renderer in SceneObjects<MeshRenderer>())
+        {
+            MeshFilter filter = renderer.GetComponent<MeshFilter>();
+            Mesh mesh = filter == null ? null : filter.sharedMesh;
+            string path = TransformPath(renderer.transform);
+            string materials = MaterialSummary(renderer.sharedMaterials);
+            if (!MentionsToken(path, tokens) && !MentionsToken(mesh == null ? string.Empty : mesh.name, tokens)
+                && !MentionsToken(materials, tokens))
+            {
+                continue;
+            }
+
+            lines.Add(string.Format(
+                "  MR {0}: enabled={1}, active={2}, visible={3}, verts={4}, world={5}, position={6}, scale={7}, layer={8}, mesh={9}, materials={10}",
+                path, renderer.enabled, renderer.gameObject.activeInHierarchy, renderer.isVisible,
+                mesh == null ? -1 : mesh.vertexCount, BoxText(true, renderer.bounds),
+                renderer.transform.position.ToString("F2"),
+                renderer.transform.lossyScale.ToString("F3"),
+                renderer.gameObject.layer, mesh == null ? "NULL" : mesh.name, materials));
+        }
+
+        report.AppendLine(string.Format(
+            "  {0}: {1} renderer(s) that the 3000-vertex draw list never shows", label, lines.Count));
+        for (int i = 0; i < lines.Count && i < 40; i++)
+        {
+            report.AppendLine(lines[i]);
+        }
+
+        if (lines.Count > 40)
+        {
+            report.AppendLine(string.Format("    ... {0} more", lines.Count - 40));
+        }
+    }
+
+    /// <summary>True when the text contains any of the tokens, case-insensitively.</summary>
+    private static bool MentionsToken(string text, string[] tokens)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        string lower = text.ToLowerInvariant();
+        foreach (string token in tokens)
+        {
+            if (lower.Contains(token))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The few properties that decide whether an eye reads as glass, as black, or as skin.</summary>
+    private static string SlotLine(Material material)
+    {
+        return string.Format(
+            "{0} shader={1} queue={2} keywords={3} {4}",
+            material.name, ShaderOf(material), material.renderQueue,
+            material.shaderKeywords == null ? "none" : string.Join(" ", material.shaderKeywords),
+            WrapMaterialProperties(material));
+    }
+
     private static string DrawReport(DAZSkinV2 subject)
     {
         StringBuilder report = new StringBuilder();
@@ -3401,7 +3526,7 @@ public static class RebuildGate
             return;
         }
 
-        string[] properties = { "_MainTex", "_DetailMap", "_GlossTex", "_BumpMap" };
+        string[] properties = { "_MainTex", "_DetailMap", "_GlossTex", "_BumpMap", "_SpecTex", "_TessTex" };
         for (int i = 0; i < list.Length; i++)
         {
             Material material = list[i];
@@ -3481,7 +3606,8 @@ public static class RebuildGate
             text.Append(string.Format("_Color=({0:F2}, {1:F2}, {2:F2}, {3:F2})", colour.r, colour.g, colour.b, colour.a));
         }
 
-        string[] textures = { "_MainTex", "_AlphaTex", "_SpecTex", "_GlossTex", "_BumpMap", "_DetailMap" };
+        string[] textures = { "_MainTex", "_AlphaTex", "_SpecTex", "_GlossTex", "_BumpMap", "_DetailMap",
+                              "_TessTex" };
         foreach (string property in textures)
         {
             if (!material.HasProperty(property))
@@ -3491,6 +3617,31 @@ public static class RebuildGate
 
             Texture texture = material.GetTexture(property);
             text.Append(string.Format("; {0}={1}", property, texture == null ? "None" : texture.name));
+        }
+
+        // The specular term is what a seam at a part joint is made of, and a joint is two neighbouring
+        // submeshes with their own material rather than one material seen twice. Every value the game
+        // pushes at runtime has to print on the slot, or a difference between two parts cannot be
+        // told from a value the dump simply omitted.
+        string[] scalars = { "_SpecColor", "_SpecInt", "_Shininess", "_Fresnel",
+                             "_DiffuseBumpiness", "_SpecularBumpiness", "_IBLFilter",
+                             "_Tess", "_TessPhong" };
+        foreach (string property in scalars)
+        {
+            if (!material.HasProperty(property))
+            {
+                continue;
+            }
+
+            if (property == "_SpecColor")
+            {
+                Color specular = material.GetColor(property);
+                text.Append(string.Format("; _SpecColor=({0}, {1}, {2})", Scalar(specular.r), Scalar(specular.g),
+                                          Scalar(specular.b)));
+                continue;
+            }
+
+            text.Append(string.Format("; {0}={1}", property, Scalar(material.GetFloat(property))));
         }
 
         return text.ToString();
@@ -3539,6 +3690,51 @@ public static class RebuildGate
             camera == null ? "n/a" : camera.farClipPlane.ToString("F1"),
             camera == null ? "n/a" : camera.allowHDR.ToString()));
 
+        // The rig the game's camera sits on comes out of an asset bundle, so which components the bundle
+        // prefab bound to in this project is written down nowhere in the project: a component whose script
+        // the bundle cannot resolve arrives as a null slot and says nothing at all. The camera's whole
+        // parent chain is therefore asked at run time what it carries. Post-processing is listed beside it
+        // because the shipped player has it and a missing component and a disabled one look the same in a
+        // still frame.
+        foreach (Camera each in Camera.allCameras)
+        {
+            Component[] components = each.GetComponents<Component>();
+            report.AppendLine(string.Format("  camera {0}: depth={1}, tag={2}, components: {3}",
+                TransformPath(each.transform), each.depth, each.tag, ComponentNames(components)));
+        }
+        if (camera != null)
+        {
+            for (Transform node = camera.transform; node != null; node = node.parent)
+            {
+                report.AppendLine(string.Format("  rig {0}: {1}",
+                    TransformPath(node), ComponentNames(node.GetComponents<Component>())));
+            }
+            PostProcessingBehaviour postProcessing = camera.GetComponent<PostProcessingBehaviour>();
+            report.AppendLine(string.Format("  post processing on the camera: {0}",
+                postProcessing == null ? "no component" :
+                (postProcessing.enabled ? "enabled" : "disabled")));
+            if (postProcessing != null)
+            {
+                PostProcessingProfile profile = postProcessing.profile;
+                report.AppendLine(string.Format("    profile: {0}", profile == null ? "none" : profile.name));
+                if (profile != null)
+                {
+                    report.AppendLine(string.Format(
+                        "    models: bloom={0}, eyeAdaptation={1}, colorGrading={2}, antialiasing={3}, vignette={4}, grain={5}",
+                        ModelState(profile.bloom), ModelState(profile.eyeAdaptation),
+                        ModelState(profile.colorGrading), ModelState(profile.antialiasing),
+                        ModelState(profile.vignette), ModelState(profile.grain)));
+                    report.AppendLine(string.Format(
+                        "    models: debugViews={0}, fog={1}, ambientOcclusion={2}, screenSpaceReflection={3}, depthOfField={4}, motionBlur={5}, userLut={6}, chromaticAberration={7}, dithering={8}",
+                        ModelState(profile.debugViews), ModelState(profile.fog),
+                        ModelState(profile.ambientOcclusion), ModelState(profile.screenSpaceReflection),
+                        ModelState(profile.depthOfField), ModelState(profile.motionBlur),
+                        ModelState(profile.userLut), ModelState(profile.chromaticAberration),
+                        ModelState(profile.dithering)));
+                }
+            }
+        }
+
         List<Light> lights = SceneObjects<Light>();
         report.AppendLine(string.Format("lights in the scene: {0}", lights.Count));
         foreach (Light light in lights)
@@ -3582,6 +3778,37 @@ public static class RebuildGate
         }
 
         return report.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>
+    /// The component names on one object, in the order Unity returns them. A null entry is a script the
+    /// running build could not bind, which is a normal outcome for a prefab that came out of a bundle.
+    /// </summary>
+    private static string ComponentNames(Component[] components)
+    {
+        if (components == null || components.Length == 0)
+        {
+            return "none";
+        }
+        string[] names = new string[components.Length];
+        for (int i = 0; i < components.Length; i++)
+        {
+            names[i] = components[i] == null ? "<missing script>" : components[i].GetType().Name;
+        }
+        return string.Join(", ", names);
+    }
+
+    /// <summary>
+    /// Whether one post-processing model is switched on. The model itself can be missing when a profile was
+    /// built by a version of the code that had fewer of them.
+    /// </summary>
+    private static string ModelState(PostProcessingModel model)
+    {
+        if (model == null)
+        {
+            return "missing";
+        }
+        return model.enabled ? "on" : "off";
     }
 
     /// <summary>
@@ -3913,6 +4140,7 @@ public static class RebuildGate
             }
 
             report.AppendLine(DrawReport(subject));
+            report.AppendLine(EyeReport());
             report.AppendLine(MaterialDump());
             report.AppendLine(ShadowReport());
             report.AppendLine(CaptureSkin(subject));

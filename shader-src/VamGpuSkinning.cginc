@@ -443,10 +443,16 @@ vam_skinned VamSkin(vam_appdata v) {
 #endif
 #endif
 
-    // Gram-Schmidt: in the compute-buffer path the buffers are skinned
-    // independently, so the tangent is not guaranteed to stay orthogonal to
-    // the normal.
-    tanWS = normalize(tanWS - nrmWS * dot(nrmWS, tanWS));
+    // Transform, normalize, stop.  The shipped vertex programs never
+    // orthogonalize the tangent against the normal: the plain SM40, the
+    // GPU-skinning SM40, the tessellation control point and the tessellation
+    // domain each spend exactly one `dp3`/`rsq`/`mul` on the tangent and hand
+    // it to the bitangent cross as it comes, and the pixel stage never
+    // re-orthogonalizes either.  Gram-Schmidt here would tilt every vertex of
+    // the TBN away from the original's by the normal component the tangent
+    // still carries, which perturbs the normal map across the seams between
+    // the meshes that carry the same material.
+    tanWS = normalize(tanWS);
 
     s.nrm = nrmWS;
     s.tan = tanWS;
@@ -1190,9 +1196,9 @@ void VamTessInterpolate(vam_tess_point p[3], float3 bary, out float3 posOS, out 
     nrmOS = p[0].nrm * bary.x + p[1].nrm * bary.y + p[2].nrm * bary.z;
 }
 
-// World-space varyings for a point inside a patch.  The Gram-Schmidt step is the
-// one VamSkin performs, so a tessellated triangle shades like the mesh triangle
-// it subdivides.  The tangent's handedness is interpolated too, the way the
+// World-space varyings for a point inside a patch.  It runs the same transform
+// VamSkin does, so a tessellated triangle shades like the mesh triangle it
+// subdivides.  The tangent's handedness is interpolated too, the way the
 // shipped domain interpolates it before rebuilding the bitangent.
 vam_v2f VamTessVaryings(vam_tess_point p[3], float3 bary) {
     float3 posOS, nrmOS;
@@ -1204,7 +1210,9 @@ vam_v2f VamTessVaryings(vam_tess_point p[3], float3 bary) {
     float3 tanWS = UnityObjectToWorldDir(p[0].tan.xyz * bary.x
                                        + p[1].tan.xyz * bary.y
                                        + p[2].tan.xyz * bary.z);
-    tanWS = normalize(tanWS - nrmWS * dot(nrmWS, tanWS));
+    // Same as the un-tessellated path: rotate, normalize, no orthogonalization
+    // against the interpolated normal (the shipped domain does the same).
+    tanWS = normalize(tanWS);
 
     float tanSign = (p[0].tan.w * bary.x + p[1].tan.w * bary.y + p[2].tan.w * bary.z)
                   * unity_WorldTransformParams.w;

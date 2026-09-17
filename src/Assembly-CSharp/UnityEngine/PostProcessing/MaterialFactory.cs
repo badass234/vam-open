@@ -17,7 +17,15 @@ namespace UnityEngine.PostProcessing
 			Material value;
 			if (!m_Materials.TryGetValue(shaderName, out value))
 			{
-				Shader shader = Shader.Find(shaderName);
+				// The post-processing stack builds its materials by name, and this project holds
+				// AssetRipper placeholders under exactly these names - Assets\Resources\shaders is
+				// 14 one-pass blits that answer to Hidden/Post FX/*, so Shader.Find would answer with
+				// one of those and the effect would draw a blit while the shipped implementation sat
+				// unread in the z_sha bundle. Routing the lookup through VamShaderProvider answers with
+				// the shipped shader, and with this project's own transcription of it once there is
+				// one. Nothing attaches PostProcessingBehaviour yet, so this closes the path ahead of
+				// the behaviour rather than changing what the game draws.
+				Shader shader = MeshVR.VamShaderProvider.FindByName(shaderName);
 				if (shader == null)
 				{
 					throw new ArgumentException($"Shader not found ({shaderName})");

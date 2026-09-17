@@ -434,7 +434,20 @@ public class MVRPluginManager : JSONStorable
 		gameObject.transform.localRotation = Quaternion.identity;
 		gameObject.transform.localScale = Vector3.one;
 		mVRScriptController.gameObject = gameObject;
-		ScriptProxy scriptProxy = type.CreateInstance(gameObject);
+		ScriptProxy scriptProxy = null;
+		try
+		{
+			scriptProxy = type.CreateInstance(gameObject);
+		}
+		catch (Exception createException)
+		{
+			// The component the constructor was building is on the object already, and Unity goes on
+			// calling Update on it, so a plugin that throws here reports its own exception on every
+			// frame afterwards. Destroying the object stops it at the point it failed.
+			ReportPluginFailure(mvrp, "Exception while creating plugin " + mvrp.pluginURLJSON.val, createException);
+			UnityEngine.Object.Destroy(gameObject);
+			return null;
+		}
 		if (scriptProxy == null)
 		{
 			SuperController.LogError("Failed to create instance of " + mvrp.pluginURLJSON.val);
@@ -507,6 +520,13 @@ public class MVRPluginManager : JSONStorable
 				catch (Exception ex)
 				{
 					SuperController.LogError("Exception during plugin script Init: " + ex);
+					// A plugin that throws its way out of Init leaves its own state half built, and
+					// Unity goes on calling Update on the component - the breathing plugin then
+					// reports a NullReferenceException for every frame the atom is loaded. Turning
+					// the component off stops the loop; the script panel and its toggle stay where
+					// they are, so a plugin that is worth retrying can still be switched back on.
+					component2.enabled = false;
+					ReportPluginFailure(mvrp, "Plugin " + mvrp.pluginURLJSON.val + " failed to initialize", ex);
 				}
 				if (component2.enabledJSON != null)
 				{
@@ -600,6 +620,31 @@ public class MVRPluginManager : JSONStorable
 			SuperController.singleton.SetMainMenuTab("TabUserPrefs");
 			SuperController.singleton.SetUserPrefsTab("TabSecurity");
 		}, null);
+	}
+
+	private static readonly HashSet<string> reportedPluginFailures = new HashSet<string>();
+
+	/// <summary>
+	/// Puts a plugin failure in front of the user, once per plugin.
+	///
+	/// A scene that asks for a plugin which is not installed, or one whose script throws while it is
+	/// being created, leaves something on screen that does not work. The log says so and the plugin
+	/// panel turns red, but neither is where the user is looking, and a plugin whose constructor
+	/// throws keeps throwing - one line per frame for as long as the object lives. The first failure
+	/// of a plugin is therefore shown in a dialog, and the log keeps the rest.
+	/// </summary>
+	protected static void ReportPluginFailure(MVRPlugin mvrp, string message, Exception failure)
+	{
+		string label = ((mvrp != null && mvrp.pluginURLJSON != null) ? mvrp.pluginURLJSON.val : "unknown");
+		string text = message + ((failure != null) ? (" [" + failure.GetType().Name + ": " + failure.Message + "]") : string.Empty);
+		SuperController.LogError(text);
+		if (!reportedPluginFailures.Add(label))
+		{
+			return;
+		}
+		SuperController.AlertUser(text, new UnityEngine.Events.UnityAction(delegate
+		{
+		}));
 	}
 
 	protected void SyncPluginUrlInternal(MVRPlugin mvrp, bool isFromConfirmDenyResponse)
@@ -979,7 +1024,7 @@ public class MVRPluginManager : JSONStorable
 				}
 			}
 			SetPluginPanelErrorColor(mvrp);
-			SuperController.LogError("Plugin file " + val + " does not exist");
+			ReportPluginFailure(mvrp, "Plugin file " + val + " does not exist", null);
 		}
 		else
 		{

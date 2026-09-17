@@ -26,9 +26,10 @@
 
     See docs\rebuild-project.md for the reasoning and the known dangling references.
 
-    Re-runnable: the target directory is rebuilt from scratch on every invocation, and the two
-    things inside it that are not the export's are carried across that wipe - Assets\Editor,
-    which is ours, and the StreamingAssets junction to the installation's bundles.
+    Re-runnable: the target directory is rebuilt from scratch on every invocation, and the things
+    inside it that are not the export's are carried across that wipe - Assets\Editor, which is
+    ours, the StreamingAssets junction to the installation's bundles, and the runtime data links
+    (AddonPackages, Custom, the saved scenes, prefs.json, version), which are re-made at the end.
 
 .EXAMPLE
     scripts\Setup-RebuildProject.ps1
@@ -401,6 +402,25 @@ if ($python -and (Test-Path -LiteralPath $shaderGen)) {
     }
 } else {
     Write-Warning 'Python not found; skipped the ComputeBuff shader generation.'
+}
+
+# ------------------------------------------------------- 6. runtime data links
+# The wipe at the top takes the junctions into the installation's AddonPackages and Custom with it,
+# and the export puts empty folders back in their place. FileManager then scans 0 packages, a scene
+# referred to by a package name ("MeshedVR.DemoScenes.2:/Saves/...") cannot be found, and
+# SuperController.Load() drops the request in silence - the run reports "requested=True, taken=False"
+# for a scene it never looked at, and the editor boots as if it were a fresh installation. The links
+# are re-made here rather than left to a step the caller has to remember.
+$dataLinkScript = Join-Path $PSScriptRoot 'New-RuntimeDataLinks.ps1'
+$installRoot    = Split-Path -Parent (Split-Path -Parent $ManagedDir)
+if ((Test-Path -LiteralPath (Join-Path $installRoot 'AddonPackages')) -and (Test-Path -LiteralPath $dataLinkScript)) {
+    Write-Host ''
+    # The data link script derives its own paths from $PSScriptRoot, which is empty inside param()
+    # defaults on PowerShell 5.1 when the script is run by path, so both are passed explicitly.
+    & $dataLinkScript -ProjectPath $TargetDir -InstallRoot $installRoot
+} else {
+    Write-Warning ("No installation with AddonPackages at $installRoot, so AddonPackages and Custom " +
+                   "stay empty and the editor will scan 0 packages. Run: scripts\New-RuntimeDataLinks.ps1")
 }
 
 Write-Host ''

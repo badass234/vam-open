@@ -78,6 +78,22 @@ $ProjectPath = (Resolve-Path -LiteralPath $ProjectPath).Path
 $LogFile = [System.IO.Path]::GetFullPath($LogFile)
 New-Item -ItemType Directory -Path (Split-Path -Parent $LogFile) -Force | Out-Null
 
+# The game reads its content from the process working directory, which in the editor is the project
+# directory: AddonPackages and Custom have to be junctions to the installation, not the empty folders
+# the AssetRipper export leaves behind. With empty folders FileManager scans 0 packages and a scene
+# named by a package ("MeshedVR.DemoScenes.2:/Saves/...") cannot resolve, so SuperController.Load()
+# returns without a word and the run reports "requested=True, taken=False, refused=False" - the
+# verdict of a run that never loaded anything. Setup-RebuildProject.ps1 re-makes the links itself,
+# but a project assembled before that fix keeps the failure, and it costs half an hour to find.
+foreach ($link in 'AddonPackages', 'Custom') {
+    $linkPath = Join-Path $ProjectPath $link
+    $item = Get-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue
+    if (-not $item -or -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw ("$linkPath is not a junction to the installation: the game would scan 0 packages and " +
+               'every scene load would be dropped in silence. Run: scripts\New-RuntimeDataLinks.ps1')
+    }
+}
+
 # The gate writes its report both into the log and beside it, so both have to start out empty - a
 # stale report would otherwise be read as this run's result when the run fails to start at all.
 # [System.IO.Path]::ChangeExtension($path, $null) keeps the trailing dot on PowerShell 5.1, which
