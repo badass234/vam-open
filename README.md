@@ -1,4 +1,4 @@
-# VAMOpen 0.7.0-alpha
+# VAMOpen 0.1.7-alpha
 
 Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
 developers just keep taking money and releasing tiny fixes for years.
@@ -32,9 +32,9 @@ contains the recovered code and the pipeline, and you point it at your own insta
 Also, the shading model of the drawn body has been compared with the released build's own shader
 bytecode, instruction by instruction, and matches it: the tangent frame, the normal map, the albedo
 override, the gloss and bump offsets, the highlight exponent and Fresnel curves, the SH ambient, the
-reflection, the direct light and the final composite. That is what 0.2.0 adds over 0.1.1 - not a new
-feature, but the ground the next rounds stand on - and 0.5.0 adds the point light's shadow filter to
-the same list, with the one substitution it needed named where it is made.
+reflection, the direct light and the final composite. That is not a feature but the ground everything
+else stands on, and the point light's shadow filter is on the same list, with the one substitution it
+needed named where it is made.
 
 ## What's still in progress
 
@@ -44,8 +44,9 @@ the same list, with the one substitution it needed named where it is made.
   at, and with them equal the preset turns out to account for about half a percent of the skin's
   brightness rather than for the look. The shipped bytecode rules the shader out, so what is left is
   what is bound to it: the specular IBL cube's import colour space, the specular/fresnel values the
-  material carries, and the bloom threshold. The list is in `CHANGELOG.md` under *Round 4*, the
-  measurement under *Round 6*.
+  material carries, and the bloom threshold. The list is the *The base pass, read back out of the
+  shipped bytecode* bullet in `CHANGELOG.md`; the measurement is the *The editor and the installation
+  had never rendered under the same settings* one.
 - The `Marmoset/` set is not transcribed yet, and it is what the last 21 materials still draw: the live
   skin's `EyeReflection-1` (left with nothing to redirect to by
   `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`), the overlay helpers and
