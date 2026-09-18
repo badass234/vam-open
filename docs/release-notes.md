@@ -9,6 +9,79 @@ The analysis behind the measurements is in the other files in this directory - `
 look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the project and its harness,
 `asset-export.md` for the extraction, `parity-report.md` for the assembly.
 
+## 0.1.9-alpha
+
+- **The engine moved to Unity 2019.4 LTS (2019.4.41f2).** Hop two of two, again made by the editor's own
+  API Updater (`Unity.exe -batchmode -nographics -quit -accept-apiupdate -projectPath VaM_Rebuild`), and
+  again only a handful of sites had to change. The first open answered with **612 `error CS` lines**;
+  splitting them by origin says where the work was: **548 of them were
+  `Library\PackageCache\com.unity.package-manager-ui@2.0.13`** (428 `CS0246`, 68 `CS0234`, 44 `CS0308`,
+  8 `CS0115`) - that version of the editor's *own* package manager was pinned in `manifest.json` by the
+  2018.4 editor, and its UI files are written against 2018.4's UI Elements, so under 2019.4 they cannot
+  compile at all. 62 more lines were four distinct `CS0619` messages on **8 sites** of this project's own
+  code, and 2 were one ambiguity. Removing the pin lets the editor use the copy of the package manager it
+  ships with, and `com.unity.package-manager-ui` is no longer in the manifest.
+- **What 2019.1 removed, and what replaced it.** `MovieTexture` is gone from the engine, so
+  `PersistentData` no longer registers it and `PersistentMovieTexture` no longer names the type in
+  `WriteTo`/`ReadFrom` - the class and its `loop` field stay, because they are the shape of what a saved
+  file carries, not a use of the engine type; the same reasoning keeps `PersistentGUIElement` while
+  `typeof(GUIElement)` leaves the registry. The engine's enum-less
+  `Graphics.DrawProceduralIndirect(MeshTopology, ComputeBuffer, int)` is obsolete with the migration
+  `(UnityUpgradable) -> DrawProceduralIndirectNow(*)`; 2019 split drawing into a deferred and an immediate
+  form, and the decompiled call is the immediate one (`material.SetPass` right before it), so the three
+  sites in `CinematicEffects\DepthOfField.cs` and `ImageEffects\DepthOfField.cs` become
+  `DrawProceduralIndirectNow`. Last, `LeapEyeDislocator` had to qualify its attribute:
+  `[InspectorName("Baseline")]` is ambiguous under 2019, because the engine added
+  `UnityEngine.InspectorNameAttribute` next to Leap's own property-drawer attribute of the same name
+  (`CS0104`); it is now `[Leap.Unity.Attributes.InspectorName("Baseline")]`.
+- **Unity UI is a package from 2019.2, and that had to be declared.** Under 2019.4 the editor no longer
+  carries `Editor\Data\UnityExtensions\Unity\GUISystem\` (only Tango and UnityVR are left there), and
+  `com.unity.ugui` sits in `Editor\Data\Resources\PackageManager\BuiltInPackages\` beside
+  `com.unity.2d.sprite`, `com.unity.2d.tilemap` and `com.unity.package-manager-ui`. `UnityEngine.UI` is
+  referenced by **309** files in `src\`, and before the pin the 36-entry manifest resolved it only
+  transitively - through `com.unity.purchasing` - so a future `purchasing` change would have taken the
+  whole UI with it. `"com.unity.ugui": "1.0.0"` is now an explicit dependency, which the lock file records
+  as `depth: 0` where it used to be `1`.
+- **The plugin compiler is built from source under the new editor too, and the result is the same file.**
+  The recipe is editor `mono.exe` + `MonoBleedingEdge\lib\mono\4.5\mcs.exe` over the 797 sources in
+  `src\mcs`; both binaries exist in the 2019.4 editor, `scripts\Build-McsCompiler.ps1` runs to exit 0, and
+  the output is **1 967 104 B with SHA-256 `FC5C08BC…`, identical to the 2018.4 build and to the
+  `mcs.dll` in `artifacts\player\VAMOpen_Data\Managed\`**. So the compiler this project ships does not
+  depend on which editor built it, and a hop needs no second look at it.
+- **The hop rewrote two more tracked project files, and touched nothing else.**
+  `ProjectSettings\ProjectVersion.txt` now names `2019.4.41f2` (with the revision line the editor adds),
+  and `ProjectSettings\GraphicsSettings.asset` came back with `serializedVersion: 12 → 13`, one more
+  built-in shader in the always-included list (`fileID: 16001`), `m_LogWhenShaderIsCompiled: 0` and
+  `m_AllowEnlightenSupportForUpgradedProject: 1`. Both are kept as the editor wrote them. The fields the
+  hop *could* have moved did not move: `scriptingRuntimeVersion: 1`, `apiCompatibilityLevel: 3` and
+  `allowUnsafeCode: 1` are as they were under 2018.4, and `EditorSettings.asset` still reports
+  `serializedVersion: 7` with no `m_AssetPipelineVersion`, i.e. this project is on the **V1 asset import
+  pipeline**, so 2019's V1 → V2 migration question does not arise for it.
+- **The item-by-item audit of the 2019 LTS guide came out with one real item and no others.**
+  `docs\unity-upgrade-audit.md` carries the full table with the evidence per line; in short: `Addressables`,
+  animation C# jobs, `UIElements` and LWRP/URP are not used by this project at all, `ShaderUtil`'s renamed
+  clearing call is never called (the only `ShaderUtil.` in the sources is this project's own
+  `RuntimeShaderUtil`), tilemap and sprite tooling are not used, `.NET 3.5` was already gone, and the
+  `UNet` high-level API question ends where `tools\audit_plugin_apis.py` says it does: pointed at the 98
+  binary candidates it walks 13 managed assemblies, 22 native DLLs and 61 files with no CLR metadata, and
+  the only hits of the whole guide's API list are `NetworkPlayerSurrogate` / `NetworkViewIDSurrogate` in
+  `RTTypeModel.dll` - the two surrogate types this repository carries on purpose, which touch no Unity
+  networking API (0 hits for `NetworkView`, `NetworkIdentity`, `NetworkManager`, `Network`, `MasterServer`,
+  `RPCMode`). The `NetworkMatch` component that does exist compiles against 2019.4, where it is still part
+  of `UnityEngine`.
+- **The standalone player builds and boots on 2019.4.** `scripts\Invoke-PlayerBuild.ps1` ends with
+  `----- RebuildPlayer OK -----`, the log banner reads
+  `Built from 'HEAD' branch; Version is '2019.4.41f2 (6b23d448b533) revision 7021524' Using compiler
+  version '191627012'`, 10 scenes are enabled with `NewStart.unity` as the boot scene, and the output is
+  `artifacts\player\` - `VAMOpen.exe` 650 752 B, 1 420 665 723 B in total.
+- **And the timed Play gate passes on 2019.4.** The ordinary boot run
+  (`scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 150 -WarmupSeconds 15`) reports
+  `errors and exceptions: 0`, `loading: SuperController=False, GlobalSceneOptions=False, simulation
+  resetting=False`, `atoms: 4 ([CameraRig], CoreControl, PlayerNavigationPanel, WindowCamera)`,
+  `probes: no TEMP DIAGNOSTIC probe is compiled in`, `0` shader errors and warnings, and ends with
+  `----- RebuildGate OK -----` - the same reading the same gate gave under 2018.4, which is the point:
+  the hop did not change what the boot does. Log: `artifacts\smoke-play.log`.
+
 ## 0.1.8-alpha
 
 - **The engine moved to Unity 2018.4 LTS (2018.4.36f1).** The project was pinned to the editor the game

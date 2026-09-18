@@ -31,13 +31,13 @@ namespace Obi
 				return;
 			}
 			TerrainData terrainData = terrainCollider.terrainData;
-			float[,] heights = terrainData.GetHeights(0, 0, terrainData.heightmapWidth, terrainData.heightmapHeight);
-			float[] array = new float[terrainData.heightmapWidth * terrainData.heightmapHeight];
-			for (int i = 0; i < terrainData.heightmapHeight; i++)
+			float[,] heights = terrainData.GetHeights(0, 0, terrainData.heightmapResolution, terrainData.heightmapResolution);
+			float[] array = new float[terrainData.heightmapResolution * terrainData.heightmapResolution];
+			for (int i = 0; i < terrainData.heightmapResolution; i++)
 			{
-				for (int j = 0; j < terrainData.heightmapWidth; j++)
+				for (int j = 0; j < terrainData.heightmapResolution; j++)
 				{
-					array[i * terrainData.heightmapWidth + j] = heights[i, j];
+					array[i * terrainData.heightmapResolution + j] = heights[i, j];
 				}
 			}
 			Oni.UnpinMemory(dataHandle);
@@ -51,11 +51,11 @@ namespace Obi
 			if (terrainCollider != null)
 			{
 				TerrainData terrainData = terrainCollider.terrainData;
-				if (terrainData != null && (terrainData.size != size || terrainData.heightmapWidth != resolutionU || terrainData.heightmapHeight != resolutionV || heightmapDataHasChanged))
+				if (terrainData != null && (terrainData.size != size || terrainData.heightmapResolution != resolutionU || terrainData.heightmapResolution != resolutionV || heightmapDataHasChanged))
 				{
 					size = terrainData.size;
-					resolutionU = terrainData.heightmapWidth;
-					resolutionV = terrainData.heightmapHeight;
+					resolutionU = terrainData.heightmapResolution;
+					resolutionV = terrainData.heightmapResolution;
 					heightmapDataHasChanged = false;
 					adaptor.Set(size, resolutionU, resolutionV, dataHandle.AddrOfPinnedObject());
 					Oni.UpdateShape(oniShape, ref adaptor);

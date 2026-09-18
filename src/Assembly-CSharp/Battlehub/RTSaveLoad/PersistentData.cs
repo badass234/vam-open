@@ -106,7 +106,8 @@ namespace Battlehub.RTSaveLoad
 			m_objToData.Add(typeof(LightProbes), typeof(PersistentLightProbes));
 			m_objToData.Add(typeof(LightmapSettings), typeof(PersistentLightmapSettings));
 			m_objToData.Add(typeof(MeshRenderer), typeof(PersistentMeshRenderer));
-			m_objToData.Add(typeof(GUIElement), typeof(PersistentGUIElement));
+			// GUIElement was removed from the engine in 2019.1, so it can no longer be registered here.
+			// PersistentGUIElement stays: the class itself never names the type.
 			m_objToData.Add(typeof(Light), typeof(PersistentLight));
 			m_objToData.Add(typeof(LightProbeGroup), typeof(PersistentLightProbeGroup));
 			m_objToData.Add(typeof(LightProbeProxyVolume), typeof(PersistentLightProbeProxyVolume));
@@ -198,7 +199,8 @@ namespace Battlehub.RTSaveLoad
 			m_objToData.Add(typeof(AudioMixer), typeof(PersistentAudioMixer));
 			m_objToData.Add(typeof(AudioMixerSnapshot), typeof(PersistentAudioMixerSnapshot));
 			m_objToData.Add(typeof(AudioMixerGroup), typeof(PersistentAudioMixerGroup));
-			m_objToData.Add(typeof(MovieTexture), typeof(PersistentMovieTexture));
+			// MovieTexture was removed from the engine in 2019.1. PersistentMovieTexture stays registered
+			// nowhere, but the class itself survives as the carrier of its serialised `loop` field.
 			m_objToData.Add(typeof(WebCamTexture), typeof(PersistentWebCamTexture));
 			m_objToData.Add(typeof(Animator), typeof(PersistentAnimator));
 			m_objToData.Add(typeof(StateMachineBehaviour), typeof(PersistentStateMachineBehaviour));

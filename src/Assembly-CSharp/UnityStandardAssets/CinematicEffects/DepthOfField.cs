@@ -461,7 +461,9 @@ namespace UnityStandardAssets.CinematicEffects
 				textureBokehMaterial.SetTexture("_MainTex", bokehTexture);
 				textureBokehMaterial.SetVector("_Screen", new Vector3(1f / (1f * (float)source.width), 1f / (1f * (float)source.height), num3));
 				textureBokehMaterial.SetPass(0);
-				Graphics.DrawProceduralIndirect(MeshTopology.Points, computeBufferDrawArgs, 0);
+				// Unity 2019 split DrawProceduralIndirect into a deferred and an immediate form; the
+				// decompiled call is the immediate one.
+				Graphics.DrawProceduralIndirectNow(MeshTopology.Points, computeBufferDrawArgs, 0);
 				Graphics.Blit(temporaryRenderTexture5, destination);
 			}
 			else

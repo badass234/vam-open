@@ -5,6 +5,22 @@ last number counts patches inside the `0.1` line while the first two stand still
 design - the version history is meant to be readable - and the detail behind it, with the measurements, is
 in [`docs/release-notes.md`](docs/release-notes.md).
 
+## 0.1.9-alpha
+
+The engine is **Unity 2019.4 LTS** now (`2019.4.41f2`), the second and last hop from the `2018.1.9f2` the game
+ships with, and again the editor's own API Updater made it. Two engine types the game still used were
+removed in 2019.1 - `MovieTexture` and `GUIElement` - so their entries leave the save/load registry while
+their surrogate classes stay behind as carriers of the serialisation they own, and the three
+`Graphics.DrawProceduralIndirect` calls in the two depth-of-field effects become the immediate form Unity
+renamed them to. One pinned package had to go: `com.unity.package-manager-ui` 2.0.13 is 2018.4's copy of the
+editor's own package manager, and under 2019.4 it is what produced **548 of the 612 error lines** of the
+first open. `com.unity.ugui` had to be pinned explicitly, because 2019.2 moved Unity UI out of the built-in
+editor extensions and into a package. The **plugin compiler is rebuilt from source under the new editor and
+comes out byte-for-byte identical** to the 2018.4 build (same size, same SHA-256), so that recipe does not
+depend on the editor. Compile gate `verdict: OK`, 0 unique errors, the standalone player builds and boots on
+2019.4, and the item-by-item audit against Unity's 2019 LTS guide is in
+[`docs/unity-upgrade-audit.md`](docs/unity-upgrade-audit.md).
+
 ## 0.1.8-alpha
 
 The engine is **Unity 2018.4 LTS** now (`2018.4.36f1`), hopped from the `2018.1.9f2` the game ships with by

@@ -16,7 +16,7 @@ VaM_Rebuild\                        6 518 files, 247.8 MB
     GameObject AnimeClip AnimatorController Avatar Cubemap Flare Font
     Material Mesh PhysicMaterial Resources Shader Sprite TextAsset Texture2D
   Packages\manifest.json
-  ProjectSettings\                   17 .asset + ProjectVersion.txt (2018.4.36f1)
+  ProjectSettings\                   17 .asset + ProjectVersion.txt (2019.4.41f2)
 ```
 
 ## What is replaced, and why
@@ -187,7 +187,7 @@ the three GUIDs from `known_dangling_guids.txt`.
 2018.1.9f2, and that was correct for the version: in Unity 2018.1 uGUI is not yet a Package
 Manager package - `UnityEngine.UI.dll` is supplied by the built-in Unity extension at
 `Editor\Data\UnityExtensions\Unity\GUISystem\`, so no `com.unity.ugui` entry exists or is needed
-(the package only appears from 2019.2). `com.unity.timeline` was considered and rejected on
+there. `com.unity.timeline` was considered and rejected on
 evidence: `UnityEngine.Timeline` is referenced by 0 files in `src\` (only the builtin
 `UnityEngine.TimelineModule`, covered by `com.unity.modules.director`, is used).
 
@@ -195,18 +195,31 @@ evidence: `UnityEngine.Timeline` is referenced by 0 files in `src\` (only the bu
 `com.unity.analytics` 3.2.3, `com.unity.collab-proxy` 1.2.15, `com.unity.package-manager-ui` 2.0.13,
 `com.unity.purchasing` 2.2.1 and `com.unity.textmeshpro` 1.4.1 - plus the trailing newline the file
 never had. That is 2018.4's own default set for a project that declares no hold on it, so the hop
-wrote it into a tracked file. It is kept exactly as the editor left it: the compile gate and a hand
-run are both green in that state, and `com.unity.textmeshpro` is genuinely load-bearing - it is the
-package that compiles `Library\ScriptAssemblies\Unity.TextMeshPro.dll`, and no TMP copy exists under
+wrote it into a tracked file. `com.unity.textmeshpro` is genuinely load-bearing - it is the package
+that compiles `Library\ScriptAssemblies\Unity.TextMeshPro.dll`, and no TMP copy exists under
 `Assets\Plugins`. The same first open also created `ProjectSettings\VFXManager.asset`, a settings
 file 2018.1 had no counterpart for.
+
+**The 2019.4 editor then moved the file in two ways: one entry had to go, and uGUI had to be pinned.**
+`com.unity.package-manager-ui` 2.0.13 was written against 2018.4's UI Elements
+(`UnityEngine.Experimental.UIElements`, a namespace that stopped being experimental in 2019), so it no
+longer compiles: **548 of the 612 `error CS` lines of the 2019.4 first open are its own**, all of them
+`Experimental.UIElements` lookups. It is removed rather than patched - it is the *editor's* package
+manager window, not part of the runtime this project builds. In its place `com.unity.ugui` 1.0.0 is now
+an explicit entry: from 2019.2 Unity UI is a Package Manager package, and `Editor\Data\UnityExtensions\`
+in 2019.4 no longer carries a `Unity\GUISystem\` folder at all. Before the pin the 309 files under
+`src\` that use `UnityEngine.UI` resolved only transitively, through `com.unity.purchasing` - a
+dependency nothing in this project controls; `Packages\packages-lock.json` now records
+`com.unity.ugui` at `depth: 0` where the transitive route had it at `1`. The rest of the 2018.4
+default set is kept exactly as the editor left it, and the compile gate plus a hand run are green in
+that state.
 
 ## The Unity editor that has to open this project
 
 `ProjectSettings\ProjectVersion.txt` names the editor, and the scripts read *that file* instead of
 hardcoding a path (`scripts\UnityEditor.ps1`), so a version hop needs no script edit. The project is
-now pinned to **2018.4.36f1**, the last 2018 LTS - hop one of two, with 2019.4 to come; what the hop
-cost is in [`release-notes.md`](release-notes.md), and the item-by-item audit of the hop against
+now pinned to **2019.4.41f2**, the last 2019 LTS - hop two of two, both made; what the hops cost is in
+[`release-notes.md`](release-notes.md), and the item-by-item audit of each hop against
 Unity's own upgrade guide is in [`unity-upgrade-audit.md`](unity-upgrade-audit.md).
 
 That file is also a trap, and it caught the hop once: `Setup-RebuildProject.ps1` lays the export down
@@ -223,8 +236,9 @@ rather than a jump to whatever is installed here (Unity 6000.6.0f1 also is).
 The licence blocked everything at first: the legacy validator in 2018.1.9f2 rejects the
 `Unity_lic.ulf` that Unity Hub keeps re-issuing. Activating once through the editor's own GUI fixed
 it (`C:\ProgramData\Unity\Unity_lic.ulf`), and the project imports, compiles and plays in batch mode.
-**2018.4 accepted that same file without being re-activated** - its log opens with `Initiating legacy
-licensing module` and reports only `Next license update check is after ...`. Keep Unity Hub closed -
+**Both later editors accepted that same file without being re-activated** - 2018.4's log opens with
+`Initiating legacy licensing module` and reports only `Next license update check is after ...`, and
+2019.4 imports, compiles and runs `-executeMethod` on it unchanged. Keep Unity Hub closed -
 its `updateLicenses` pass re-breaks the 2018 editors. The history is in `unity-editor.md`.
 
 ## Project settings that are not defaults

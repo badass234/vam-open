@@ -1,4 +1,4 @@
-# VAMOpen 0.1.8-alpha
+# VAMOpen 0.1.9-alpha
 
 Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
 developers just keep taking money and releasing tiny fixes for years.
@@ -72,7 +72,7 @@ The hardest part here is the engine migration. Everything else after that is muc
 
 ## How to try it
 
-You need Windows, Unity **2018.4 LTS (2018.4.36f1)**, and your own Virt-a-Mate installation. Keep Unity Hub closed,
+You need Windows, Unity **2019.4 LTS (2019.4.41f2)**, and your own Virt-a-Mate installation. Keep Unity Hub closed,
 otherwise it will reissue the license file and the 2018 editors reject the reissued one.
 
 ```powershell
@@ -153,7 +153,7 @@ parameter with a portable default:
   take the version out of `VaM_Rebuild\ProjectSettings\ProjectVersion.txt` through
   `scripts\UnityEditor.ps1` and look for `%ProgramFiles%\Unity\Hub\Editor\<version>\Editor\Unity.exe`.
   That file is the one place an engine version lives, so a version hop needs no script edit - the
-  project now names **2018.4.36f1**, the last 2018 LTS. Pass `-UnityExe` for an installation
+  project now names **2019.4.41f2**, the last 2019 LTS. Pass `-UnityExe` for an installation
   elsewhere, including one outside Unity Hub.
 - **Everything inside the repository** is resolved relative to the script's own location, so the
   scripts work from any working directory. Beware that PowerShell's `Set-Location` does not move the

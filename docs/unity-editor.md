@@ -2,10 +2,11 @@
 
 > **Status: resolved — read from here.** The editor is activated: the user launched 2018.1.9f2
 > directly once and signed in through its own GUI, so `scripts\Activate-UnityLicense.ps1` was not
-> needed. Import, compilation and batch `-executeMethod` have worked since then. **The hop to
-> 2018.4.36f1 did not touch the licence** - it accepted `Unity_lic.ulf` as it was, with only
-> `Initiating legacy licensing module` and `Next license update check is after ...` in its log, so
-> nothing here had to be redone. Everything below is the breakdown of the failure causes and the
+> needed. Import, compilation and batch `-executeMethod` have worked since then. **Neither hop has
+> touched the licence** - 2018.4 accepted `Unity_lic.ulf` as it was, with only
+> `Initiating legacy licensing module` and `Next license update check is after ...` in its log, and
+> 2019.4 imports, compiles and runs `-executeMethod` on the same file, so nothing here had to be
+> redone for either. Everything below is the breakdown of the failure causes and the
 > fallback paths: it is needed only if the license breaks again, and the only known way to break it
 > is to launch Unity Hub again (its `updateLicenses` will reissue the ULF).
 
@@ -86,7 +87,10 @@ The verdict is the `----- RebuildGate OK -----` marker in the log, not the retur
 ## Verified facts about the environment
 
 - Editor: `%ProgramFiles%\Unity\Hub\Editor\2018.1.9f2\Editor\Unity.exe`, FileVersion
-  `2018.1.9.10931241` — matches the game's `VaM_Data\UnityPlayer.dll`.
+  `2018.1.9.10931241` — matches the game's `VaM_Data\UnityPlayer.dll`. That is the editor the *game*
+  was built with. The project itself is built by `2019.4.41f2`
+  (`%ProgramFiles%\Unity\Hub\Editor\2019.4.41f2\Editor\Unity.exe`), which is the version
+  `VaM_Rebuild\ProjectSettings\ProjectVersion.txt` names and the one every script launches.
 - Unity 6000.6.0f1 is installed alongside — not suitable for this project (different API, different serialization).
 - Hub CLI (`Unity Hub.exe -- --headless`) only supports `editors`, `install-path`, `install`,
   `install-modules` — there is no "open project" command, `unityhub://` only opens OAuth login.

@@ -11,7 +11,9 @@ namespace Leap.Unity
 
 		[MinValue(0f)]
 		[Units("MM")]
-		[InspectorName("Baseline")]
+		// Qualified: Unity 2019 added UnityEngine.InspectorNameAttribute, so the bare name is ambiguous
+		// between it and Leap's own property-drawer attribute.
+		[Leap.Unity.Attributes.InspectorName("Baseline")]
 		[SerializeField]
 		private float _customBaselineValue = 64f;
 

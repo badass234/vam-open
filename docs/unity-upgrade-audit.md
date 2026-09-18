@@ -70,7 +70,7 @@ Nothing in the guide required a code change that the API Updater had not already
 the hop needed (`SetVector` folding, `ComputeBufferType.DrawIndirect`, `MeshColliderCookingOptions`) came
 from the compiler and the editor, not from the guide.
 
-## What stays open after this hop
+## What stays open after the 2018.4 hop
 
 The guide names these as behaviour changes, and no static audit closes them. They are on the manual test
 list for the hop, and the manual test is the only gate that can pass them:
@@ -89,26 +89,85 @@ list for the hop, and the manual test is the only gate that can pass them:
 - **GI with custom shaders.** GPU instancing and lightmapping only reach a shader that opts in; a family
   that is not updated simply loses GI rather than failing. This is a picture, not an error.
 
-## 2019.4 hop
+## 2018.4.36f1 → 2019.4.41f2
 
-Filled in when the hop is made. What is already measured about the items Unity lists for
-[2019 LTS](https://docs.unity3d.com/2019.4/Documentation/Manual/UpgradeGuide2019LTS.html):
+The hop is **made**. The editor's API Updater ran on the first open
+(`Unity.exe -batchmode -nographics -quit -accept-apiupdate -projectPath VaM_Rebuild`), the compile gate is
+green, the standalone player builds and boots under 2019.4, the timed Play gate reports
+`errors and exceptions: 0` with `----- RebuildGate OK -----` on the boot scene under both editors, and the
+numbers behind every line below are in [`release-notes.md`](release-notes.md), `0.1.9-alpha`.
 
-- **`com.unity.ugui` becomes a package.** `Packages\manifest.json` holds 36 entries and
-  `com.unity.modules.ui` is one of them; `com.unity.ugui` is not there yet, so the editor adds it on
-  first open. `UnityEngine.UI.dll` moves out of the built-in `UnityExtensions\Unity\GUISystem\` copy
-  and into the package, which is where this project's references to `UnityEngine.UI` have to keep
-  resolving from.
-- **Assembly definition files and the `unsafe` setting** move: `allowUnsafeCode` becomes a per-assembly
-  option. The project has exactly one `.asmdef`,
-  `Assets\Scripts\Assembly-UnityScript\VaMUnityScript.asmdef`, and it already carries
-  `"allowUnsafeCode": true`, so this is a setting to keep rather than to add; the project-wide
-  `allowUnsafeCode: 1` in `ProjectSettings.asset` stays the switch for the assemblies that have no
-  asmdef.
-- **`mcs`'s Roslyn path**: the editor's own compiler and the runtime compiler it loads are independent, and
-  the rebuilt `mcs.dll` is the second one - it is unaffected by the editor moving to a newer Roslyn, but the
-  build recipe (editor `mono.exe` + `4.5\mcs.exe`) has to be re-verified against the new editor's Mono.
-- **Legacy `ScriptingRuntimeVersion` / `ApiCompatibilityLevel` UI**: 2019 offers only .NET 4.x, and this
-  project is already there - `scriptingRuntimeVersion: 1` and `apiCompatibilityLevel: 3` in
-  `ProjectSettings.asset` - so what the hop does is make the two fields disappear from the settings
-  file while the values they name stay what they were.
+The first open answered with **612 `error CS` lines**. Peeling them apart by origin is the audit's real
+content, because it shows how little of the guide's list the hop actually touched: **548 of the 612 came
+from `Library\PackageCache\com.unity.package-manager-ui@2.0.13`** - the editor's own package manager,
+pinned into `manifest.json` by the 2018.4 editor and written against 2018.4's UI Elements, so every one of
+its `UnityEngine.Experimental.UIElements` / `UnityEditor.Experimental.UIElements` references became
+`CS0234`/`CS0246` (428 + 68 + 44 + 8 lines). Removing that pin removes all 548. The remaining 62 are four
+distinct `CS0619` removals on 8 sites of this project's own code, plus one `CS0104` ambiguity - that is the
+whole of what the guide's list cost here.
+
+| Guide item | Verdict | Evidence |
+|---|---|---|
+| Unity UI leaves the built-in editor extensions and becomes a package (2019.2) | **change needed - the package is pinned** | under 2019.4 `Editor\Data\UnityExtensions\Unity\` holds `Tango` and `UnityVR` and **no `GUISystem`**, while `com.unity.ugui` sits in `Editor\Data\Resources\PackageManager\BuiltInPackages\`. `UnityEngine.UI` is referenced by **309** files under `src\`, and before the pin the 36-entry manifest resolved it only *transitively*, through `com.unity.purchasing` - a dependency nothing in this project controls. `manifest.json` now carries `"com.unity.ugui": "1.0.0"` (line 8) beside `com.unity.purchasing` (line 6), and `Packages\packages-lock.json` records it at `depth: 0` where the transitive route had it at `1` |
+| Tilemap Editor and Sprite Editor move to packages | closed | `GridBrush`, `GridSelection`, `GridPalette`, `UnityEditor.Tilemaps`, `UnityEditor.U2D.Sprites` - **0** occurrences in `src\`; the one asmdef references none of them |
+| UI Elements is no longer `Experimental` | closed | 0 occurrences of `UnityEditor.Experimental.UIElements` in `src\`; the only `UnityEngine.Experimental.UIElements` lines in the whole hop log belong to the package manager above |
+| `Addressables`' `AsyncLoad` correction | closed | Addressables is not used: 0 `Addressables` and 0 `AsyncOperationHandle` in `src\` |
+| Animation C# jobs (`UnityEngine.Experimental.Animations`) | closed | 0 occurrences; no `AnimationStream`, no `AnimationScriptPlayable`, no `IAnimationJob` |
+| LWRP → URP, and the SRP API changes | closed | no `com.unity.render-pipelines.*` in the manifest and no `ScriptableRenderPipeline` / `RenderPipelineManager` / `beginCameraRendering` in `src\`; this project's look comes from its own Marmoset-family shaders, and the only SRP type it names is `RenderPipelineAsset`, serialised by a surrogate |
+| `RenderPipelineAsset` changes namespace | closed, **no edit was needed** | measured against the engine rather than read: under 2019.4 `UnityEngine.CoreModule.dll` declares **`UnityEngine.Rendering.RenderPipelineAsset` only** (reflection over the type list; no `UnityEngine.Experimental.Rendering` copy). `PersistentData.cs` already imports `UnityEngine.Rendering` (line 23) as well as `UnityEngine.Experimental.Rendering` (line 20, still a live namespace for other engine types), so `typeof(RenderPipelineAsset)` at line 228 binds to the `UnityEngine.Rendering` one on both sides of the hop |
+| The high-level UNet API leaves the engine | closed, **and the prediction was wrong in a useful way** | the components really are gone - `NetworkIdentity`, `NetworkManager`, `NetworkServer`, `NetworkClient`, `NetworkBehaviour`, `NetworkTransform` have **0** occurrences in `src\`, and the HLAPI is the `com.unity.multiplayer-hlapi` package. But `UnityEngine.Networking.Match.NetworkMatch` - the mapping at `PersistentData.cs:224`, with `using UnityEngine.Networking.Match;` at line 21 - **still exists in 2019.4**: the API Updater did not touch the line and the compile gate is green, so no package had to be added and no mapping dropped. The plan expected this entry to be deleted; the measurement says otherwise |
+| `ShaderUtil.ClearShaderErrors` → `ClearShaderMessages` | closed | 0 uses of `ShaderUtil.ClearShaderErrors`; the only `ShaderUtil.` in the sources is this repository's own `Battlehub\RTEditor\RuntimeShaderUtil.cs` |
+| `UNITY_ADS` is no longer defined | closed | 0 occurrences of `UNITY_ADS` and 0 of `UnityEngine.Advertisements` in `src\` |
+| Legacy .NET 3.5 scripting runtime removed | closed | the hop left `ProjectSettings.asset` **byte-identical** - it is not in the hop's diff at all - and it still reads `scriptingRuntimeVersion: 1` (line 534) with `apiCompatibilityLevel: 3` (line 611): .NET 4.x, where this project has sat since the 2018.4 hop |
+| `allowUnsafeCode` becomes a per-assembly option | closed | the project-wide `allowUnsafeCode: 1` (`ProjectSettings.asset:532`) is still there and is what the `unsafe` code in the asmdef-less `Assembly-CSharp` compiles under; the single asmdef, `VaMUnityScript.asmdef`, already carries `"allowUnsafeCode": true` |
+| The new asset import pipeline (V2) | closed, **and it is opt-in** | `EditorSettings.asset` still reports `serializedVersion: 7` and carries no `m_AssetPipelineVersion`, so the project is on **V1** and the V1 → V2 migration question does not arise; declining it deliberately keeps the imported asset database comparable with the one every 2018.4 measurement was taken on |
+| `UnityAPICompatibilityVersionAttribute` constructor change | closed | 0 occurrences |
+| `AvatarBuilder.BuildHumanAvatar` (WSAPlayer) | closed | 0 occurrences |
+| `TouchScreenKeyboard.wasCanceled` | closed | 0 occurrences |
+
+**The removals the hop did hit are not guide rows - the compiler named them** (`CS0619`), and each one is
+decided:
+
+| Removed API | Sites | What was done |
+|---|---|---|
+| `MovieTexture` (removed in 2019.1) | `PersistentData.cs` (the registry entry) and `PersistentMovieTexture.WriteTo`/`ReadFrom` | the type mapping leaves `m_objToData` and the surrogate's two bodies stop naming the engine type; the classes stay, because they are the shape of a saved file, not a use of the engine |
+| `GUIElement` (removed in 2019.1) | `PersistentData.cs` (the registry entry) | same: `Add(typeof(GUIElement), …)` goes, `PersistentGUIElement` stays |
+| `Graphics.DrawProceduralIndirect(MeshTopology, ComputeBuffer, int)` → `DrawProceduralIndirectNow` | 3 calls - `UnityStandardAssets\CinematicEffects\DepthOfField.cs:464`, `…\ImageEffects\DepthOfField.cs:248` and `:302` | Unity marked the old form `UnityUpgradable` and split drawing into a deferred and an immediate form in 2019.1; the decompiled call sites are immediate (`material.SetPass` immediately before them), so they were renamed |
+| `UnityEngine.InspectorNameAttribute` appears beside Leap's `InspectorName` | `Leap\Unity\LeapEyeDislocator.cs:14` | `CS0104`: the attribute is qualified as `[Leap.Unity.Attributes.InspectorName("Baseline")]` |
+
+**Two more things a hop has to be checked for, and both were.** `scripts\Build-McsCompiler.ps1` re-run
+under the new editor exits 0 and produces an `mcs.dll` **byte-for-byte identical** to the 2018.4 build
+(1 967 104 B, SHA-256 `FC5C08BC…`): both halves of the recipe, `MonoBleedingEdge\bin\mono.exe` and
+`…\lib\mono\4.5\mcs.exe`, exist in 2019.4, so the runtime compiler this project ships does not depend on
+the editor that built it. And the plugins compiled against 2018.1 were watched through the editor's own
+log, because a hop breaks those silently: during the *broken* first open three assemblies were reported
+unloadable - `ZFBrowser.dll`, `SteamVR.dll` and `RTTypeModel.dll` - while with the hop finished and the gate
+green only **`ZFBrowser.dll`** is, exactly as under 2018.4. `SteamVR.dll` and `RTTypeModel.dll` reference
+`Assembly-CSharp`, so they were unloadable only while the project did not compile; what survives the hop is
+what was already there before it.
+
+## What stays open after the 2019.4 hop
+
+As with the hop before it, what the guide has left is behaviour, and behaviour is settled by a run:
+
+- **`ZFBrowser.dll` reports as a broken assembly under both 2018.4 and 2019.4.** The hop neither caused nor
+  changed it (under 2018.1 the same message named `RTTypeModel.dll` instead), and it is in the same class
+  of noise as the `RTTypeModel` note: the assembly is loadable for compilation - `Assembly-CSharp`
+  references its types and compiles - while the editor's runtime domain refuses it. What it could break is
+  the embedded-browser UI, so it belongs to the **UI milestone**, not to the hop.
+- **PhysX on 2019.4 is not the PhysX of the 2018.4 hop.** The engine moves between LTS releases
+  independently of the API surface, so the physics items above - contact patches, terrain contacts,
+  negatively scaled meshes - are re-opened by this hop and stay on the manual test list, root motion
+  included.
+- **The renderer is a newer one, and this project's look is a reconstruction.** The frame comparison that
+  measured `+0.986` against the original was taken under 2018.4; whether the reconstructed shaders and
+  their keyword sets survived the newer built-in shader library is something `tools\compare_view.py` has to
+  be re-run to answer.
+- **The shipped AssetBundles and the shader library inside them (`z_sha`) were built by 2018.1.** The
+  editor-side runs load them (the scene, its materials and the bundle-resolved families all work in the
+  gate runs), but reading them from a **built player** is the check that settles it, and it is the next
+  manual step (`artifacts\player\`).
+- **The asset import pipeline stays V1 by choice.** Unity recommends V2 from 2019.3; this project declines
+  it so that the imported asset database, and every measurement taken on it under 2018.4, stay
+  comparable. Moving to V2 is a deliberate item for a later hop, not an oversight.
+

@@ -11,6 +11,8 @@ namespace Battlehub.RTSaveLoad.PersistentObjects
 	{
 		public bool loop;
 
+		// Unity removed MovieTexture in 2019.1, so there is no engine object left to write `loop` to;
+		// the class survives as the serialised carrier of the field.
 		public override object WriteTo(object obj, Dictionary<long, UnityEngine.Object> objects)
 		{
 			obj = base.WriteTo(obj, objects);
@@ -18,19 +20,12 @@ namespace Battlehub.RTSaveLoad.PersistentObjects
 			{
 				return null;
 			}
-			MovieTexture movieTexture = (MovieTexture)obj;
-			movieTexture.loop = loop;
-			return movieTexture;
+			return obj;
 		}
 
 		public override void ReadFrom(object obj)
 		{
 			base.ReadFrom(obj);
-			if (obj != null)
-			{
-				MovieTexture movieTexture = (MovieTexture)obj;
-				loop = movieTexture.loop;
-			}
 		}
 
 		public override void FindDependencies<T>(Dictionary<long, T> dependencies, Dictionary<long, T> objects, bool allowNulls)
