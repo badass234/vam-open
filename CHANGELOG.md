@@ -23,9 +23,15 @@ compiler does not see on its own: it compiles against a fixed list of assembly n
 compilation, so every plugin naming Timeline silently did not load. Two names are adapted for the package
 form (`scripts\Update-PluginCompilerReferences.ps1`, step 7 of the project setup); measured on the boot
 scene, **5 log lines naming the missing file and 2 failed plugin compiles without the adaptation, 0 of
-each with it**, and the plugin whose compilation failed now runs. Compile gate `verdict: OK`, 0 unique
-errors, the standalone player builds and boots on 2019.4, and the item-by-item audit against Unity's 2019
-LTS guide is in [`docs/unity-upgrade-audit.md`](docs/unity-upgrade-audit.md).
+each with it**, and the plugin whose compilation failed now runs. The editor window and the batch gates were
+also on different asset import pipelines, because 2018.1's `EditorSettings.asset` carries no key for one and
+the entry point decides: the window ran **V2**, every batch run **V1**, and one `Library` held both databases
+(`assetDatabase3` and `ArtifactDB`/`SourceAssetDB`). The project now writes the key the engine really
+serialises - `m_AssetPipelineMode: 1`, the numbers of `UnityEditor.AssetPipelineMode`, not the
+`m_AssetPipelineVersion` these notes had carried - and both paths report `Using Asset Import Pipeline V2.`
+Compile gate `verdict: OK`, 0 unique errors, the standalone player builds and boots on 2019.4, and the
+item-by-item audit against Unity's 2019 LTS guide is in
+[`docs/unity-upgrade-audit.md`](docs/unity-upgrade-audit.md).
 
 ## 0.1.8-alpha
 

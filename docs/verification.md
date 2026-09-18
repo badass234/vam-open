@@ -27,8 +27,13 @@ The runner repairs the one recoverable failure, and repeats the run once; see *W
 is a copy of `src\`, so a gate run without the sync answers about the tree that was copied last - see
 failure mode E below.
 
+**The log also names the asset import pipeline** - line 30 of the last run reads
+`Using Asset Import Pipeline V2.` The project pins that pipeline in `ProjectSettings\EditorSettings.asset`
+(`m_AssetPipelineMode: 1`), so a log that says V1 means the pin is gone and the gates are working on a
+database the editor's window does not share.
+
 *Current state*: `----- RebuildGate OK -----`, 0 errors, 0 unique errors, `Assembly-CSharp.dll`
-6 188 544 B, `VaMUnityScript.dll` 16 896 B, `Assembly-CSharp-Editor.dll` present.
+6 079 488 B, `VaMUnityScript.dll` 17 408 B, `Assembly-CSharp-Editor.dll` present.
 
 ### 2. Scene integrity - `scripts\Invoke-SmokeTest.ps1 -Method InspectScene`
 

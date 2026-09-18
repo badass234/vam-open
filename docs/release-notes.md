@@ -82,9 +82,9 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   `m_AllowEnlightenSupportForUpgradedProject: 1`. Both are kept as the editor wrote them. The fields the
   hop *could* have moved did not move: `scriptingRuntimeVersion: 1`, `apiCompatibilityLevel: 3` and
   `allowUnsafeCode: 1` are as they were under 2018.4, and `EditorSettings.asset` still reports
-  `serializedVersion: 7` with no `m_AssetPipelineVersion`, i.e. this project is on the **V1 asset import
-  pipeline**, so 2019's V1 → V2 migration question does not arise for it.
-- **The item-by-item audit of the 2019 LTS guide came out with one real item and no others.**
+  `serializedVersion: 7`, with the asset import pipeline left to the entry below.
+- **The item-by-item audit of the 2019 LTS guide came out with one item that needed a manifest change and
+  no others.**
   `docs\unity-upgrade-audit.md` carries the full table with the evidence per line; in short: `Addressables`,
   animation C# jobs, `UIElements` and LWRP/URP are not used by this project at all, `ShaderUtil`'s renamed
   clearing call is never called (the only `ShaderUtil.` in the sources is this project's own
@@ -108,6 +108,24 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   `probes: no TEMP DIAGNOSTIC probe is compiled in`, `0` shader errors and warnings, and ends with
   `----- RebuildGate OK -----` - the same reading the same gate gave under 2018.4, which is the point:
   the hop did not change what the boot does. Log: `artifacts\smoke-play.log`.
+- **The editor window and the batch gates were on different asset import pipelines, and the project now
+  names one.** 2018.1's `EditorSettings.asset` carries no pipeline key at all, and with the key absent the
+  entry point decides: every batch run of this hop printed `Using Asset Import Pipeline V1.`
+  (`artifacts\compile-gate-timeline.log:30`), while the editor's own window printed
+  `Using Asset Import Pipeline V2.` and `Rebuilding Library because the asset database could not be found!`
+  (`artifacts\editor-open.log:25-26`) - so one `Library` held both databases (`assetDatabase3` for V1,
+  `ArtifactDB`/`SourceAssetDB` for V2) and each switch between the two paths paid a full reimport of the
+  166,124 imported objects. The key the engine actually serialises is **`m_AssetPipelineMode`**: it sits in
+  the native editor's `EditorSettings` table rather than in `UnityEditor.dll`, which is why the name these
+  notes had carried until now (`m_AssetPipelineVersion`) appears in no build, and it takes the numbers of
+  `UnityEditor.AssetPipelineMode` (`0` = V1, `1` = V2). That mapping was measured rather than assumed - set
+  in a throwaway 2019.4 project, where writing the mode through the API left `m_AssetPipelineMode: 0`
+  behind, because setting the same property inside *this* project changes nothing (the session already
+  reports `Version2`, and the editor saves a settings asset only when a value changes). `EditorSettings.asset`
+  now carries `m_AssetPipelineMode: 1`, and the same runs say it took: the compile gate
+  (`scripts\artifacts\compile-gate-v2.log:30`) and the scene-integrity run both print
+  `Using Asset Import Pipeline V2.` with no `Rebuilding Library` line - one pipeline and one database, for
+  the editor and for the gates alike.
 
 ## 0.1.8-alpha
 

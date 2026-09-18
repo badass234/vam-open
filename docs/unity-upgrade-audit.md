@@ -120,7 +120,7 @@ whole of what the guide's list cost here.
 | `UNITY_ADS` is no longer defined | closed | 0 occurrences of `UNITY_ADS` and 0 of `UnityEngine.Advertisements` in `src\` |
 | Legacy .NET 3.5 scripting runtime removed | closed | the hop left `ProjectSettings.asset` **byte-identical** - it is not in the hop's diff at all - and it still reads `scriptingRuntimeVersion: 1` (line 534) with `apiCompatibilityLevel: 3` (line 611): .NET 4.x, where this project has sat since the 2018.4 hop |
 | `allowUnsafeCode` becomes a per-assembly option | closed | the project-wide `allowUnsafeCode: 1` (`ProjectSettings.asset:532`) is still there and is what the `unsafe` code in the asmdef-less `Assembly-CSharp` compiles under; the single asmdef, `VaMUnityScript.asmdef`, already carries `"allowUnsafeCode": true` |
-| The new asset import pipeline (V2) | closed, **and it is opt-in** | `EditorSettings.asset` still reports `serializedVersion: 7` and carries no `m_AssetPipelineVersion`, so the project is on **V1** and the V1 → V2 migration question does not arise; declining it deliberately keeps the imported asset database comparable with the one every 2018.4 measurement was taken on |
+| The new asset import pipeline (V2) | **decided - the project pins V2** | the engine's key is `m_AssetPipelineMode` (`0` = V1, `1` = V2, the numbers of `UnityEditor.AssetPipelineMode`); it is in the native editor's `EditorSettings` table and in no managed assembly, and the name this row used to carry (`m_AssetPipelineVersion`) is in neither build. 2018.1's `EditorSettings.asset` has no such key, and with the key absent the entry point decides, so this hop's own runs were split - batch on **V1**, the editor window on **V2** with `Rebuilding Library because the asset database could not be found!` - and one `Library` held both databases. The project now writes `m_AssetPipelineMode: 1`, and both paths report `Using Asset Import Pipeline V2.` |
 | `UnityAPICompatibilityVersionAttribute` constructor change | closed | 0 occurrences |
 | `AvatarBuilder.BuildHumanAvatar` (WSAPlayer) | closed | 0 occurrences |
 | `TouchScreenKeyboard.wasCanceled` | closed | 0 occurrences |
@@ -167,7 +167,4 @@ As with the hop before it, what the guide has left is behaviour, and behaviour i
   editor-side runs load them (the scene, its materials and the bundle-resolved families all work in the
   gate runs), but reading them from a **built player** is the check that settles it, and it is the next
   manual step (`artifacts\player\`).
-- **The asset import pipeline stays V1 by choice.** Unity recommends V2 from 2019.3; this project declines
-  it so that the imported asset database, and every measurement taken on it under 2018.4, stay
-  comparable. Moving to V2 is a deliberate item for a later hop, not an oversight.
 
