@@ -4,8 +4,8 @@ Finds the editor that the gate scripts should run.
 
 .DESCRIPTION
 The editor version is read from VaM_Rebuild\ProjectSettings\ProjectVersion.txt - the file Unity itself
-rewrites when a project is opened with another editor. That is the single place a version hop changes
-(see plan.md, "The engine migration"), instead of five hardcoded editor paths that would otherwise
+rewrites when a project is opened with another editor. That is the single place a version hop changes,
+instead of five hardcoded editor paths that would otherwise
 keep pointing at the version that was current when they were written.
 
 Dot-source this file, then use the functions:

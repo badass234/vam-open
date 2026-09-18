@@ -246,7 +246,7 @@ namespace UnityStandardAssets.CinematicEffects
 			{
 				if (m_ComputeBufferDrawArgs == null)
 				{
-					m_ComputeBufferDrawArgs = new ComputeBuffer(1, 16, ComputeBufferType.DrawIndirect);
+					m_ComputeBufferDrawArgs = new ComputeBuffer(1, 16, ComputeBufferType.IndirectArguments);
 					int[] data = new int[4] { 0, 1, 0, 0 };
 					m_ComputeBufferDrawArgs.SetData(data);
 				}

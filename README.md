@@ -1,4 +1,4 @@
-# VAMOpen 0.1.7-alpha
+# VAMOpen 0.1.8-alpha
 
 Virt-a-Mate never opened its source code and has been stuck on Unity 2018.1.9f2 forever, while the
 developers just keep taking money and releasing tiny fixes for years.
@@ -45,8 +45,8 @@ needed named where it is made.
   brightness rather than for the look. The shipped bytecode rules the shader out, so what is left is
   what is bound to it: the specular IBL cube's import colour space, the specular/fresnel values the
   material carries, and the bloom threshold. The list is the *The base pass, read back out of the
-  shipped bytecode* bullet in `CHANGELOG.md`; the measurement is the *The editor and the installation
-  had never rendered under the same settings* one.
+  shipped bytecode* bullet in [`docs/release-notes.md`](docs/release-notes.md); the measurement is the
+  *The editor and the installation had never rendered under the same settings* one.
 - The `Marmoset/` set is not transcribed yet, and it is what the last 21 materials still draw: the live
   skin's `EyeReflection-1` (left with nothing to redirect to by
   `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`), the overlay helpers and
@@ -70,8 +70,8 @@ The hardest part here is the engine migration. Everything else after that is muc
 
 ## How to try it
 
-You need Windows, Unity 2018.1.9f2, and your own Virt-a-Mate installation. Keep Unity Hub closed,
-otherwise it will reissue the license file and the 2018.1 editor will reject the reissued one.
+You need Windows, Unity **2018.4 LTS (2018.4.36f1)**, and your own Virt-a-Mate installation. Keep Unity Hub closed,
+otherwise it will reissue the license file and the 2018 editors reject the reissued one.
 
 ```powershell
 scripts\Setup-RebuildProject.ps1
@@ -115,7 +115,8 @@ was killed rather than closed leaves an empty or stale `LastLayout.dwlt` in
 `%APPDATA%\Unity\Editor-5.x\Preferences\Layouts`, and Unity needs it gone before it will write a
 default one.
 
-Stage details are in `docs\`, the source of truth for status is in `CHANGELOG.md`.
+Stage details are in `docs\`, the source of truth for status is in `CHANGELOG.md`, and the detail behind
+its short sections is in [`docs/release-notes.md`](docs/release-notes.md).
 
 ## Layout
 
@@ -129,8 +130,9 @@ Stage details are in `docs\`, the source of truth for status is in `CHANGELOG.md
 | `VaM_Rebuild\ProjectSettings`, `VaM_Rebuild\Packages` | Unity project settings, including the .NET 4.x scripting runtime the decompiled code needs |
 | `scripts\` | the pipeline: source sync into the Unity project, project setup, shader extraction and generation, compilation gate, smoke runs, log comparison |
 | `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison, shader pre-flight, UI bundle probes) |
-| `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity, shader reconstruction |
-| `CHANGELOG.md` | what each release contains: what works, what does not, what is known broken |
+| `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity, shader reconstruction, release notes |
+| `CHANGELOG.md` | one short section per release: what works, what does not, what is known broken |
+| `docs\release-notes.md` | the long form of those sections, with the measurements |
 
 ## Paths
 
@@ -142,9 +144,12 @@ parameter with a portable default:
   like a Virt-a-Mate install (it must contain `VaM_Data\Managed\Assembly-CSharp.dll`). That last
   fallback matches the usual layout, where the repository sits inside the installation directory.
   If none of the three applies, the script stops with a message instead of guessing.
-- **The Unity editor** (`-UnityExe`) defaults to
-  `%ProgramFiles%\Unity\Hub\Editor\2018.1.9f2\Editor\Unity.exe`. Pass `-UnityExe` for a different
-  installation, including one outside Unity Hub.
+- **The Unity editor** (`-UnityExe`) is read from the project instead of being hardcoded: the scripts
+  take the version out of `VaM_Rebuild\ProjectSettings\ProjectVersion.txt` through
+  `scripts\UnityEditor.ps1` and look for `%ProgramFiles%\Unity\Hub\Editor\<version>\Editor\Unity.exe`.
+  That file is the one place an engine version lives, so a version hop needs no script edit - the
+  project now names **2018.4.36f1**, the last 2018 LTS. Pass `-UnityExe` for an installation
+  elsewhere, including one outside Unity Hub.
 - **Everything inside the repository** is resolved relative to the script's own location, so the
   scripts work from any working directory. Beware that PowerShell's `Set-Location` does not move the
   process's current directory, which matters for the Unity runs; the runners handle it themselves.

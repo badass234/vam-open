@@ -302,7 +302,8 @@ and are not tracked; `shader-src\VamGpuSkinning.cginc` is the source of truth an
 whatever the last run of the generator wrote. Edit the include, skip the generator, and the compile
 gate and the play gate both pass **green on the previous round's shaders** - there is nothing for
 either to fail on, because both are measuring a build that is internally consistent, just not the one
-you think you built. `plan.md`'s gate sequence now puts the generator first for that reason, and the
+you think you built. The gate sequence the pipeline scripts run puts the generator first for that
+reason, and the
 tell is worth knowing: in Round 7 a control frame that returned a *different* code path came out
 bit-identical to the session frame. That reads like "the switch does nothing" and it means "the switch
 is not in the build".
@@ -919,7 +920,8 @@ The first reading of this defect was wrong in both halves, and both are worth ke
 
 The cause is one line of the generator. `scripts\New-VaMShaders.py` decoded the serialised render
 state's colour-write mask as `(1,R) (2,G) (4,B) (8,A)`. Unity's `ColorWriteMask` reads out of the
-engine we build with (`UnityEngine.CoreModule.dll`, 2018.1.9f2) as `Alpha = 1, Blue = 2, Green = 4,
+engine we build with (`UnityEngine.CoreModule.dll`; the values were read under 2018.1.9f2 and the hop to
+2018.4 left them as they were) as `Alpha = 1, Blue = 2, Green = 4,
 Red = 8, All = 15`. This family's passes serialise as **14**, i.e. **RGB**, and we emitted
 **`ColorMask GBA`** - so the shader never wrote the red channel and the red of whatever lay behind bled
 through. That is the whole symptom: an inverted colour that also reads as transparency, because the
@@ -1150,8 +1152,9 @@ Two sets are therefore left alone **on purpose**, and a future reader should not
 The report was **"no self-shadowing"**, and the shading model agreed with it: `VAM_LIGHT_ATTENUATION`
 did not exist, so every point light went through `AutoLight.cginc`'s built-in path. The filter was
 transcribed from the release build's `MARMO_LINEAR + POINT + SHADOWS_CUBE` fragment program
-(`artifacts\_tmp\ship_point.asm`, lines 190-246) - see `plan.md` Done 26 and `CHANGELOG.md` for the
-decode - and what this section keeps is the method, because the round needed two corrections to reach
+(`artifacts\_tmp\ship_point.asm`, lines 190-246) - see the *Self-shadowing* bullet in
+[`release-notes.md`](release-notes.md) for the decode - and what this section keeps is the method, because
+the round needed two corrections to reach
 a number it could believe.
 
 **The statistic has to be taken on the pixels that had light to lose.** The previous round averaged the

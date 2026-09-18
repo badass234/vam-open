@@ -1,10 +1,13 @@
-# Activating Unity 2018.1.9f2
+# Activating the Unity editor
 
 > **Status: resolved — read from here.** The editor is activated: the user launched 2018.1.9f2
 > directly once and signed in through its own GUI, so `scripts\Activate-UnityLicense.ps1` was not
-> needed. Import, compilation and batch `-executeMethod` have worked since then. Everything below
-> is the breakdown of the failure causes and the fallback paths: it is needed only if the license
-> breaks again, and the only known way to break it is to launch Unity Hub again (its `updateLicenses` will reissue the ULF).
+> needed. Import, compilation and batch `-executeMethod` have worked since then. **The hop to
+> 2018.4.36f1 did not touch the licence** - it accepted `Unity_lic.ulf` as it was, with only
+> `Initiating legacy licensing module` and `Next license update check is after ...` in its log, so
+> nothing here had to be redone. Everything below is the breakdown of the failure causes and the
+> fallback paths: it is needed only if the license breaks again, and the only known way to break it
+> is to launch Unity Hub again (its `updateLicenses` will reissue the ULF).
 
 ## Why
 

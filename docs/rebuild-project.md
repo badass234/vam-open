@@ -16,7 +16,7 @@ VaM_Rebuild\                        6 518 files, 247.8 MB
     GameObject AnimeClip AnimatorController Avatar Cubemap Flare Font
     Material Mesh PhysicMaterial Resources Shader Sprite TextAsset Texture2D
   Packages\manifest.json
-  ProjectSettings\                   17 .asset + ProjectVersion.txt (2018.1.9f2)
+  ProjectSettings\                   17 .asset + ProjectVersion.txt (2018.4.36f1)
 ```
 
 ## What is replaced, and why
@@ -170,28 +170,44 @@ If the trade-off is ever revisited: restore `Assets\Scripts\SteamVR` from the ex
 `SteamVR.asmdef`), delete `Assets\Plugins\SteamVR.dll`, run the artifact fixers over it, and remove
 the three GUIDs from `known_dangling_guids.txt`.
 
-## manifest.json needs no changes
+## manifest.json, and what changed it
 
-`Packages\manifest.json` contains only the 31 `com.unity.modules.*` entries AssetRipper generated
-for 2018.1.9f2, and that is correct for the version. In Unity 2018.1 uGUI is not yet a Package
+`Packages\manifest.json` started as the 31 `com.unity.modules.*` entries AssetRipper generated for
+2018.1.9f2, and that was correct for the version: in Unity 2018.1 uGUI is not yet a Package
 Manager package - `UnityEngine.UI.dll` is supplied by the built-in Unity extension at
 `Editor\Data\UnityExtensions\Unity\GUISystem\`, so no `com.unity.ugui` entry exists or is needed
 (the package only appears from 2019.2). `com.unity.timeline` was considered and rejected on
 evidence: `UnityEngine.Timeline` is referenced by 0 files in `src\` (only the builtin
 `UnityEngine.TimelineModule`, covered by `com.unity.modules.director`, is used).
 
+**The 2018.4 editor added six entries by itself, on first open**: `com.unity.ads` 2.0.8,
+`com.unity.analytics` 3.2.3, `com.unity.collab-proxy` 1.2.15, `com.unity.package-manager-ui` 2.0.13,
+`com.unity.purchasing` 2.2.1 and `com.unity.textmeshpro` 1.4.1 - plus the trailing newline the file
+never had. That is 2018.4's own default set for a project that declares no hold on it, so the hop
+wrote it into a tracked file. It is kept exactly as the editor left it: the compile gate and a hand
+run are both green in that state, and `com.unity.textmeshpro` is genuinely load-bearing - it is the
+package that compiles `Library\ScriptAssemblies\Unity.TextMeshPro.dll`, and no TMP copy exists under
+`Assets\Plugins`. The same first open also created `ProjectSettings\VFXManager.asset`, a settings
+file 2018.1 had no counterpart for.
+
 ## The Unity editor that has to open this project
 
-`ProjectSettings\ProjectVersion.txt` pins `2018.1.9f2`, and the installed editor matches the engine the
-game shipped with: `%ProgramFiles%\Unity\Hub\Editor\2018.1.9f2\Editor\Unity.exe`, `FileVersion
-2018.1.9.10931241`, identical to the game's `UnityPlayer.dll`. A newer editor (Unity 6000.6.0f1 is also
-installed here) is not an option - different API surface and different serialisation.
+`ProjectSettings\ProjectVersion.txt` names the editor, and the scripts read *that file* instead of
+hardcoding a path (`scripts\UnityEditor.ps1`), so a version hop needs no script edit. The project is
+now pinned to **2018.4.36f1**, the last 2018 LTS - hop one of two, with 2019.4 to come; what the hop
+cost is in [`release-notes.md`](release-notes.md).
 
-The licence previously blocked everything: the legacy validator in 2018.1.9f2 rejects the
+The project started on `2018.1.9f2` because that is the engine the game shipped with
+(`FileVersion 2018.1.9.10931241`, identical to the game's `UnityPlayer.dll`). A newer editor is not
+free - different API surface and different serialisation - which is why the migration is staged
+rather than a jump to whatever is installed here (Unity 6000.6.0f1 also is).
+
+The licence blocked everything at first: the legacy validator in 2018.1.9f2 rejects the
 `Unity_lic.ulf` that Unity Hub keeps re-issuing. Activating once through the editor's own GUI fixed
-it (`C:\ProgramData\Unity\Unity_lic.ulf`), and the project now imports, compiles and plays in batch
-mode. Keep Unity Hub closed - its `updateLicenses` pass re-breaks 2018.1. The history is in
-`unity-editor.md`.
+it (`C:\ProgramData\Unity\Unity_lic.ulf`), and the project imports, compiles and plays in batch mode.
+**2018.4 accepted that same file without being re-activated** - its log opens with `Initiating legacy
+licensing module` and reports only `Next license update check is after ...`. Keep Unity Hub closed -
+its `updateLicenses` pass re-breaks the 2018 editors. The history is in `unity-editor.md`.
 
 ## Project settings that are not defaults
 

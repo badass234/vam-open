@@ -976,17 +976,6 @@ public class ImageLoaderThreaded : MonoBehaviour
 				}
 			}
 			value.Finish();
-			if (value.isThumbnail)
-			{
-				if (value.hadError)
-				{
-					uFileBrowser.ThumbnailDiagnostics.ReportLoaderFailure(value.imgPath, value.errorText);
-				}
-				else
-				{
-					uFileBrowser.ThumbnailDiagnostics.ReportLoaderSuccess(value.imgPath, value.tex);
-				}
-			}
 			if (!value.skipCache && value.imgPath != null && value.imgPath != "NULL")
 			{
 				if (value.isThumbnail)

@@ -49,7 +49,7 @@ namespace UnityEngine.PostProcessing
 			float thresholdLinear = bloom.thresholdLinear;
 			material.SetFloat(Uniforms._Threshold, thresholdLinear);
 			float num5 = thresholdLinear * bloom.softKnee + 1E-05f;
-			material.SetVector(value: new Vector3(thresholdLinear - num5, num5 * 2f, 0.25f / num5), name: Uniforms._Curve);
+			material.SetVector(Uniforms._Curve, new Vector3(thresholdLinear - num5, num5 * 2f, 0.25f / num5));
 			material.SetFloat(Uniforms._PrefilterOffs, (!bloom.antiFlicker) ? 0f : (-0.5f));
 			float num6 = 0.5f + num2 - (float)num3;
 			material.SetFloat(Uniforms._SampleScale, num6);

@@ -741,7 +741,10 @@ public class DAZMesh : ObjectAllocator, IBinaryStorable, RenderSuspend
 			}
 			meshCollider.sharedMesh = morphedUVMappedMesh;
 			meshCollider.convex = useConvexCollider;
-			meshCollider.cookingOptions = MeshColliderCookingOptions.InflateConvexMesh | MeshColliderCookingOptions.CookForFasterSimulation | MeshColliderCookingOptions.EnableMeshCleaning | MeshColliderCookingOptions.WeldColocatedVertices;
+			// InflateConvexMesh is left out: 2018.1 still honoured it and had not deprecated it, but
+			// since 2018.3 the engine ignores the bit and naming it is obsolete-as-error. The other
+			// three keep their 2018.1 values.
+			meshCollider.cookingOptions = MeshColliderCookingOptions.CookForFasterSimulation | MeshColliderCookingOptions.EnableMeshCleaning | MeshColliderCookingOptions.WeldColocatedVertices;
 			meshCollider.skinWidth = 0.0001f;
 		}
 	}
