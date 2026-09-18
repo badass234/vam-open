@@ -101,8 +101,10 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
 - **What this hop does not close.** The abort inside `mono-2.0-bdwgc.dll` is still open (plan item 2): it
   has only ever been reproduced on 2019.4, and the four runs of this hop peak at **73 196** loaded objects
   against the **272 217** of the run that faulted, so they are too small to count as the engine having
-  cleared it. A long batch play of that size is what would answer it, and a hand run of the editor is what
-  closes the hop itself.
+  cleared it. A long batch play of that size is what would answer it. The hop itself was closed by the hand
+  run on the editor, taken 2026-09-18: `scripts\Invoke-ManualPlay.ps1` on the boot scene, `Avg. FPS: 300.68`,
+  everything the eye checks intact, and only the pre-existing `MacGruber` plugin pair failing
+  (`artifacts\manual-play.log`).
 
 ## 0.1.9-alpha
 
