@@ -52,10 +52,7 @@ VaM_Rebuild/*.sln
 VaM_Rebuild/*.unityproj
 
 # --- ripped assemblies and other working copies of the game -----------------------------------
-work/ripped-core/
-work/downloads/
-work/Assets/
-work/ExportedProject/
+work/
 # generated copy of shader-src/VamGpuSkinning.cginc (Unity can only include
 # files that live under Assets); the tracked original is shader-src/
 VaM_Rebuild/Assets/VaMShaders/

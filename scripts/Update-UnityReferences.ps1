@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Generates src/UnityReferences.props from the DLLs shipped in Virt-a-Mate_Data\Managed.
+    Generates src/UnityReferences.props from the DLLs shipped in VaM_Data\Managed.
 
 .DESCRIPTION
     BCL/Mono assemblies that ship with the game must NOT be referenced, because the

@@ -25,6 +25,8 @@ contains the recovered code and the pipeline, and you point it at your own insta
   body by 8.26/255 of mean luminance where the built-in path darkens it by 0.98/255.
 - A standalone `VAMOpen.exe` builds in batch mode and runs outside the editor: 10 scenes, D3D11, all
   18 `.var` packages registered, 312 FPS in its own benchmark scene.
+- The runtime plugin compiler is rebuilt from the installation's own sources (`src\mcs`), so plugins,
+  scenes and presets that the shipped `mcs.dll` could no longer compile on the new engine do compile.
 - An in-game screen resolution setting, in the preferences panel next to the physics and vsync rows:
   the modes the display reports, a confirmation popup, and a ten-second revert if the answer never
   comes.
@@ -85,7 +87,9 @@ scripts\Invoke-ManualPlay.ps1
 ```
 
 `Sync-Sources.ps1` is easy to miss and expensive to skip: Unity compiles `VaM_Rebuild\Assets\Scripts\`,
-not `src\`, and `Setup-RebuildProject.ps1` performs that copy once. The sync mirrors `*.cs` from `src\`
+not `src\`, and `Setup-RebuildProject.ps1` performs that copy once. The setup also rebuilds the runtime
+plugin compiler (`scripts\Build-McsCompiler.ps1`) with the editor's own mono, which is why it wants the
+editor installed and not just the project folder. The sync mirrors `*.cs` from `src\`
 into the project, never touches a `.cs.meta` (a scene resolves its class through that GUID), verifies
 every file byte for byte, and reports whether `Assembly-CSharp.dll` is older than the newest source. A
 green compile gate without it is green about whatever was copied last.
@@ -125,12 +129,13 @@ its short sections is in [`docs/release-notes.md`](docs/release-notes.md).
 | `src\Assembly-CSharp` | the game's code as ilspycmd decompiled it, ~2800 `.cs` files |
 | `src\Assembly-UnityScript` | the game's second assembly (13 files) |
 | `src\RTTypeModel` | the type model the decompiler needs |
+| `src\mcs` | Mono's C# compiler, which the game drives at runtime, rebuilt from the export's sources with one patch (see [`docs/rebuild-project.md`](docs/rebuild-project.md)) |
 | `shader-src\VamGpuSkinning.cginc` | the reconstructed GPU-skinning shading library (see [`docs/shader-reconstruction.md`](docs/shader-reconstruction.md)) |
 | `VaM_Rebuild\Assets\Editor\` | the only code written by hand: `RebuildGate.cs` boots the game in batch mode and prints a verdict, `RebuildPlayer.cs` builds the standalone player |
 | `VaM_Rebuild\ProjectSettings`, `VaM_Rebuild\Packages` | Unity project settings, including the .NET 4.x scripting runtime the decompiled code needs |
 | `scripts\` | the pipeline: source sync into the Unity project, project setup, shader extraction and generation, compilation gate, smoke runs, log comparison |
 | `tools\` | standalone analysers (asset GUIDs, API surface, IL tokens, Unity logs, frame comparison, shader pre-flight, UI bundle probes) |
-| `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity, shader reconstruction, release notes |
+| `docs\` | per-stage reports: asset export, project rebuild, editor, verification, parity, shader reconstruction, engine upgrade audit, release notes |
 | `CHANGELOG.md` | one short section per release: what works, what does not, what is known broken |
 | `docs\release-notes.md` | the long form of those sections, with the measurements |
 

@@ -31,6 +31,49 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   `analytics`, `collab-proxy`, `package-manager-ui`, `purchasing`, `textmeshpro`; the editor also
   created `ProjectSettings\VFXManager.asset`, which 2018.1 had no counterpart for. All of it is kept
   exactly as the editor wrote it, and the 31 `com.unity.modules.*` entries did not move.
+- **The plugin compiler the game ships cannot run on this project's profile, so it is now built from
+  source.** VaM compiles its plugins at runtime with `mcs.dll`, the Mono C# compiler, driven by
+  `DynamicCSharp`; the shipped binary was built against Mono 2.0's `mscorlib`, and the shipping game runs it
+  as it always has because that is the profile it has. This project runs the .NET 4.x profile, and there the
+  compiler aborts on the first
+  plugin that declares a default for a nullable value type - `Defaults.A(int? x = null)` in the probe -
+  with `System.ArgumentException: System.Nullable`1[System.Int32] is not a supported constant type`, thrown
+  by `System.Reflection.Emit.ParameterBuilder.SetConstant` from `Mono.CSharp.Parameter.ApplyAttributes`
+  while the method's attributes are emitted. The abort takes the whole compilation with it: the report comes
+  back empty and no plugin loads, so every custom scene, preset and plugin in the installation disappears
+  without a single error of its own. That is not the hop's doing - it is in this project's log before the
+  engine moved, with the `mcs.dll` byte-identical to the installation's. Three prebuilt swaps were measured
+  and rejected: `unityjit`'s
+  `Mono.CSharp.dll` declares a different assembly name and its `Mono.CSharp` types are `internal` (136 x
+  `CS0122`), `lib\mono\4.5\mcs.exe` is refused by the editor because an exe-flavoured assembly has no
+  `IMAGE_FILE_DLL` characteristic, and the same file with its PE header relabelled loads but hits the same
+  internal API (168 errors). What works is recompiling the compiler from the sources the installation ships:
+  `src\mcs` (797 files) is built by the editor's own `mono.exe` + `mcs.exe` into a library, with one patch in
+  `Mono\CSharp\Parameter.cs` that makes `SetConstant` swallow `ArgumentException` and `NotSupportedException`
+  for values the emit backend cannot take - which is what Mono 2.0 did with the same input, so the attribute
+  is dropped rather than the compilation. `scripts\Build-McsCompiler.ps1` does the build and validates the
+  result (>= 700 sources, `IMAGE_FILE_DLL`, `AssemblyName.Name == 'mcs'`); `Setup-RebuildProject.ps1` calls
+  it, and the settings asset keeps `mcs.dll` in its reference blocklist. Verified two ways: the probe that
+  declares the defaulted nullable value type is rejected by the installed compiler and accepted by the
+  rebuilt one, and a play run under the new editor compiles plugin scripts again -
+  `artifacts\play-2018.4.log` shows `MacGruber.Life` and `MacGruber.Breathing` running out of a
+  runtime-compiled assembly (`<c420d7da11d94f6d85d69ae23a5fd09f>`, no file path, which is what
+  `DynamicCSharp` produces), and both fail only inside their own `Init`, for the reason they failed before
+  the hop.
+- **The setup script was reverting the hop, silently.** `Setup-RebuildProject.ps1` wipes the project and lays
+  the AssetRipper export back down on every run, and it did that to `Packages` and `ProjectSettings` too - the
+  export is a 2018.1 snapshot, so `ProjectVersion.txt` came back as `2018.1.9f2`, `VFXManager.asset` was
+  deleted and six tracked settings files lost their edits. Nothing failed loudly, because the gate scripts
+  read the editor to run *from* that very file: after any setup run the compile gate and the player build
+  banner `Built from '2018.1/release' branch; Version is '2018.1.9f2'`, and the hop looked like it had never
+  happened. Both directories are now stashed across the wipe and copied back over the export's copy, exactly
+  like `Assets\Editor`; the export's own `ProjectVersion.txt` survives only as the bootstrap for a project
+  that has never had one. The runtime-version patch no longer rewrites the profile only when it recognises a
+  specific old value (`apiCompatibilityLevel: 0` -> `1`, `2` -> `3`) - that regex was written for the 2018.1
+  export and would have thrown on this one, where the value is already `1` - it now asserts the final
+  `scriptingRuntimeVersion: 1` / `apiCompatibilityLevel: 3`. Verified: after a full setup run
+  `ProjectVersion.txt` reads `2018.4.36f1`, `VFXManager.asset` is present, `git status` is clean, and both
+  the compile gate and the play log banner the 2018.4 editor.
 - **The white iris was the additive pass's alpha slot.** On one male skin the iris and pupil read white where
   every other one renders: the eye probe measured **32470 px** of the frame around the pupil at
   `(0.573, 0.477, 0.141)`. Eight of the additive families blend `SrcAlpha One`, so their alpha is the weight

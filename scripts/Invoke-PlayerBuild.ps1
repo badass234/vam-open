@@ -14,7 +14,9 @@ Two things are worth knowing before reading the result:
     where that shows up first.
   * The build compiles and links, it does not assemble a runnable product. The player needs the game's
     data next to it, which RebuildPlayer deliberately does not copy; scripts\New-PlayerRuntimeLinks.ps1
-    links it in, and without it the player finds no bundles and no scene to load.
+    links it in, and without it the player finds no bundles and no scene to load. That script is run
+    here once the build succeeds, because the build also removes the junction the bundles are reached
+    through - it lives inside <exe>_Data, which the build rewrites.
 
 The verdict comes from the marker RebuildPlayer logs, not from the exit code: an editor that never
 reached the method exits with the same code as a build that failed.
@@ -103,7 +105,26 @@ if (Test-Path -LiteralPath $exe) {
     $player = [System.IO.Path]::GetDirectoryName($exe)
     $size = (Get-ChildItem -LiteralPath $player -Recurse -File | Measure-Object -Property Length -Sum).Sum
     Write-Host ("verdict: OK - {0} ({1:N2} GB)" -f $exe, ($size / 1GB))
-    Write-Host 'next: scripts\New-PlayerRuntimeLinks.ps1, then start the exe'
+
+    # The links are restored here because the build removes <exe>_Data\StreamingAssets: the bundles
+    # live in the installation and reach the player as a junction, and a data directory that Unity has
+    # just written is not where a junction made before the build is still found. Without it the player
+    # starts, shows the Unity splash and then sits on a grey screen - the boot scene loads, the
+    # manifest bundle is a 404, AssetBundleManager has no manifest, and the first LoadAssetAsync of
+    # GlobalSceneOptions.LoadAssets throws before the menu is built. A build that produces a player
+    # which cannot start is not a build that succeeded quietly.
+    $linksScript = Join-Path $root 'New-PlayerRuntimeLinks.ps1'
+    Write-Host ''
+    Write-Host 'restoring the runtime links (a build leaves <exe>_Data without StreamingAssets)'
+    try {
+        & $linksScript -PlayerPath $player
+        Write-Host 'next: start the exe'
+    }
+    catch {
+        Write-Host ("runtime links NOT restored: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+        Write-Host 'the player will show a grey screen instead of the menu - finish this by hand:' -ForegroundColor Yellow
+        Write-Host ("  scripts\New-PlayerRuntimeLinks.ps1 -PlayerPath `"{0}`"" -f $player) -ForegroundColor Yellow
+    }
 } else {
     Write-Host ("verdict: OK by the log, but no player at {0}" -f $exe)
     exit 1

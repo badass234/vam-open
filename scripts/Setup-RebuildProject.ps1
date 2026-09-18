@@ -12,8 +12,10 @@
         builds clean (see docs\parity-report.md). The matching .cs.meta files from the export are
         carried across, because they hold the GUIDs the scenes and prefabs reference.
       * The other 21 decompiled assemblies - we drop them and reference the original DLLs from
-        VaM_Data\Managed instead. Recompiling 4500 files of NAudio / mcs / System.Windows.Forms
-        from decompiled source would be a large, pointless source of compile errors.
+        VaM_Data\Managed instead. Recompiling 4500 files of NAudio / System.Windows.Forms from
+        decompiled source would be a large, pointless source of compile errors. The one exception is
+        mcs, the C# compiler DynamicCSharp drives, which is recompiled - from src\mcs, because the
+        released binary breaks under this runtime (scripts\Build-McsCompiler.ps1).
       * Nothing at all for the native side - AssetRipper writes no Assets\Plugins. VaM_Data\Plugins
         is copied to Assets\Plugins\x86_64, which is the same folder Unity would have copied to the
         build's Plugins directory.
@@ -21,15 +23,24 @@
     The reference set is the other half of making the sources compile. VaM's BCL is not shipped
     wholesale: Unity supplies the .NET 4.x facades itself, its own Boo.Lang is referenced by every
     UnityScript assembly, and only Mono.Cecil and System.Drawing are added back as ordinary plugins.
-    System.Drawing is not VaM's copy - that one is Mono 2.0 and cannot decode an image under the 4.x
-    runtime the rebuild uses, so the editor's own unityjit build is staged in its place.
+    System.Drawing is not VaM's copy at all (Mono 2.0, cannot decode an image under the 4.x runtime),
+    so the editor's own unityjit build is staged in its place. The C# compiler DynamicCSharp drives is
+    not copied from anywhere either: it is rebuilt from src\mcs, because the released one aborts the
+    compilation of every plugin that has an optional Nullable<T> parameter here. See
+    scripts\Build-McsCompiler.ps1.
 
     See docs\rebuild-project.md for the reasoning and the known dangling references.
 
     Re-runnable: the target directory is rebuilt from scratch on every invocation, and the things
-    inside it that are not the export's are carried across that wipe - Assets\Editor, which is
-    ours, the StreamingAssets junction to the installation's bundles, and the runtime data links
+    inside it that are not the export's are carried across that wipe - Assets\Editor, which is ours,
+    ProjectSettings and Packages, which are tracked and which Unity itself writes, the
+    StreamingAssets junction to the installation's bundles, and the runtime data links
     (AddonPackages, Custom, the saved scenes, prefs.json, version), which are re-made at the end.
+
+    Carrying ProjectSettings across is not cosmetic. The export's copy is a 2018.1 snapshot, and
+    ProjectVersion.txt in it names 2018.1.9f2 - the file the gate scripts take the editor from
+    (scripts\UnityEditor.ps1). Letting the export win there silently sends every later gate back to
+    the editor the project was hopped away from, and the hop looks like it never happened.
 
 .EXAMPLE
     scripts\Setup-RebuildProject.ps1
@@ -72,8 +83,14 @@ $TargetDir  = [System.IO.Path]::GetFullPath($TargetDir)
 # they are tracked. Re-runnable means the wipe has to carry them across it: without the stash a second
 # run deletes the editor assembly that both gates look their entry point up in, and the compile gate
 # then reports "the gate method never ran" - which reads like a broken project and is not one.
-$editorStash   = Join-Path ([System.IO.Path]::GetTempPath()) ('vamopen-editor-' + [guid]::NewGuid().ToString('N'))
-$stashedEditor = Join-Path $editorStash 'Editor'
+#
+# ProjectSettings and Packages are stashed for the same reason. They are tracked as well, and Unity
+# writes into them rather than out of them: the .asset files it created here and did not exist in
+# 2018.1 (VFXManager, UnityConnectSettings, PresetManager, ClusterInputManager) and the ProjectVersion
+# and manifest a hop rewrites would otherwise be undone by the export's snapshot on every run.
+$stash         = Join-Path ([System.IO.Path]::GetTempPath()) ('vamopen-stash-' + [guid]::NewGuid().ToString('N'))
+$stashedEditor = Join-Path $stash 'Editor'
+$ownSettings   = 'ProjectSettings', 'Packages'
 
 # <project>\StreamingAssets is a junction to the installation's 16.47 GB of bundles, created by
 # New-StreamingAssetsLink.ps1 after setup and easy to lose. It is unlinked before the wipe and
@@ -86,13 +103,20 @@ $bundleTarget = $null
 if (Test-Path -LiteralPath $TargetDir) {
     Write-Host "Removing existing $TargetDir"
     if (Test-Path -LiteralPath (Join-Path $TargetDir 'Assets\Editor')) {
-        New-Item -ItemType Directory -Path $editorStash -Force | Out-Null
+        New-Item -ItemType Directory -Path $stash -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $TargetDir 'Assets\Editor') -Destination $stashedEditor -Recurse
         $editorMeta = Join-Path $TargetDir 'Assets\Editor.meta'
         if (Test-Path -LiteralPath $editorMeta) {
-            Copy-Item -LiteralPath $editorMeta -Destination (Join-Path $editorStash 'Editor.meta')
+            Copy-Item -LiteralPath $editorMeta -Destination (Join-Path $stash 'Editor.meta')
         }
         Write-Host ("  stashed Assets\Editor ({0} files)" -f @(Get-ChildItem -LiteralPath $stashedEditor -Recurse -File).Count)
+    }
+    foreach ($own in $ownSettings) {
+        $from = Join-Path $TargetDir $own
+        if (-not (Test-Path -LiteralPath $from)) { continue }
+        New-Item -ItemType Directory -Path $stash -Force | Out-Null
+        Copy-Item -LiteralPath $from -Destination (Join-Path $stash $own) -Recurse
+        Write-Host ("  stashed {0} ({1} files)" -f $own, @(Get-ChildItem -LiteralPath (Join-Path $stash $own) -Recurse -File).Count)
     }
     $bundleItem = Get-Item -LiteralPath $bundleLink -Force -ErrorAction SilentlyContinue
     if ($bundleItem -and ($bundleItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
@@ -111,19 +135,31 @@ Copy-Item -LiteralPath (Join-Path $ExportDir 'Packages')       -Destination $Tar
 Copy-Item -LiteralPath (Join-Path $ExportDir 'ProjectSettings') -Destination $TargetDir -Recurse
 Write-Host "Copied AssetRipper export"
 
-# Back over whatever the export had there. The contents are copied rather than the directory, because
-# the destination may already exist and PowerShell would then nest the source inside it.
+# Back over whatever the export had there. The export's own copy is the bootstrap - it fills in a
+# ProjectSettings file the project has never had - and everything the project owns goes back on top of
+# it. The contents are copied rather than the directories, because the destinations already exist and
+# PowerShell would then nest the source inside them.
 if (Test-Path -LiteralPath $stashedEditor) {
     $editorDir = Join-Path $TargetDir 'Assets\Editor'
     New-Item -ItemType Directory -Path $editorDir -Force | Out-Null
     Get-ChildItem -LiteralPath $stashedEditor -Force | Copy-Item -Destination $editorDir -Recurse -Force
-    $stashedMeta = Join-Path $editorStash 'Editor.meta'
+    $stashedMeta = Join-Path $stash 'Editor.meta'
     if (Test-Path -LiteralPath $stashedMeta) {
         Copy-Item -LiteralPath $stashedMeta -Destination (Join-Path $TargetDir 'Assets\Editor.meta') -Force
     }
-    Remove-Item -LiteralPath $editorStash -Recurse -Force
     Write-Host ("restored Assets\Editor ({0} files)" -f @(Get-ChildItem -LiteralPath $editorDir -Recurse -File).Count)
 }
+
+foreach ($own in $ownSettings) {
+    $stashed = Join-Path $stash $own
+    if (-not (Test-Path -LiteralPath $stashed)) { continue }
+    $destination = Join-Path $TargetDir $own
+    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    Get-ChildItem -LiteralPath $stashed -Force | Copy-Item -Destination $destination -Recurse -Force
+    Write-Host ("restored {0} ({1} files)" -f $own, @(Get-ChildItem -LiteralPath $destination -Recurse -File).Count)
+}
+
+if (Test-Path -LiteralPath $stash) { Remove-Item -LiteralPath $stash -Recurse -Force }
 
 if ($bundleTarget) {
     New-Item -ItemType Junction -Path $bundleLink -Target $bundleTarget | Out-Null
@@ -137,14 +173,17 @@ if ($bundleTarget) {
 #   Assets/Scripts/Assembly-CSharp/Atom.cs(352,17): error CS1644: Feature `expression bodied
 #   members' cannot be used because it is not part of the C# 4.0 language specification
 #
-# scriptingRuntimeVersion: 0 = .NET 3.5, 1 = .NET 4.x; apiCompatibilityLevel: 2 = .NET 2.0 Subset,
-# 3 = .NET 4.6. The two have to agree.
+# scriptingRuntimeVersion: 0 = .NET 3.5, 1 = .NET 4.x; apiCompatibilityLevel: 1 = .NET 2.0,
+# 3 = .NET 4.6. The two have to agree, and both the export's numbers and the project's are set
+# through the same two assignments - whatever was there is what the field is set to 1 and 3 from.
 $playerSettings = Join-Path $TargetDir 'ProjectSettings\ProjectSettings.asset'
 $settingsText = [System.IO.File]::ReadAllText($playerSettings)
-$settingsBefore = $settingsText
-$settingsText = $settingsText -replace '(?m)^  scriptingRuntimeVersion: 0\r?$', '  scriptingRuntimeVersion: 1'
-$settingsText = $settingsText -replace '(?m)^  apiCompatibilityLevel: 2\r?$', '  apiCompatibilityLevel: 3'
-if ($settingsText -eq $settingsBefore) { throw "Could not set the scripting runtime version in $playerSettings" }
+$settingsText = $settingsText -replace '(?m)^  scriptingRuntimeVersion: \d+\r?$', '  scriptingRuntimeVersion: 1'
+$settingsText = $settingsText -replace '(?m)^  apiCompatibilityLevel: \d+\r?$', '  apiCompatibilityLevel: 3'
+if ($settingsText -notmatch '(?m)^  scriptingRuntimeVersion: 1\r?$' -or
+    $settingsText -notmatch '(?m)^  apiCompatibilityLevel: 3\r?$') {
+    throw "Could not set the scripting runtime version in $playerSettings"
+}
 [System.IO.File]::WriteAllText($playerSettings, $settingsText)
 Write-Host "  scripting runtime -> .NET 4.x (scriptingRuntimeVersion: 1, apiCompatibilityLevel: 3)"
 
@@ -287,9 +326,26 @@ $requiredByOurCode = 'Mono.Cecil', 'System.Drawing'
 $drawingSource = Join-Path $EditorDataDir 'MonoBleedingEdge\lib\mono\unityjit\System.Drawing.dll'
 if (-not (Test-Path -LiteralPath $drawingSource)) { throw "no editor System.Drawing: $drawingSource" }
 
-# The rest of the BCL VaM shipped - the runtime closure of mcs.dll, the C# compiler DynamicCSharp
-# drives. Assembly-CSharp does not compile against any of it, and each one can collide with Unity's
-# facades, so it is opt-in (-IncludeVaMBclExtras) for when a player build turns out to need it.
+# The C# compiler DynamicCSharp drives is the second assembly that cannot be VaM's copy, but unlike
+# System.Drawing there is nothing to stage in its place - the compiler said to be compatible is
+# incompatible, so it is rebuilt from its own source in src\mcs instead. The build is a step of its
+# own, after the plugin copies below, because it is the only thing here that compiles anything.
+#
+# Rejected alternatives, recorded so they are not tried again:
+#   * the editor's Mono.CSharp.dll (4.0.0.0, unityjit and 4.5 are the same file). It has the guard
+#     VaM's compiler lacks, but Mono.CSharp.Driver, TimeReporter, DynamicLoader and
+#     DocumentationBuilder are internal there, and DynamicCSharp is written against them as public:
+#     CS0122 x136.
+#   * MonoBleedingEdge\lib\mono\4.5\mcs.exe (5.11.0.0). It is a newer compiler, so several types
+#     DynamicCSharp uses were removed or moved (SourceFile.GetDataStream, SourceFile.FullPathName,
+#     CompilerContext.TimeReporter), and what it kept (TimeReporter, DynamicLoader,
+#     DocumentationBuilder) is internal. CS0122 x136 / CS1061 x20 either way. It is also an
+#     executable: Unity only treats a file as a managed plugin if its PE header says IMAGE_FILE_DLL,
+#     so a copy of it in Assets\Plugins is silently not referenced by anything.
+
+# The rest of the BCL VaM shipped - the runtime closure of the compiler DynamicCSharp drives.
+# Assembly-CSharp does not compile against any of it, and each one can collide with Unity's facades,
+# so it is opt-in (-IncludeVaMBclExtras) for when a player build needs it.
 $bclExtras = @(
     'Accessibility', 'System.Configuration', 'System.Data', 'System.EnterpriseServices'
     'System.Security', 'System.Transactions', 'System.Windows.Forms'
@@ -308,11 +364,17 @@ Get-ChildItem -LiteralPath $ManagedDir -Filter *.dll -File | Sort-Object Name | 
     if ($bclExtras -contains $name -and -not $IncludeVaMBclExtras) { return }
     if ($unityProvided | Where-Object { $name -like "$_*" }) { return }
     if ($name -eq 'System.Drawing') { return }   # replaced by the editor's build below
+    if ($name -eq 'mcs') { return }              # rebuilt from src\mcs below
     Copy-Item -LiteralPath $_.FullName -Destination $pluginsDir
     $copied.Add($_.Name)
 }
 Copy-Item -LiteralPath $drawingSource -Destination $pluginsDir
 $copied.Add('System.Drawing.dll (editor unityjit)')
+& (Join-Path $PSScriptRoot 'Build-McsCompiler.ps1') `
+    -SourceDir (Join-Path $SourceDir 'mcs') `
+    -OutputPath (Join-Path $pluginsDir 'mcs.dll') `
+    -EditorDataDir $EditorDataDir
+$copied.Add('mcs.dll (rebuilt from src\mcs)')
 Write-Host ("Copied {0} plugin assemblies to Assets\Plugins" -f $copied.Count)
 
 # The swap above is the whole point, so it is checked rather than assumed: a silent failure here is
@@ -327,6 +389,27 @@ if ($drawingName.Version.Major -lt 4) {
 }
 Write-Host ("  System.Drawing {0} ({1:N0} B), from the editor's Mono profile" -f `
     $drawingName.Version, (Get-Item -LiteralPath (Join-Path $pluginsDir 'System.Drawing.dll')).Length)
+
+$compilerPath = Join-Path $pluginsDir 'mcs.dll'
+$compilerName = [System.Reflection.AssemblyName]::GetAssemblyName($compilerPath)
+if ($compilerName.Name -ne 'mcs') {
+    throw "Assets\Plugins\mcs.dll is $($compilerName.FullName) - DynamicCSharp asks for the compiler by the name 'mcs'"
+}
+Write-Host ("  {0} {1} ({2:N0} B), rebuilt from src\mcs" -f `
+    $compilerName.Name, $compilerName.Version, (Get-Item -LiteralPath $compilerPath).Length)
+
+# DynamicCSharp's security check refuses a plugin whose metadata references a prohibited assembly,
+# and ReferenceRestriction matches on "<assembly name>.dll". VaM prohibited its own compiler, and the
+# rebuilt one keeps the name - so this is a canary rather than the rename it used to be: if the
+# compiler were ever renamed, the ban would quietly stop applying to the one assembly that can run
+# arbitrary code on behalf of a plugin.
+$settingsAsset = Join-Path $TargetDir 'Assets\Resources\DynamicCSharp_Settings.asset'
+if (Test-Path -LiteralPath $settingsAsset) {
+    if (-not (Select-String -LiteralPath $settingsAsset -Pattern '(?m)^\s*- referenceName: mcs\.dll\r?$' -Quiet)) {
+        throw "DynamicCSharp_Settings.asset does not prohibit mcs.dll"
+    }
+    Write-Host "  DynamicCSharp_Settings.asset: prohibits mcs.dll (unchanged)"
+}
 
 # Native plugins and their data files. Unity copies everything under Assets\Plugins\<platform>\ into
 # the build's Plugins folder, which is exactly what VaM_Data\Plugins contains - bass.dll (via

@@ -16,7 +16,10 @@ using UnityEngine;
 /// is the player alone: the data it loads at runtime - <c>Saves</c>, <c>Custom</c>,
 /// <c>AddonPackages</c>, <c>Keys</c> and the <c>StreamingAssets</c> the bundles live in - is not copied
 /// into the build, it is linked in afterwards by <c>scripts\New-PlayerRuntimeLinks.ps1</c>, which is
-/// also what keeps a build from writing into the VaM installation.
+/// also what keeps a build from writing into the VaM installation. The browser's CEF runtime is the
+/// exception to that, and it is copied rather than linked: ZFBrowser reads it from
+/// <c>&lt;exe&gt;_Data\Plugins</c> and Unity copies only the DLLs that live there, so the build stages
+/// the rest of the folder itself (<see cref="StageRuntimePlugins"/>).
 ///
 /// The verdict is logged the way <see cref="RebuildGate"/> logs its own, because Unity's batch-mode
 /// exit code does not distinguish "the build failed" from "the editor never got that far".
@@ -25,6 +28,15 @@ public static class RebuildPlayer
 {
     private const string ExeName = "VAMOpen.exe";
     private const string DataDirectoryName = "VAMOpen_Data";
+
+    /// <summary>The project folder the browser's CEF runtime is laid out in, relative to <c>Assets</c>.</summary>
+    private const string PluginSourceDirectory = @"Plugins\x86_64";
+
+    /// <summary>The browser's web resource index, relative to the player's data folder.</summary>
+    private const string WebResourceIndexName = @"Resources\browser_assets";
+
+    /// <summary>The version string that heads a web resource index, from ZFBrowser's <c>StandaloneWebResources</c>.</summary>
+    private const string WebResourceHeader = "zfbRes_v1";
 
     /// <summary>
     /// What a player build owns in the output directory. Cleared before a build so that a failed one
@@ -82,6 +94,10 @@ public static class RebuildPlayer
         // string, and this file has to compile under either. The output on disk is the verdict.
         BuildPipeline.BuildPlayer(options);
 
+        // Staged only for a build that produced a player, and before the verdict is printed, so that the
+        // OK below means "a player whose browser can start", not just "an exe appeared".
+        if (File.Exists(exe)) { StageRuntimePlugins(playerRoot); }
+
         Report(playerRoot, exe);
     }
 
@@ -118,6 +134,98 @@ public static class RebuildPlayer
         }
 
         Debug.Log("----- RebuildPlayer OK -----");
+    }
+
+    /// <summary>
+    /// Lays the browser's CEF runtime out beside the player, where ZFBrowser looks for it.
+    /// </summary>
+    /// <remarks>
+    /// Unity copies the assemblies of <c>Assets\Plugins\x86_64</c> into <c>&lt;exe&gt;_Data\Plugins</c>
+    /// and nothing else that sits next to them, so a build without this step ships <c>zf_cef.dll</c> and
+    /// <c>ZFProxyWeb.dll</c> without the data they load: <c>cef*.pak</c>, <c>devtools_resources.pak</c>,
+    /// <c>icudtl.dat</c>, the <c>*_blob.bin</c> files, <c>locales\*.pak</c> and the <c>ZFGameBrowser.exe</c>
+    /// subprocess. ZFBrowser reads all of it from <c>Application.dataPath + "/Plugins"</c>
+    /// (<c>FileLocations.GetCEFDirs</c>), and answers a missing piece with a <c>DllNotFoundException</c>
+    /// that arrives while its callbacks are already live - which is a crash on the native side of the
+    /// browser, not a message this side can report. The runtime is kept in the folder Unity builds from,
+    /// so the build copies it, which is what ZFBrowser's own standalone build step did in the original
+    /// project.
+    /// </remarks>
+    private static void StageRuntimePlugins(string playerRoot)
+    {
+        string data = Path.Combine(playerRoot, DataDirectoryName);
+        string destination = Path.Combine(data, "Plugins");
+
+        int files = CopyRuntimePlugins(Path.Combine(Application.dataPath, PluginSourceDirectory), destination);
+        WriteWebResourceIndex(data);
+
+        Debug.Log(string.Format("  browser: {0} runtime files staged in {1}", files, destination));
+    }
+
+    /// <summary>
+    /// Copies what Unity did not, recursively, and counts the files it wrote.
+    /// </summary>
+    /// <remarks>
+    /// Assemblies and their sidecars are skipped unless the destination is missing or is a different
+    /// size, so the build pays for Unity's own copies only with a length check, while a plugin DLL that
+    /// Unity declined to place still arrives.
+    /// </remarks>
+    private static int CopyRuntimePlugins(string source, string destination)
+    {
+        if (!Directory.Exists(source))
+        {
+            Debug.LogError("  browser: no runtime plugins to stage in " + source);
+            return 0;
+        }
+
+        Directory.CreateDirectory(destination);
+        int files = 0;
+
+        foreach (string file in Directory.GetFiles(source))
+        {
+            string extension = Path.GetExtension(file).ToLowerInvariant();
+            if (extension == ".meta" || extension == ".pdb" || extension == ".mdb" || extension == ".xml")
+            {
+                continue;
+            }
+
+            string target = Path.Combine(destination, Path.GetFileName(file));
+            if (File.Exists(target) && new FileInfo(target).Length == new FileInfo(file).Length) { continue; }
+
+            File.Copy(file, target, true);
+            files++;
+        }
+
+        foreach (string directory in Directory.GetDirectories(source))
+        {
+            files += CopyRuntimePlugins(directory, Path.Combine(destination, Path.GetFileName(directory)));
+        }
+
+        return files;
+    }
+
+    /// <summary>
+    /// Writes the browser's web resource index, which ZFBrowser opens before it initializes CEF.
+    /// </summary>
+    /// <remarks>
+    /// <c>StandaloneWebResources.LoadIndex</c> reads a version string and a count of entries from
+    /// <c>&lt;exe&gt;_Data\Resources\browser_assets</c> and throws when the file is not there, so its
+    /// absence stops the browser from starting at all. The file is not an asset and cannot be one: the
+    /// original project passed its build step a <c>BrowserAssets</c> folder to pack, and had none - the
+    /// installation's own index is the empty one written here, 14 bytes: a 7-bit string length, the
+    /// version string, and a count of zero.
+    /// </remarks>
+    private static void WriteWebResourceIndex(string dataDirectory)
+    {
+        string path = Path.Combine(dataDirectory, WebResourceIndexName);
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+
+        using (FileStream stream = File.Create(path))
+        using (BinaryWriter writer = new BinaryWriter(stream))
+        {
+            writer.Write(WebResourceHeader);
+            writer.Write(0);
+        }
     }
 
     private static string[] EnabledScenes()

@@ -9,10 +9,14 @@ in [`docs/release-notes.md`](docs/release-notes.md).
 
 The engine is **Unity 2018.4 LTS** now (`2018.4.36f1`), hopped from the `2018.1.9f2` the game ships with by
 the editor's own API Updater, with 2019.4 to come. The code needed two decompiler artifacts repaired and one
-enum that went obsolete, and the compile gate is `verdict: OK` at 0 unique errors. The hop rewrote two
-tracked project files, and it cost `ZFBrowser.dll`, which the runtime now refuses - the embedded browser is
-the open question and is being measured on a built player. `MacGruber.Breathing` fails one step earlier,
-still caught. What the hop settled: the **white iris on the `Male 1` skin is gone**.
+enum that went obsolete, the compile gate is `verdict: OK` at 0 unique errors, and the standalone player
+builds and boots. The **plugin compiler is rebuilt from source** - the `mcs.dll` VaM ships aborts on any
+plugin with a defaulted nullable value type under this project's .NET 4.x profile, taking the whole
+compilation with it, as it already did before the hop. Three more consequences: `ZFBrowser.dll` is refused by
+the runtime, so the embedded browser is the open question; `MacGruber.Breathing` fails one step earlier,
+still caught; and the **white iris on the `Male 1` skin is gone**. The setup script no longer reverts the
+hop: it used to put `ProjectSettings` and `Packages` back from the 2018.1 export, so every gate after a
+setup ran the old editor.
 
 ## 0.1.7-alpha
 

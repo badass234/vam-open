@@ -49,10 +49,21 @@ editor reports missing types.
 
 AssetRipper writes no `Assets\Plugins` at all - the native side of the build is not in its export,
 and nothing in `Assets\Scripts` would have worked without it. `VaM_Data\Plugins` is copied to
-`Assets\Plugins\x86_64` (85 files, 182.3 MB). That layout is not a guess: Unity copies *everything*
-under `Assets\Plugins\<platform>\` into the build's `Plugins` folder, and `VaM_Data\Plugins` is
-precisely that folder from the shipped build - which is why it holds CEF data files like
+`Assets\Plugins\x86_64` (85 files, 182.3 MB). The folder is not a guess: `VaM_Data\Plugins` is
+precisely the plugin folder of the shipped build, which is why it holds CEF data files like
 `icudtl.dat`, `locales\*.pak` and `natives_blob.bin` alongside the DLLs.
+
+**Unity's copy rule is narrower than the folder suggests.** Of the 85 files the editor puts **only
+the 21 `.dll`** into `<player>_Data\Plugins`; the other 64 are dropped without a word - the `.pak`
+files including the 53 under `locales\`, `icudtl.dat`, the `*_blob.bin` files, `ZFGameBrowser.exe`
+and one `.txt`. The build puts them back itself: `RebuildPlayer.cs` copies every non-`.meta` file of
+`Assets\Plugins\x86_64` into the player's `Plugins` folder after a successful build
+(`StageRuntimePlugins`, 64 files a run, each one length-checked), and writes the 14-byte
+`<player>_Data\Resources\browser_assets` index - `zfbRes_v1` followed by `0` - that
+`StandaloneWebResources.LoadIndex` reads from `Application.dataPath + "/Resources/browser_assets"`.
+A build without them still looks correct: it launches, reaches the main menu, and dies with
+`0xc0000409` inside `mono-2.0-bdwgc.dll` the first time a scene opens the browser, because what is
+missing surfaces as a `DllNotFoundException` raised inside a native callback.
 
 Only one native library is bound directly from `Assembly-CSharp`, but the rest are reached through
 wrappers or through project settings:
@@ -195,7 +206,14 @@ file 2018.1 had no counterpart for.
 `ProjectSettings\ProjectVersion.txt` names the editor, and the scripts read *that file* instead of
 hardcoding a path (`scripts\UnityEditor.ps1`), so a version hop needs no script edit. The project is
 now pinned to **2018.4.36f1**, the last 2018 LTS - hop one of two, with 2019.4 to come; what the hop
-cost is in [`release-notes.md`](release-notes.md).
+cost is in [`release-notes.md`](release-notes.md), and the item-by-item audit of the hop against
+Unity's own upgrade guide is in [`unity-upgrade-audit.md`](unity-upgrade-audit.md).
+
+That file is also a trap, and it caught the hop once: `Setup-RebuildProject.ps1` lays the export down
+on every run, and it used to do that to `ProjectSettings` and `Packages` too - so the gate scripts,
+reading the editor to launch from a file the setup had just restored from a 2018.1 snapshot, ran
+`2018.1.9f2` while reporting green. Both directories are now stashed across the wipe and copied back
+over the export's copy, the same way `Assets\Editor` already was.
 
 The project started on `2018.1.9f2` because that is the engine the game shipped with
 (`FileVersion 2018.1.9.10931241`, identical to the game's `UnityPlayer.dll`). A newer editor is not
@@ -248,8 +266,60 @@ editor. `scripts\Setup-RebuildProject.ps1` decides each managed assembly's fate:
   `System.Security`, `System.Transactions`, `System.Windows.Forms`, `Mono.Data.Tds`, `Mono.Posix`,
   `Mono.Security`, `Mono.WebBrowser`). Each one can collide with Unity's facades.
   `-IncludeVaMBclExtras` copies them back for a player build that turns out to need them.
+- **Rebuilt from source**: `mcs.dll`, the C# compiler VaM drives at runtime through `DynamicCSharp`. VaM
+  ships it built against Mono 2.0's `mscorlib`, and on the 4.x profile the installed copy aborts the whole
+  compilation on any defaulted nullable value type - see *The plugin compiler* below.
 - **Everything else** becomes `Assets\Plugins\*.dll` unchanged - the pristine binaries the game
   shipped, not machine-decompiled source.
+
+### The plugin compiler
+
+`mcs.dll` is not a game library that happens to be in `Managed\`: it is Mono's C# compiler, and VaM's
+`DynamicCSharp` layer feeds it the user's plugins - scenes, presets, custom scripts - at runtime. The
+installation's copy works on the Mono 2.0 profile it was built for. On this project's 4.x profile it dies
+on the first defaulted nullable value type:
+
+```
+Mono.CSharp.InternalErrorException: variants.cs(4,24): Defaults.A(int?)
+ ---> System.ArgumentException: System.Nullable`1[System.Int32] is not a supported constant type.
+   at System.Reflection.Emit.ParameterBuilder.SetConstant(...)
+   at Mono.CSharp.Parameter.ApplyAttributes(...)
+   at Mono.CSharp.Method.Emit(...)
+```
+
+`SetConstant` refuses to write that value into the parameter's metadata, `Parameter.ApplyAttributes` runs
+inside attribute emit, and the exception takes the whole compilation down with it. The failure mode is what
+makes it expensive: the report comes back empty and *no* plugin loads, so from the outside the installation
+simply has no custom content, with no error naming a plugin.
+
+Three prebuilt replacements were measured and rejected before building one:
+
+| candidate | loads in Unity? | compiles a plugin? |
+|---|---|---|
+| `VaM_Data\Managed\mcs.dll` (shipped) | yes | no - `not a supported constant type` |
+| `MonoBleedingEdge\lib\mono\unityjit\Mono.CSharp.dll` | yes | no - different assembly name, `internal` API, 136 x `CS0122` |
+| `MonoBleedingEdge\lib\mono\4.5\mcs.exe` | no - an exe-flavoured assembly has no `IMAGE_FILE_DLL` | - |
+| the same exe with its PE header relabelled | yes | no - same internal API, 168 errors |
+
+So the compiler is rebuilt from the sources the installation ships. The game's `Managed\` folder holds
+`mcs.dll` only as a binary, so the sources come from the export - AssetRipper writes *every* assembly out
+as source, and that is where `src\mcs\` (797 files, `Mono\` + `IKVM\`) comes from. `scripts\Build-McsCompiler.ps1`
+compiles it with the editor's own `MonoBleedingEdge\bin\mono.exe` + `lib\mono\4.5\mcs.exe` as
+`-target:library -sdk:4.5 -noconfig -optimize+ -debug- -langversion:latest`, and validates the output before
+it is accepted: at least 700 sources, the `IMAGE_FILE_DLL` characteristic, and `AssemblyName.Name == 'mcs'`
+(Unity loads by assembly name, so a renamed build would not be found). `mscorlib.dll` is deliberately not
+passed on the command line - with it the compile fails with `CS1685`, `System.Object` defined twice.
+
+One patch is applied to the sources, in `src\mcs\Mono\CSharp\Parameter.cs`: the helper that writes a
+constant through `ParameterBuilder.SetConstant` catches `ArgumentException` and `NotSupportedException` and
+drops the attribute instead of propagating. That is Mono 2.0's own behaviour with the same input - the
+emitted parameter simply carries no default - and it is what makes both the probe and real plugins compile.
+The engine still reads the default from the source, because `DynamicCSharp` compiles the plugin for the
+runtime and does not depend on the reflected attribute.
+
+`Setup-RebuildProject.ps1` runs the build, stages the result at `Assets\Plugins\mcs.dll`, and
+`Assets\Resources\DynamicCSharp_Settings.asset` keeps `mcs.dll` in its single `referenceRestrictions` entry
+- that list is a blocklist, and it exists so the plugin compiler cannot be handed to itself as a reference.
 
 `Assets\Editor\RebuildGate.cs` is the batch entry point that proves all of this end to end; see
 `verification.md` for what each method checks and `scripts\Invoke-CompileGate.ps1` /
@@ -282,6 +352,11 @@ in the original and cannot work in the editor as written.
 The editor path is a directory junction (`scripts\New-StreamingAssetsLink.ps1`, `-Remove` to take it
 down) pointing at `VaM_Data\StreamingAssets`. It sits next to `Assets`, not inside it, so Unity never
 imports it - the 261 bundles stay where the game put them and the project stays 247.8 MB.
+
+The player's copy of that link lives *inside* the player's data folder, which a build rewrites, so
+every player build takes it down. `scripts\Invoke-PlayerBuild.ps1` runs `New-PlayerRuntimeLinks.ps1`
+again once the build succeeds, because without the link the player boots to the splash and then stops
+on a grey screen: the bundles and the scene list are all behind it.
 
 This junction is what makes the wiping in `scripts\Setup-RebuildProject.ps1` dangerous: PowerShell 5.1's
 `Remove-Item -Recurse` deletes the files *behind* a junction rather than the link, so the script unlinks
@@ -328,8 +403,16 @@ to an editor session.
 - `ConvexDecompositionDll.dll` ships in the build but no managed assembly references it by name. If
   collider or rig generation fails at runtime, that file is the first suspect - it may be loaded by
   a plugin inside an asset bundle rather than by the game assemblies.
-- CEF discovery is untested: `ZFBrowser.GetCEFDirs` resolves paths differently in the editor than in
-  a player, and the in-game browser is the last subsystem that should be exercised anyway.
+- CEF discovery was untested, and the first scene with a browser settled it: the player crashed with
+  `0xc0000409` in `mono-2.0-bdwgc.dll` until the build started staging the CEF payload and writing
+  `browser_assets` (see "Native plugins" above). That fix is built but has not been through a hand
+  load yet. In the **editor** the same gap is still open, and it is structural rather than a missing
+  copy: `ZFBrowser` looks for both the payload and the index in the immediate children of
+  `Application.dataPath` - `Assets\Plugins\` and `Assets\Resources\browser_assets` - while this
+  project keeps the runtime one level deeper, in `Assets\Plugins\x86_64`, so an editor session logs
+  `FileNotFoundException: ...\VaM_Rebuild\Assets\Resources\browser_assets` (`artifacts\smoke-look.log`)
+  and finds no CEF either. Closing it means a second copy of 182 MB under `Assets\Plugins`, or a
+  junction for it.
 - `Assets\Scripts\Assembly-CSharp` compiles as the predefined assembly, so it cannot be unit-tested
   in isolation. That is intentional: the original build has the same shape.
 - Asset bundles are not part of the project; the editor reads them from a `<project>\StreamingAssets`
