@@ -27,12 +27,14 @@ scripts\Invoke-PlayerBuild.ps1 -TimeoutSec 7200
 param(
     [string] $ProjectPath,
     [string] $LogFile,
-    [string] $UnityExe   = (Join-Path ${env:ProgramFiles} 'Unity\Hub\Editor\2018.1.9f2\Editor\Unity.exe'),
+    [string] $UnityExe,
     [int]    $TimeoutSec = 3600
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $root 'UnityEditor.ps1')
+if (-not $UnityExe) { $UnityExe = Get-VaMOpenUnityExe }
 if (-not $ProjectPath) { $ProjectPath = Join-Path $root '..\VaM_Rebuild' }
 if (-not $LogFile)     { $LogFile     = Join-Path $root '..\artifacts\player-build.log' }
 

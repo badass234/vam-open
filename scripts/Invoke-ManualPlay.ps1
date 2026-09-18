@@ -32,12 +32,14 @@ param(
     [int]    $WarmupSeconds = 20,
     [string] $ProjectPath,
     [string] $LogFile,
-    [string] $UnityExe      = (Join-Path ${env:ProgramFiles} 'Unity\Hub\Editor\2018.1.9f2\Editor\Unity.exe'),
+    [string] $UnityExe,
     [switch] $Force
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $root 'UnityEditor.ps1')
+if (-not $UnityExe) { $UnityExe = Get-VaMOpenUnityExe }
 $repo = Split-Path -Parent $root
 if (-not $ProjectPath) { $ProjectPath = Join-Path $repo 'VaM_Rebuild' }
 if (-not $LogFile)     { $LogFile     = Join-Path $repo 'artifacts\manual-play.log' }

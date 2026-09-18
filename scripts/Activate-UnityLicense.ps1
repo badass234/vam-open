@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
-One-off activation of Unity 2018.1.9f2 from the command line.
+One-off activation of the project's Unity editor from the command line.
 
 .DESCRIPTION
-The 2018.1.9f2 editor rejects the ULF that Hub reissued on 15.09 at 11:58 (details and
-evidence in docs\unity-editor.md). Activating with the editor itself hands back a
-legacy-valid license, and batch mode along with it.
+The editor is whatever VaM_Rebuild\ProjectSettings\ProjectVersion.txt names (see
+scripts\UnityEditor.ps1), so an engine hop needs no edit here. The 2018.1.9f2 editor rejects
+the ULF that Hub reissued on 15.09 at 11:58 (details and evidence in docs\unity-editor.md).
+Activating with the editor itself hands back a legacy-valid license, and batch mode along with it.
 
 The script performs a single batch run: the editor logs in to a Unity ID, activates the
 license and imports the project along the way (that is, the same run also produces the log
@@ -20,13 +21,17 @@ for analysing compilation errors).
 param(
     [string]$Username,
     [string]$Serial,
-    [string]$UnityExe = (Join-Path ${env:ProgramFiles} 'Unity\Hub\Editor\2018.1.9f2\Editor\Unity.exe'),
+    [string]$UnityExe,
     [string]$ProjectPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'VaM_Rebuild'),
     [string]$LogFile,
     [switch]$NonInteractive
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'UnityEditor.ps1')
+if (-not $UnityExe) { $UnityExe = Get-VaMOpenUnityExe -ProjectPath $ProjectPath }
+
 $ulf = Join-Path $env:ProgramData 'Unity\Unity_lic.ulf'
 
 if (-not (Test-Path $UnityExe)) { throw "editor not found: $UnityExe" }

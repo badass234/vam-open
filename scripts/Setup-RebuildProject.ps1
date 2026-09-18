@@ -41,7 +41,7 @@ param(
     [string]$TargetDir  = (Join-Path $PSScriptRoot '..\VaM_Rebuild'),
     [string]$ManagedDir = (Join-Path $PSScriptRoot '..\..\VaM_Data\Managed'),
     # The editor's Data folder. Its Mono profile is where System.Drawing comes from (step 3).
-    [string]$EditorDataDir = (Join-Path ${env:ProgramFiles} 'Unity\Hub\Editor\2018.1.9f2\Editor\Data'),
+    [string]$EditorDataDir,
     # Also copy the BCL extras VaM shipped (System.Windows.Forms, Mono.Posix, ...). They are the
     # runtime dependencies of mcs.dll - the C# compiler DynamicCSharp drives - and not something
     # Assembly-CSharp is compiled against, so they are opt-in: they can collide with the facades
@@ -53,6 +53,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# The editor version comes from the project, not from this file: see scripts\UnityEditor.ps1.
+. (Join-Path $PSScriptRoot 'UnityEditor.ps1')
+if (-not $EditorDataDir) { $EditorDataDir = Get-VaMOpenEditorDataDir -ProjectPath $TargetDir }
 
 foreach ($d in $ExportDir, $SourceDir, $ManagedDir, $EditorDataDir) {
     if (-not (Test-Path -LiteralPath $d)) { throw "Not found: $d" }
