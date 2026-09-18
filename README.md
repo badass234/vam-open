@@ -131,7 +131,8 @@ its short sections is in [`docs/release-notes.md`](docs/release-notes.md).
 
 `Invoke-SyncSolution.ps1` writes `VaM_Rebuild.sln` and the project files beside it using the editor's
 own generator, because Unity is the only thing that knows which file belongs to which assembly. The
-solution and the project files are gitignored build output, regenerated on demand; `src\` keeps its own
+solution and the project files are gitignored build output, regenerated on demand after a source file or
+a plugin is added; `src\` keeps its own
 tracked projects, which are what to open when there is no editor around. Both sets and what they are
 for are described in [`docs/rebuild-project.md`](docs/rebuild-project.md).
 

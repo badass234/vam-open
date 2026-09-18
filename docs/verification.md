@@ -290,6 +290,16 @@ hand-editing. The files are gitignored (`VaM_Rebuild/*.sln`, `VaM_Rebuild/*.cspr
 output that changes with the editor and the package set, not source. See *The IDE solution* in
 `rebuild-project.md` for why the decompiled sources keep their own projects under `src\` as well.
 
+**Staleness is the second thing this check is about, and it is measured rather than assumed.** The
+fallback only runs when there is no `.sln` yet, so a solution that already exists is refreshed by
+Unity's own `SyncVS` step rather than by this method - and that is enough, which was verified the only
+way it can be: a probe source file was dropped into `Assets\Scripts\`, the script was run, and
+`Assembly-CSharp.csproj` came back at 18:20:13 with `<Compile Include="Assets\Scripts\ZzSolProbe.cs" />`
+in it and 57 bytes larger. The probe was then deleted and the script run again: the entry is gone and
+the file is back to its previous size, byte for byte, with nothing else rewritten. So the rule in
+`rebuild-project.md` - regenerate after adding a source file or a plugin - describes what actually
+happens: the editor rewrites only the project whose file list changed, and leaves the rest alone.
+
 ## When a gate lies
 
 Both failure modes named first below have already happened once, and each of them produced a red verdict that had

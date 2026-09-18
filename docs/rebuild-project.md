@@ -530,7 +530,9 @@ Two project sets now exist in this repository, and they are not substitutes for 
 
 - `VaM_Rebuild\*.sln` and `VaM_Rebuild\*.csproj` are **generated** and gitignored. Deleting them costs
   one command, and committing them would only make them stale, because they name the editor's own
-  install path.
+  install path. Add a source file or a plugin and run the script again: the editor rewrites the one
+  project whose file list changed and leaves the others alone, which is measured in check 8 of
+  `verification.md` rather than assumed.
 - `src\` holds the **tracked** projects - `Assembly-CSharp.csproj`, `Assembly-UnityScript.csproj`,
   `RTTypeModel.csproj` and `Directory.Build.props`. They are SDK-style, target `net472`, are pinned to
   C# 6 and compile against the references `scripts\Update-UnityReferences.ps1` writes into the
