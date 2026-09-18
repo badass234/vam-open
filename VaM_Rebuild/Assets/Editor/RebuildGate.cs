@@ -3960,7 +3960,8 @@ public static class RebuildGate
     private const int SeamGrid = 16;
     private const double SeamSeconds = 90.0;
     private const float SeamCloseup = 0.55f;
-    private const float SeamStepVisible = 0.05f;
+    private const float SeamDimmed = 0.35f;
+    private const int SeamJointWindow = 48;
     private const int SeamStepSpan = 9;
     private static readonly Color SeamBackground = new Color(0.1f, 0.1f, 0.14f, 1f);
 
@@ -3974,6 +3975,32 @@ public static class RebuildGate
         public string Label;
         public string Property;
         public float Value;
+
+        /// <summary>
+        /// Set when the override is not a property value at all but a change of shader family on the slots
+        /// that have no tessellation of their own. Property and Value are then unused.
+        /// </summary>
+        public bool FamilySwap;
+
+        /// <summary>
+        /// Set to a part name when the override must reach one slot rather than every slot that declares the
+        /// property. A seam is a question about two particular parts, and "it changed somewhere" is not an
+        /// answer to it: the neighbour's own slot has to move on its own for the neighbour to be live.
+        /// </summary>
+        public string Slot;
+    }
+
+    /// <summary>One slot that the family swap redrew, and the shader it was drawn with before and after.</summary>
+    private sealed class SeamSwap
+    {
+        public Material Slot;
+        public Shader Shader;
+
+        /// <summary>
+        /// Read back after the assignment. A material that refuses the new shader keeps the old one, and a
+        /// swap that reports slots but changes no pixel is either this, or slots the renderer never draws.
+        /// </summary>
+        public Shader After;
     }
 
     private sealed class SeamProbe
@@ -3999,9 +4026,25 @@ public static class RebuildGate
         // measured across it instead of a count of changed pixels.
         public string Neighbour;
         public Vector3 Edge;
+
+        /// <summary>
+        /// Which way the joint runs in the world, taken from the rim it belongs to. The joint is a ring around
+        /// a limb, so on screen it is a line of one particular direction, and a step measured straight up and
+        /// down the frame only crosses it if that line happens to be horizontal. A neck joint seen from the
+        /// side is horizontal; the same joint seen from the front is not.
+        /// </summary>
+        public Vector3 Along;
         public bool UseEdge;
         public string PendingProperty;
+        public string PendingSlot;
         public readonly List<SeamOverride> EdgeOverrides = new List<SeamOverride>();
+        public readonly List<SeamSwap> Swapped = new List<SeamSwap>();
+
+        // The close-up stands half a metre from the skin with the scene's own lights plus the probe's on it,
+        // and that clips a quarter of the frame to white. A step measured on a clipped frame is the exposure
+        // rather than the shading, so the scene lights are dimmed for this pass and put back afterwards.
+        public readonly List<Light> Dimmed = new List<Light>();
+        public readonly List<float> DimmedIntensity = new List<float>();
     }
 
     private static readonly StringBuilder SeamReportText = new StringBuilder();
@@ -4085,6 +4128,7 @@ public static class RebuildGate
 
         bool world;
         Vector3[] drawn = DrawnVertices(skin, out world);
+        SeamRimReport(skin, probe.Mesh, world, drawn, probe.Target);
         Bounds box;
         if (!SubMeshBounds(probe.Mesh, SubMeshNamed(skin, probe.Target), drawn,
                 world ? Matrix4x4.identity : skin.transform.localToWorldMatrix, out box))
@@ -4119,15 +4163,29 @@ public static class RebuildGate
         // The whole-part view above says whether a property moves the surface at all. This second pass stands
         // close enough that the joint between the two parts is a line across the frame, and measures the jump
         // in brightness across that line: a seam is a step, and the step is what has to go away.
-        probe.Neighbour = SeamNeighbour(skin, SubMeshNamed(skin, probe.Target));
+        probe.Neighbour = SeamNeighbour(skin, probe.Mesh, drawn, world, SubMeshNamed(skin, probe.Target));
         int neighbour = probe.Neighbour == null ? -1 : SubMeshNamed(skin, probe.Neighbour);
         if (neighbour >= 0)
         {
             Vector3 edge;
+            float gap;
+            int partVertex;
+            int jointVertex;
             if (SeamEdge(probe.Mesh, SubMeshNamed(skin, probe.Target), neighbour, drawn,
-                    world ? Matrix4x4.identity : skin.transform.localToWorldMatrix, out edge))
+                    world ? Matrix4x4.identity : skin.transform.localToWorldMatrix, out edge, out gap,
+                    out partVertex, out jointVertex))
             {
                 probe.Edge = edge;
+                probe.Along = SeamRimDirection(probe.Mesh, SubMeshNamed(skin, probe.Target), edge, drawn,
+                    world ? Matrix4x4.identity : skin.transform.localToWorldMatrix);
+                probe.EdgeOverrides.Add(new SeamOverride { Label = "one shader family", FamilySwap = true });
+                probe.EdgeOverrides.Add(new SeamOverride
+                {
+                    Label = "no specular intensity on the neighbour's own slot",
+                    Property = "_SpecInt",
+                    Value = 0f,
+                    Slot = probe.Neighbour
+                });
                 probe.EdgeOverrides.Add(new SeamOverride { Label = "no phong projection", Property = "_TessPhong", Value = 0f });
                 probe.EdgeOverrides.Add(new SeamOverride { Label = "every patch projected", Property = "_TessPhong", Value = 1f });
                 probe.EdgeOverrides.Add(new SeamOverride { Label = "no subdivision", Property = "_Tess", Value = 0f });
@@ -4138,6 +4196,10 @@ public static class RebuildGate
                 SeamReportText.AppendLine(string.Format(
                     "  pass stands {0:F2} m from there along {1} and measures the step across the joint",
                     SeamCloseup, axis.ToString("F2")));
+                SeamReportText.AppendLine(string.Format(
+                    "  the rim runs along {0} there, so across the joint is the other way",
+                    probe.Along.ToString("F2")));
+                SeamReportText.AppendLine(SeamJointDisagreement(skin, probe.Mesh, world, partVertex, jointVertex, gap));
             }
             else
             {
@@ -4168,12 +4230,44 @@ public static class RebuildGate
     }
 
     /// <summary>
-    /// The nearest named part that draws a plain material, i.e. the other half of the joint. The seam the
-    /// probe is chasing is the one between a subdivided part and its plain neighbour, so the neighbour is
-    /// picked from the parts that nameably sit beside a torso rather than from whatever is closest in space.
+    /// The other half of the joint: the plain part whose rim comes closest to this one's. It is picked by
+    /// distance rather than by name, because the parts of a body are laid against each other and the name of
+    /// the one beside a torso is a guess - the torso's own rim is nine centimetres from the forearm's, so the
+    /// joint the target really has is not the joint its name suggests. The names are the fallback for a skin
+    /// whose rims cannot be measured at all.
     /// </summary>
-    private static string SeamNeighbour(DAZSkinV2 skin, int partIndex)
+    private static string SeamNeighbour(DAZSkinV2 skin, Mesh mesh, Vector3[] drawn, bool world, int partIndex)
     {
+        string nearest = null;
+        float best = float.MaxValue;
+        if (mesh != null && drawn != null && partIndex >= 0 && !NoPartNames(skin))
+        {
+            Matrix4x4 toWorld = world ? Matrix4x4.identity : skin.transform.localToWorldMatrix;
+            for (int i = 0; i < mesh.subMeshCount && i < skin.dazMesh.materials.Length; i++)
+            {
+                if (i == partIndex || skin.dazMesh.materials[i] == null || SlotDeclares(skin, i, "_Tess"))
+                {
+                    continue;
+                }
+
+                Vector3 edge;
+                float gap;
+                int a;
+                int b;
+                if (SeamRimDistance(mesh, partIndex, i, drawn, toWorld, out edge, out gap, out a, out b)
+                    && gap < best)
+                {
+                    best = gap;
+                    nearest = skin.dazMesh.materials[i].name;
+                }
+            }
+        }
+
+        if (nearest != null)
+        {
+            return nearest;
+        }
+
         string[] wanted = { "Forearms", "Neck", "Head", "Hands", "Feet", "Face", "Lips" };
         for (int i = 0; i < wanted.Length; i++)
         {
@@ -4192,13 +4286,21 @@ public static class RebuildGate
     /// vertices the draw call uses, so it is the joint as it is drawn rather than the joint as it was
     /// modelled, and it is the only place the two neighbours can disagree about the surface.
     /// </summary>
-    private static bool SeamEdge(Mesh mesh, int partIndex, int neighbourIndex, Vector3[] vertices,
-        Matrix4x4 toWorld, out Vector3 edge)
+    /// <summary>
+    /// The nearest pair of drawn vertices on the rims of two parts, i.e. the joint as it is drawn rather than
+    /// as it was modelled. It is the only place two parts can disagree about the surface, so its distance and
+    /// the difference between the normals there are what say whether a step in the picture is in the mesh.
+    /// </summary>
+    private static bool SeamRimDistance(Mesh mesh, int partIndex, int neighbourIndex, Vector3[] vertices,
+        Matrix4x4 toWorld, out Vector3 edge, out float gap, out int partVertex, out int neighbourVertex)
     {
         edge = Vector3.zero;
-        List<Vector3> part = SubMeshPoints(mesh, partIndex, vertices, toWorld, 400);
-        List<Vector3> neighbour = SubMeshPoints(mesh, neighbourIndex, vertices, toWorld, 400);
-        if (part.Count == 0 || neighbour.Count == 0)
+        gap = float.MaxValue;
+        partVertex = -1;
+        neighbourVertex = -1;
+        List<int> part = SubMeshBorder(mesh, partIndex);
+        List<int> neighbour = SubMeshBorder(mesh, neighbourIndex);
+        if (part.Count == 0 || neighbour.Count == 0 || vertices == null)
         {
             return false;
         }
@@ -4206,41 +4308,307 @@ public static class RebuildGate
         float best = float.MaxValue;
         for (int i = 0; i < part.Count; i++)
         {
+            int a = part[i];
+            if (a < 0 || a >= vertices.Length)
+            {
+                continue;
+            }
+
+            Vector3 pointA = toWorld.MultiplyPoint3x4(vertices[a]);
             for (int j = 0; j < neighbour.Count; j++)
             {
-                float distance = (part[i] - neighbour[j]).sqrMagnitude;
+                int b = neighbour[j];
+                if (b < 0 || b >= vertices.Length)
+                {
+                    continue;
+                }
+
+                Vector3 pointB = toWorld.MultiplyPoint3x4(vertices[b]);
+                float distance = (pointA - pointB).sqrMagnitude;
                 if (distance < best)
                 {
                     best = distance;
-                    edge = (part[i] + neighbour[j]) * 0.5f;
+                    edge = (pointA + pointB) * 0.5f;
+                    partVertex = a;
+                    neighbourVertex = b;
                 }
             }
         }
 
-        return best < float.MaxValue;
-    }
-
-    /// <summary>A sample of the drawn vertices of one submesh, spread over its triangles up to a limit.</summary>
-    private static List<Vector3> SubMeshPoints(Mesh mesh, int index, Vector3[] vertices, Matrix4x4 toWorld, int limit)
-    {
-        List<Vector3> points = new List<Vector3>();
-        if (mesh == null || vertices == null || index < 0 || index >= mesh.subMeshCount)
+        if (best >= float.MaxValue)
         {
-            return points;
+            return false;
         }
 
-        int[] triangles = mesh.GetTriangles(index);
-        int stride = Mathf.Max(1, triangles.Length / Mathf.Max(3, limit * 3));
-        for (int t = 0; t + 2 < triangles.Length; t += stride)
+        gap = Mathf.Sqrt(best);
+        return true;
+    }
+
+    /// <summary>
+    /// Every drawn part of the skin, ordered by how close its rim comes to the target's rim. Two parts that
+    /// meet are at zero distance and everything else on the body is centimetres away, so this is what names
+    /// the joint: a part chosen by name is a guess that a mesh nine centimetres across the arm disproves.
+    /// </summary>
+    private static void SeamRimReport(DAZSkinV2 skin, Mesh mesh, bool world, Vector3[] drawn, string target)
+    {
+        int targetIndex = SubMeshNamed(skin, target);
+        if (mesh == null || drawn == null || targetIndex < 0 || NoPartNames(skin))
         {
-            int vertex = triangles[t];
-            if (vertex >= 0 && vertex < vertices.Length)
+            SeamReportText.AppendLine("  the parts cannot be listed, so the joint is taken from the names alone");
+            return;
+        }
+
+        Matrix4x4 toWorld = world ? Matrix4x4.identity : skin.transform.localToWorldMatrix;
+        List<string> names = new List<string>();
+        List<float> gaps = new List<float>();
+        for (int i = 0; i < mesh.subMeshCount && i < skin.dazMesh.materials.Length; i++)
+        {
+            if (i == targetIndex || skin.dazMesh.materials[i] == null)
             {
-                points.Add(toWorld.MultiplyPoint3x4(vertices[vertex]));
+                continue;
+            }
+
+            Vector3 edge;
+            float gap;
+            int a;
+            int b;
+            if (SeamRimDistance(mesh, targetIndex, i, drawn, toWorld, out edge, out gap, out a, out b))
+            {
+                names.Add(skin.dazMesh.materials[i].name);
+                gaps.Add(gap);
             }
         }
 
-        return points;
+        for (int i = 1; i < gaps.Count; i++)
+        {
+            for (int j = i; j > 0 && gaps[j] < gaps[j - 1]; j--)
+            {
+                float gap = gaps[j];
+                gaps[j] = gaps[j - 1];
+                gaps[j - 1] = gap;
+                string name = names[j];
+                names[j] = names[j - 1];
+                names[j - 1] = name;
+            }
+        }
+
+        SeamReportText.AppendLine(string.Format("  how close every other drawn part's rim comes to {0}'s rim:",
+            target));
+        StringBuilder line = new StringBuilder("   ");
+        for (int i = 0; i < names.Count && i < 16; i++)
+        {
+            line.Append(string.Format(" {0} {1:F4}", names[i], gaps[i]));
+        }
+
+        SeamReportText.AppendLine(line.ToString());
+        if (gaps.Count > 0)
+        {
+            SeamReportText.AppendLine(string.Format(
+                "  the nearest part is {0} at {1:F4} m, and {2} part(s) in all were measured",
+                names[0], gaps[0], gaps.Count));
+        }
+    }
+
+    private static bool NoPartNames(DAZSkinV2 skin)
+    {
+        return skin.dazMesh == null || skin.dazMesh.materials == null;
+    }
+
+    private static bool SeamEdge(Mesh mesh, int partIndex, int neighbourIndex, Vector3[] vertices,
+        Matrix4x4 toWorld, out Vector3 edge, out float gap, out int partVertex, out int neighbourVertex)
+    {
+        if (!SeamRimDistance(mesh, partIndex, neighbourIndex, vertices, toWorld, out edge, out gap, out partVertex,
+                out neighbourVertex))
+        {
+            return false;
+        }
+
+        SeamReportText.AppendLine(string.Format(
+            "  their rims hold {0} and {1} drawn vertices, and the nearest pair on those rims is the joint",
+            SubMeshBorder(mesh, partIndex).Count, SubMeshBorder(mesh, neighbourIndex).Count));
+        return true;
+    }
+
+    /// <summary>
+    /// Which way the rim runs at the joint, in world space: the two rim vertices of the part nearest the
+    /// joint that are furthest apart from each other. The rim is a ring, so among the vertices close to the
+    /// joint the widest pair lies along the ring and not across it, and the ring is the joint.
+    /// </summary>
+    private static Vector3 SeamRimDirection(Mesh mesh, int partIndex, Vector3 joint, Vector3[] drawn,
+        Matrix4x4 toWorld)
+    {
+        List<int> rim = SubMeshBorder(mesh, partIndex);
+        List<Vector3> near = new List<Vector3>();
+        float reach = 0.03f;
+        for (int i = 0; i < rim.Count; i++)
+        {
+            int vertex = rim[i];
+            if (vertex < 0 || drawn == null || vertex >= drawn.Length)
+            {
+                continue;
+            }
+
+            Vector3 point = toWorld.MultiplyPoint3x4(drawn[vertex]);
+            if ((point - joint).sqrMagnitude <= reach * reach)
+            {
+                near.Add(point);
+            }
+        }
+
+        Vector3 best = Vector3.zero;
+        float widest = 0f;
+        for (int i = 0; i < near.Count; i++)
+        {
+            for (int j = i + 1; j < near.Count; j++)
+            {
+                float span = (near[i] - near[j]).sqrMagnitude;
+                if (span > widest)
+                {
+                    widest = span;
+                    best = near[i] - near[j];
+                }
+            }
+        }
+
+        return best.sqrMagnitude > 0.0000001f ? best.normalized : Vector3.zero;
+    }
+
+    /// <summary>
+    /// The vertices on the rim of one submesh: those that sit on an edge used by a single triangle. The rim
+    /// is where a part stops, so it is the only ring of vertices that can meet a neighbour; a sample spread
+    /// over the triangles lands in the middle of the part and measures how wide the part is, not the joint.
+    /// </summary>
+    private static List<int> SubMeshBorder(Mesh mesh, int index)
+    {
+        List<int> border = new List<int>();
+        if (mesh == null || index < 0 || index >= mesh.subMeshCount)
+        {
+            return border;
+        }
+
+        int[] triangles = mesh.GetTriangles(index);
+        Dictionary<long, int> edges = new Dictionary<long, int>();
+        for (int t = 0; t + 2 < triangles.Length; t += 3)
+        {
+            SeamEdgeUse(edges, triangles[t], triangles[t + 1]);
+            SeamEdgeUse(edges, triangles[t + 1], triangles[t + 2]);
+            SeamEdgeUse(edges, triangles[t + 2], triangles[t]);
+        }
+
+        foreach (KeyValuePair<long, int> edge in edges)
+        {
+            if (edge.Value != 1)
+            {
+                continue;
+            }
+
+            int a = (int)(edge.Key >> 32);
+            int b = (int)(edge.Key & 0xffffffffL);
+            if (!border.Contains(a))
+            {
+                border.Add(a);
+            }
+
+            if (!border.Contains(b))
+            {
+                border.Add(b);
+            }
+        }
+
+        return border;
+    }
+
+    /// <summary>Counts one use of an undirected edge, so an edge of a single triangle stands out as the rim.</summary>
+    private static void SeamEdgeUse(Dictionary<long, int> edges, int a, int b)
+    {
+        if (a == b)
+        {
+            return;
+        }
+
+        long key = a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
+        int count;
+        edges.TryGetValue(key, out count);
+        edges[key] = count + 1;
+    }
+
+    /// <summary>
+    /// How far the two sides of a joint are from describing one surface. Distance says whether the two parts
+    /// are welded there at all; the angles say whether the normals and tangents the draw call feeds each of
+    /// them agree. Two parts that agree in position and angle describe one surface, so a step across the joint
+    /// has to come from how that surface is shaded. Parts that disagree in angle carry the step in their mesh.
+    /// </summary>
+    private static string SeamJointDisagreement(DAZSkinV2 skin, Mesh mesh, bool world, int partVertex,
+        int neighbourVertex, float gap)
+    {
+        if (partVertex < 0 || neighbourVertex < 0)
+        {
+            return "  the closest pair is not a pair of named vertices, so the joint cannot be read";
+        }
+
+        Vector3[] normals = world ? ReadVertices(skin.normalsBuffer) : (mesh == null ? null : mesh.normals);
+        Vector4[] tangents = world ? ReadTangents(skin) : MeshTangents(mesh);
+        int count = normals == null ? 0 : normals.Length;
+        if (partVertex >= count || neighbourVertex >= count)
+        {
+            return string.Format(
+                "  the closest pair is {0:F4} m apart, but the surface it is read from has no such vertices",
+                gap);
+        }
+
+        Vector3 normalA = normals[partVertex];
+        Vector3 normalB = normals[neighbourVertex];
+        string line = string.Format("  the closest pair is {0:F4} m apart; the normals there are {1:F2} deg apart",
+            gap, Vector3.Angle(normalA, normalB));
+        if (tangents != null && partVertex < tangents.Length && neighbourVertex < tangents.Length)
+        {
+            Vector4 tangentA = tangents[partVertex];
+            Vector4 tangentB = tangents[neighbourVertex];
+            line += string.Format(", the tangents {0:F2} deg (tangent w {1:F2} and {2:F2})",
+                Vector3.Angle(tangentA, tangentB), tangentA.w, tangentB.w);
+        }
+
+        return line + string.Format("; the normal lengths are {0:F4} and {1:F4}", normalA.magnitude,
+            normalB.magnitude);
+    }
+
+    /// <summary>The tangents the draw call feeds the skin, one per drawn vertex, or null when there are none.</summary>
+    private static Vector4[] ReadTangents(DAZSkinV2 skin)
+    {
+        ComputeBuffer buffer = skin == null ? null : Field(skin, "_tangentsBuffer") as ComputeBuffer;
+        if (buffer == null || buffer.count == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            Vector4[] data = new Vector4[buffer.count];
+            buffer.GetData(data);
+            return data;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The tangents of an unskinned mesh, as the same Vector4 the drawn path reads.</summary>
+    private static Vector4[] MeshTangents(Mesh mesh)
+    {
+        if (mesh == null || mesh.tangents == null || mesh.tangents.Length == 0)
+        {
+            return null;
+        }
+
+        Vector4[] tangents = mesh.tangents;
+        Vector4[] sized = new Vector4[mesh.vertexCount];
+        for (int i = 0; i < sized.Length && i < tangents.Length; i++)
+        {
+            sized[i] = tangents[i];
+        }
+
+        return sized;
     }
 
     /// <summary>How many slots of a skin draw a material that declares a property at all.</summary>
@@ -4382,9 +4750,20 @@ public static class RebuildGate
             }
 
             SeamOverride next = plan[probe.Step];
-            int written = WriteScalar(probe, next.Property, next.Value);
-            SeamReportText.AppendLine(string.Format("    {0} ({1} = {2:F2}): written on {3} slot(s)",
-                next.Label, next.Property, next.Value, written));
+            probe.PendingSlot = next.Slot;
+            int written = next.FamilySwap
+                ? WriteFamily(probe)
+                : WriteScalar(probe, next.Property, next.Value);
+            SeamReportText.AppendLine(string.Format("    {0}: written on {1} slot(s)",
+                SeamOverrideText(next), written));
+            if (next.FamilySwap)
+            {
+                SeamReportText.AppendLine("      " + SeamSwapSummary(probe));
+            }
+            else if (next.Slot != null)
+            {
+                SeamReportText.AppendLine("      " + SeamSlotLine(probe, next.Slot));
+            }
             probe.Phase = 2;
             probe.DueFrame = Time.frameCount + SeamSettleFrames;
             return;
@@ -4400,7 +4779,8 @@ public static class RebuildGate
             SeamReportText.AppendLine("      " + MeanAbsDiff(probe.Baseline, frame));
             if (probe.UseEdge)
             {
-                SeamReportText.AppendLine("      " + SeamStepScore(frame));
+                SeamReportText.AppendLine("      " + ClippedShare(frame));
+                SeamReportText.AppendLine("      " + SeamJointStep(probe, frame));
                 SeamReportText.AppendLine(DiffGrid(probe.Baseline, frame, SeamFrameSize, SeamGrid));
             }
             else
@@ -4409,7 +4789,15 @@ public static class RebuildGate
                 SeamReportText.AppendLine(DiffGrid(probe.Baseline, frame, SeamFrameSize, SeamGrid));
             }
 
-            UndoScalar(probe, current.Property);
+            if (current.FamilySwap)
+            {
+                UndoFamily(probe);
+            }
+            else
+            {
+                UndoScalar(probe, current.Property);
+            }
+
             probe.Step++;
             probe.Phase = 1;
             probe.DueFrame = Time.frameCount + SeamSettleFrames;
@@ -4457,12 +4845,36 @@ public static class RebuildGate
                 probe.Light.transform.LookAt(probe.Edge, Vector3.up);
             }
 
+            DimSceneLights(probe);
             SeamReportText.AppendLine(string.Format(
-                "  --- the joint between {0} and {1}, {2:F2} m out ---", probe.Target, probe.Neighbour, SeamCloseup));
+                "  --- the joint between {0} and {1}, {2:F2} m out, scene lights at {3:F2} of full strength, "
+                + "and the camera needs a few frames to reach the renderer ---",
+                probe.Target, probe.Neighbour, SeamCloseup, SeamDimmed));
             probe.UseEdge = true;
             probe.Step = 0;
+            probe.Phase = 6;
+            probe.DueFrame = Time.frameCount + SeamSettleFrames * 2;
+            return;
+        }
+
+        if (probe.Phase == 6)
+        {
+            // The first frame after the camera moves and the lights are dimmed renders brighter than every
+            // frame after it: the joint baseline came out at a quarter of the frame clipped to white while
+            // the control taken a few frames later, with nothing changed at all, sat at a fifth. Shot and
+            // thrown away, so what follows is measured against the exposure the overrides are seen at.
+            SeamShot(probe, "joint-warmup");
+            probe.Phase = 7;
+            probe.DueFrame = Time.frameCount + SeamSettleFrames;
+            return;
+        }
+
+        if (probe.Phase == 7)
+        {
+            SeamReportText.AppendLine("  --- the joint baseline, once the exposure has settled ---");
             probe.Baseline = SeamShot(probe, "joint-baseline");
-            SeamReportText.AppendLine("      " + SeamStepScore(probe.Baseline));
+            SeamReportText.AppendLine("      " + ClippedShare(probe.Baseline));
+            SeamReportText.AppendLine("      " + SeamJointStep(probe, probe.Baseline));
             SeamReportText.AppendLine("      " + MeanText(probe.Baseline) + " over the whole frame");
             probe.Phase = 1;
             probe.DueFrame = Time.frameCount + SeamSettleFrames;
@@ -4474,74 +4886,9 @@ public static class RebuildGate
             "    every property back against the joint baseline: {0} (the control)",
             PixelDiff(probe.Baseline, settled)));
         SeamReportText.AppendLine("      " + MeanAbsDiff(probe.Baseline, settled));
-        SeamReportText.AppendLine("      " + SeamStepScore(settled));
+        SeamReportText.AppendLine("      " + ClippedShare(settled));
+        SeamReportText.AppendLine("      " + SeamJointStep(probe, settled));
         FinishSeamProbe();
-    }
-
-    /// <summary>
-    /// The biggest jump in brightness between neighbouring pixels of one row, as a median over the rows of
-    /// the middle of the frame. Pairs that touch the empty background are dropped, because the edge of the
-    /// body is a jump of its own and every row has one; what is left is the jumps inside the skin, which is
-    /// where a seam lives. A surface that shades smoothly has small jumps everywhere, so the median and the
-    /// count of rows with a large jump in them separate a joint that steps from one that does not.
-    /// </summary>
-    private static string SeamStepScore(Color[] frame)
-    {
-        if (frame == null || frame.Length != SeamFrameSize * SeamFrameSize)
-        {
-            return "no step (the frame was not rendered)";
-        }
-
-        List<float> rows = new List<float>();
-        int above = 0;
-        float worst = 0f;
-        int empty = 0;
-        for (int y = SeamFrameSize / 5; y < SeamFrameSize * 4 / 5; y++)
-        {
-            float rowMax = 0f;
-            int width = 0;
-            int start = y * SeamFrameSize;
-            for (int x = 0; x + SeamStepSpan < SeamFrameSize; x++)
-            {
-                Color a = frame[start + x];
-                Color b = frame[start + x + SeamStepSpan];
-                if (IsSeamBackground(a) || IsSeamBackground(b))
-                {
-                    continue;
-                }
-
-                width++;
-                float jump = Math.Abs(a.r - b.r) + Math.Abs(a.g - b.g) + Math.Abs(a.b - b.b);
-                if (jump > rowMax)
-                {
-                    rowMax = jump;
-                }
-            }
-
-            if (width < SeamFrameSize / 2)
-            {
-                empty++;
-                continue;
-            }
-
-            rows.Add(rowMax);
-            worst = Mathf.Max(worst, rowMax);
-            if (rowMax > SeamStepVisible)
-            {
-                above++;
-            }
-        }
-
-        if (rows.Count == 0)
-        {
-            return string.Format("step across the joint: no row of the skin is {0} wide here", SeamFrameSize / 2);
-        }
-
-        rows.Sort();
-        float median = rows[rows.Count / 2];
-        return string.Format(
-            "step across the joint over {0} px: median {1:F3} of 1 per pixel, {2} of {3} rows above {4:F2}, worst {5:F3}, {6} row(s) too narrow to measure",
-            SeamStepSpan, median, above, rows.Count, SeamStepVisible, worst, empty);
     }
 
     /// <summary>Whether a pixel is the probe camera's own empty background rather than skin.</summary>
@@ -4574,6 +4921,14 @@ public static class RebuildGate
             total / (3.0 * before.Length) * 1000.0);
     }
 
+    /// <summary>The override in the words the report uses for it, property or family swap.</summary>
+    private static string SeamOverrideText(SeamOverride measure)
+    {
+        return measure.FamilySwap
+            ? measure.Label + " (every plain slot through the target's shader)"
+            : string.Format("{0} ({1} = {2:F2})", measure.Label, measure.Property, measure.Value);
+    }
+
     /// <summary>Writes one float on every slot of the probe's skin that declares it, and remembers what it was.</summary>
     private static int WriteScalar(SeamProbe probe, string property, float value)
     {
@@ -4586,9 +4941,17 @@ public static class RebuildGate
             return 0;
         }
 
+        // Matched by name rather than by index: SubMeshNamed looks the material up in dazMesh.materials and
+        // the slots the renderer draws are GPUmaterials, and nothing promises the two are in the same order.
         for (int i = 0; i < slots.Length; i++)
         {
             if (slots[i] == null || !slots[i].HasProperty(property))
+            {
+                continue;
+            }
+
+            if (probe.PendingSlot != null
+                && slots[i].name.IndexOf(probe.PendingSlot, StringComparison.OrdinalIgnoreCase) < 0)
             {
                 continue;
             }
@@ -4614,6 +4977,262 @@ public static class RebuildGate
         probe.Touched.Clear();
         probe.Replaced.Clear();
         probe.PendingProperty = null;
+    }
+
+    /// <summary>
+    /// The joint is where two shader families meet: a tessellated part is projected onto a subdivided surface
+    /// and the plain part beside it is not, so one skin is described twice, once per path. Drawing every plain
+    /// slot of the same skin through the tessellated family as well -- same shader, same density, same phong
+    /// weight -- leaves the joint with a single description on both sides, and the frame then says whether the
+    /// step belongs to the family or to the data.
+    /// </summary>
+    private static int WriteFamily(SeamProbe probe)
+    {
+        probe.PendingProperty = "shader";
+        probe.Swapped.Clear();
+        Material[] slots = probe.Skin.GPUmaterials;
+        int target = SubMeshNamed(probe.Skin, probe.Target);
+        if (slots == null || target < 0 || target >= slots.Length || slots[target] == null)
+        {
+            return 0;
+        }
+
+        Material source = slots[target];
+        for (int i = 0; i < slots.Length; i++)
+        {
+            if (slots[i] == null || slots[i].HasProperty("_Tess"))
+            {
+                continue;
+            }
+
+            SeamSwap swap = new SeamSwap();
+            swap.Slot = slots[i];
+            swap.Shader = slots[i].shader;
+            slots[i].shader = source.shader;
+            if (slots[i].HasProperty("_Tess"))
+            {
+                slots[i].SetFloat("_Tess", source.GetFloat("_Tess"));
+            }
+
+            if (slots[i].HasProperty("_TessPhong"))
+            {
+                slots[i].SetFloat("_TessPhong", source.GetFloat("_TessPhong"));
+            }
+
+            if (slots[i].HasProperty("_TessTex"))
+            {
+                slots[i].SetTexture("_TessTex", source.GetTexture("_TessTex"));
+            }
+
+            swap.After = slots[i].shader;
+            probe.Swapped.Add(swap);
+        }
+
+        return probe.Swapped.Count;
+    }
+
+    /// <summary>
+    /// What the family swap did to the slots themselves, named: a swap that reports twenty-three slots and
+    /// leaves the frame identical has either found a family the renderer ignores or a set of materials that
+    /// are not the ones being drawn, and the two are told apart by the shader the slot holds afterwards.
+    /// </summary>
+    private static string SeamSwapSummary(SeamProbe probe)
+    {
+        if (probe.Swapped.Count == 0)
+        {
+            return "no plain slot on this skin to redraw, so the frame is unchanged";
+        }
+
+        SeamSwap first = probe.Swapped[0];
+        string now = first.After == null ? "<null>" : first.After.name;
+        string was = first.Shader == null ? "<null>" : first.Shader.name;
+        return string.Format("the {0} plain slot(s) now draw with {1} instead of {2}",
+            probe.Swapped.Count, now, was);
+    }
+
+    /// <summary>The shader a named part's own slot holds, and how many pixels that slot owns alone.</summary>
+    private static string SeamSlotLine(SeamProbe probe, string part)
+    {
+        Material[] slots = probe.Skin.GPUmaterials;
+        int index = SubMeshNamed(probe.Skin, part);
+        if (slots == null || index < 0 || index >= slots.Length || slots[index] == null)
+        {
+            return string.Format("{0} has no slot of its own to write on", part);
+        }
+
+        return string.Format("{0} draws with {1} and its slot is one of {2}",
+            part,
+            slots[index].shader == null ? "<null shader>" : slots[index].shader.name,
+            slots.Length);
+    }
+
+    private static void UndoFamily(SeamProbe probe)
+    {
+        for (int i = 0; i < probe.Swapped.Count; i++)
+        {
+            if (probe.Swapped[i].Slot != null)
+            {
+                probe.Swapped[i].Slot.shader = probe.Swapped[i].Shader;
+            }
+        }
+
+        probe.Swapped.Clear();
+        probe.PendingProperty = null;
+    }
+
+    private static void DimSceneLights(SeamProbe probe)
+    {
+        foreach (Light light in SceneObjects<Light>())
+        {
+            if (light == null || probe.Light == null || light.gameObject == probe.Light)
+            {
+                continue;
+            }
+
+            probe.Dimmed.Add(light);
+            probe.DimmedIntensity.Add(light.intensity);
+            light.intensity *= SeamDimmed;
+        }
+    }
+
+    private static void RestoreSceneLights(SeamProbe probe)
+    {
+        for (int i = 0; i < probe.Dimmed.Count; i++)
+        {
+            if (probe.Dimmed[i] != null)
+            {
+                probe.Dimmed[i].intensity = probe.DimmedIntensity[i];
+            }
+        }
+
+        probe.Dimmed.Clear();
+        probe.DimmedIntensity.Clear();
+    }
+
+    /// <summary>
+    /// How much of the frame sits at white. A clipped frame cannot show a step: both sides of the joint are at
+    /// 1.0 there and the seam the probe reads is the exposure's rather than the shader's.
+    /// </summary>
+    private static string ClippedShare(Color[] frame)
+    {
+        if (frame == null || frame.Length == 0)
+        {
+            return "no clipping (the frame was not rendered)";
+        }
+
+        int clipped = 0;
+        for (int i = 0; i < frame.Length; i++)
+        {
+            if (frame[i].r > 0.99f && frame[i].g > 0.99f && frame[i].b > 0.99f)
+            {
+                clipped++;
+            }
+        }
+
+        return string.Format("{0:F1} % of the frame is clipped to white", clipped * 100.0 / frame.Length);
+    }
+
+    /// <summary>
+    /// How much the brightness steps as the joint line is crossed, against how much it steps along the joint.
+    /// The joint is a line on screen running one particular way, so both directions are taken from the rim
+    /// itself: crossing it is what a seam is, and travelling along it is what smooth skin looks like. Both are
+    /// medians over a sweep along the joint, so one bad pixel at the silhouette cannot carry the number, and
+    /// the ratio separates the two readings that a saturated maximum cannot - a joint that steps reads high
+    /// across and low along, and a surface that is merely noisy reads high both ways.
+    /// </summary>
+    private static string SeamJointStep(SeamProbe probe, Color[] frame)
+    {
+        if (frame == null || frame.Length != SeamFrameSize * SeamFrameSize || probe.Camera == null)
+        {
+            return "no joint step (the frame was not rendered)";
+        }
+
+        Vector3 screen = probe.Camera.WorldToScreenPoint(probe.Edge);
+        if (screen.z <= 0f)
+        {
+            return "the joint is behind the probe camera, so its step is not measured";
+        }
+
+        if (probe.Along.sqrMagnitude < 0.0000001f)
+        {
+            return "the joint's rim has no direction, so a step across it cannot be separated from a step along it";
+        }
+
+        Vector3 ahead = probe.Camera.WorldToScreenPoint(probe.Edge + probe.Along * 0.05f);
+        Vector2 along = new Vector2(ahead.x - screen.x, ahead.y - screen.y);
+        if (along.sqrMagnitude < 0.0001f)
+        {
+            return "the joint runs straight at the camera, so it presents no line to step across";
+        }
+
+        along.Normalize();
+        Vector2 across = new Vector2(-along.y, along.x);
+
+        List<float> crossing = new List<float>();
+        List<float> running = new List<float>();
+        for (int t = -SeamJointWindow; t <= SeamJointWindow; t++)
+        {
+            Vector2 here = new Vector2(screen.x, screen.y) + along * t;
+            Color a;
+            Color b;
+            if (SeamPair(frame, here, across, SeamStepSpan, out a, out b))
+            {
+                crossing.Add(Math.Abs(a.r - b.r) + Math.Abs(a.g - b.g) + Math.Abs(a.b - b.b));
+            }
+
+            if (SeamPair(frame, here, along, SeamStepSpan, out a, out b))
+            {
+                running.Add(Math.Abs(a.r - b.r) + Math.Abs(a.g - b.g) + Math.Abs(a.b - b.b));
+            }
+        }
+
+        if (crossing.Count == 0 || running.Count == 0)
+        {
+            return "the joint has no skin on both sides to measure";
+        }
+
+        crossing.Sort();
+        running.Sort();
+        float stepAcross = crossing[crossing.Count / 2];
+        float stepAlong = running[running.Count / 2];
+        return string.Format(
+            "over the joint: {0} px across step {1:F3} and {2} px along step {3:F3}, {4} over {5} samples",
+            SeamStepSpan, stepAcross, SeamStepSpan, stepAlong,
+            stepAlong <= 0.0001f ? "no ratio" : string.Format("{0:F1} to one", stepAcross / stepAlong),
+            crossing.Count);
+    }
+
+    /// <summary>
+    /// The two pixels of the frame that stand either side of a point, a given number of pixels apart along a
+    /// given screen direction. False when either of them is not skin, or when either falls off the frame.
+    /// </summary>
+    private static bool SeamPair(Color[] frame, Vector2 centre, Vector2 direction, int span, out Color a,
+        out Color b)
+    {
+        int dx = Mathf.RoundToInt(direction.x * span);
+        int dy = Mathf.RoundToInt(direction.y * span);
+        int x = Mathf.RoundToInt(centre.x);
+        int y = Mathf.RoundToInt(centre.y);
+        a = SeamBackground;
+        b = SeamBackground;
+        if (dx == 0 && dy == 0)
+        {
+            return false;
+        }
+
+        int ax = x - dx;
+        int ay = y - dy;
+        int bx = x + dx;
+        int by = y + dy;
+        if (ax < 0 || ax >= SeamFrameSize || ay < 0 || ay >= SeamFrameSize
+            || bx < 0 || bx >= SeamFrameSize || by < 0 || by >= SeamFrameSize)
+        {
+            return false;
+        }
+
+        a = frame[ay * SeamFrameSize + ax];
+        b = frame[by * SeamFrameSize + bx];
+        return !IsSeamBackground(a) && !IsSeamBackground(b);
     }
 
     private static Color[] SeamShot(SeamProbe probe, string suffix)
@@ -4685,6 +5304,16 @@ public static class RebuildGate
             if (seamProbe.Touched.Count > 0 && seamProbe.PendingProperty != null)
             {
                 UndoScalar(seamProbe, seamProbe.PendingProperty);
+            }
+
+            if (seamProbe.Swapped.Count > 0)
+            {
+                UndoFamily(seamProbe);
+            }
+
+            if (seamProbe.Dimmed.Count > 0)
+            {
+                RestoreSceneLights(seamProbe);
             }
 
             if (seamProbe.Holder != null)
