@@ -25,7 +25,9 @@ other two methods never enter play mode, so there -quit costs nothing and is wha
 ends even in a state where the gate method cannot exit the editor.
 
 A run always ends in a verdict, never in an exception. An editor that does not exit within -TimeoutSec
-is stopped and its log read anyway - the report the gate already wrote is what decides. A failure
+is stopped and its log read anyway - the report the gate already wrote is what decides. An editor that
+*does* die in flight leaves no verdict at all, and that is reported as exactly that rather than as a
+compile failure; docs\verification.md, failure mode B. A failure
 caused by the built assemblies losing Assembly-CSharp.dll (the cascading
 `CS0246: SuperController / MeshVR / Battlehub` state) is repaired once by
 scripts\Repair-ScriptAssemblies.ps1 and the run is repeated; see docs\verification.md.
@@ -203,10 +205,22 @@ if ($start -ge 0) {
         Write-Host $line
     }
 } else {
+    # A run that dies in flight leaves no verdict and no report, and the log's last lines are then the
+    # game's own output. The gate's phase lines are what tells that apart from a project that never
+    # started at all; reading the first as the second sends the reader hunting for CS errors that are
+    # not there (artifacts\smoke-play-2019-long.log, 2026-09-18).
     Write-Host ''
-    Write-Host 'the gate method never ran - the project did not compile or start:'
-    Select-String -LiteralPath $RunLog -Pattern ': error CS|Exception:|Compilation failed' |
-        Select-Object -First 40 | ForEach-Object { $_.Line.Trim() }
+    $phase = $lines | Where-Object { $_ -like '----- RebuildGate *' } | Select-Object -Last 1
+    if ($phase) {
+        Write-Host 'the editor died mid-run - the gate never wrote its report:'
+        Write-Host ("  last phase: {0}" -f $phase.Trim())
+        $lastLine = $lines | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 1
+        Write-Host ("  last log line: {0}" -f $lastLine.Trim())
+    } else {
+        Write-Host 'the gate method never ran - the project did not compile or start:'
+        Select-String -LiteralPath $RunLog -Pattern ': error CS|Exception:|Compilation failed' |
+            Select-Object -First 40 | ForEach-Object { $_.Line.Trim() }
+    }
 }
 
 Write-Host ''

@@ -315,6 +315,18 @@ verdict:
 
 The consequence is the rule to work by: **a gate always ends in a verdict, never in an exception.** If a
 run reports `FAILED`, that verdict came from a report the gate wrote, not from a timeout or a crash.
+The one end that carries no verdict is a run where the editor itself dies in flight, and that state is
+reported as what it is (below) rather than as a compile failure.
+
+**Failure mode B, second half - the editor dies in flight.** A run can also end with *nothing at all*:
+the 2019.4 abort (`plan.md`, item 2) kills the process inside `mono-2.0-bdwgc.dll` after
+`Resources.UnloadUnusedAssets` and the log simply stops - no verdict, no report, no exception, no crash
+report. The runner read that as `the gate method never ran - the project did not compile or start`,
+which sent the reader after `CS` errors that did not exist. It now tells the two apart by the gate's own
+phase lines and prints the state it actually read -
+`the editor died mid-run - the gate never wrote its report`, with the last phase and the last log line
+underneath. A death in flight still exits non-zero: the run did not pass. What changed is only that the
+sentence is now true of the run.
 
 **Failure mode C - the gate measures a buffer nothing draws.** A green line that is true of the wrong
 object is the most expensive kind, because it sends the search in a direction the rebuild cannot
