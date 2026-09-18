@@ -502,6 +502,45 @@ ends without a device, so `-nographics` also silences the benchmark line.
 lets `RebuildGate.Play` bring the Game view to the front before entering play mode; the run, the
 report and the self-exit are otherwise the same.
 
+## The IDE solution
+
+Opening the rebuild in an IDE is the editor's job, not the repository's: a solution states which
+assemblies Unity compiles out of which files with which references, and only the editor knows that.
+
+```
+scripts\Invoke-SyncSolution.ps1              # writes the solution at the project root
+scripts\Invoke-SyncSolution.ps1 -Force       # stops a running editor first
+```
+
+`RebuildGate.SyncSolution` calls the code editor integration behind *Preferences > External Tools*
+(`com.unity.ide.rider`, `com.unity.ide.visualstudio`, `com.unity.ide.vscode`) and, when that writes
+nothing, the built-in Visual Studio generator the editor has carried since before those packages
+existed. Nothing is added to `Packages\manifest.json` for it, so there is no package to download and
+the project stays as bare as it was. Which of the two paths actually ran, and what came out of it, is
+recorded as check 8 of `docs\verification.md`.
+
+What comes out, in the project root next to `Assets`, is `VaM_Rebuild.sln` plus three project files:
+`Assembly-CSharp.csproj` (all 2811 scripts), `Assembly-CSharp-Editor.csproj` and
+`VaMUnityScript.csproj`. Their references are Unity's own - 620 `HintPath` entries taken from the
+editor installation, from the plugins `Setup-RebuildProject.ps1` stages and from
+`Assets\Plugins\RTTypeModel.dll` - so the IDE's completion, navigation and refactoring work on the
+same compile-time surface the game is built from. Rider opens the file as it is.
+
+Two project sets now exist in this repository, and they are not substitutes for each other:
+
+- `VaM_Rebuild\*.sln` and `VaM_Rebuild\*.csproj` are **generated** and gitignored. Deleting them costs
+  one command, and committing them would only make them stale, because they name the editor's own
+  install path.
+- `src\` holds the **tracked** projects - `Assembly-CSharp.csproj`, `Assembly-UnityScript.csproj`,
+  `RTTypeModel.csproj` and `Directory.Build.props`. They are SDK-style, target `net472`, are pinned to
+  C# 6 and compile against the references `scripts\Update-UnityReferences.ps1` writes into the
+  gitignored `src\UnityReferences.props`. They are what the sources can be read, diffed and built with
+  when no editor is running - with `.tools\dotnet\dotnet.exe`, because the machine's own `dotnet` is a
+  runtime without an SDK.
+
+So: the editor's solution is the one to open for playing and debugging, and `src\` is the one to open
+for reading the code.
+
 ## Shaders are placeholders
 
 The one part of the game that did not come across in a usable form. All 128 `.shader` files under

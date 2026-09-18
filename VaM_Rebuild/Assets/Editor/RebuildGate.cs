@@ -355,6 +355,119 @@ public static class RebuildGate
         EditorApplication.Exit(0);
     }
 
+    // ---------------------------------------------------------------- project files
+
+    /// <summary>
+    /// Writes the solution and the project files an IDE opens, at the project root.
+    ///
+    ///     Unity.exe -batchmode -nographics -quit -projectPath VaM_Rebuild ^
+    ///               -logFile artifacts\sync-solution.log -executeMethod RebuildGate.SyncSolution
+    ///
+    /// The files are generated rather than hand-written on purpose: Unity derives them from the
+    /// assemblies it actually compiles, so an IDE gets the same compile-time surface the game does -
+    /// including every managed reference scripts\Setup-RebuildProject.ps1 stages - instead of a
+    /// hand-kept .csproj that drifts away from it. Both the solution and the project files live in the
+    /// project root, next to Assets, and both are gitignored: they are build output, not source.
+    ///
+    /// Generation is the job of a code editor package (com.unity.ide.rider, ...visualstudio, ...vscode).
+    /// Without one Unity registers its own DefaultExternalCodeEditor, whose SyncAll() writes nothing at
+    /// all, so this method says so out loud instead of reporting an empty success.
+    /// </summary>
+    public static void SyncSolution()
+    {
+        string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        StringBuilder report = new StringBuilder();
+        report.AppendLine("----- RebuildGate solution -----");
+        report.AppendLine("project: " + projectRoot);
+
+        AssetDatabase.Refresh();
+
+        string editorPath = Unity.CodeEditor.CodeEditor.CurrentEditorPath;
+        Unity.CodeEditor.IExternalCodeEditor editor = Unity.CodeEditor.CodeEditor.CurrentEditor;
+        report.AppendLine(string.Format("code editor: {0}, {1}", editor.GetType().FullName,
+            string.IsNullOrEmpty(editorPath) ? "no external editor set in Preferences" : editorPath));
+        try
+        {
+            editor.SyncAll();
+        }
+        catch (Exception e)
+        {
+            report.AppendLine("  SyncAll() threw: " + e.Message);
+        }
+
+        // The generator the editor itself has carried since long before those packages existed. Its
+        // type is internal, so reflection is the only way in, and it is reached only as a fallback:
+        // the package path above is the supported one and produces the better project files.
+        if (!SolutionExists(projectRoot))
+        {
+            try
+            {
+                Type syncVs = Type.GetType("UnityEditor.SyncVS, UnityEditor");
+                MethodInfo method = syncVs == null ? null
+                    : syncVs.GetMethod("SyncSolution", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (method == null)
+                {
+                    report.AppendLine("fallback: UnityEditor.SyncVS.SyncSolution() not found in this editor");
+                }
+                else
+                {
+                    method.Invoke(null, null);
+                    report.AppendLine("fallback: UnityEditor.SyncVS.SyncSolution()");
+                }
+            }
+            catch (Exception e)
+            {
+                report.AppendLine("fallback threw: " + (e.InnerException ?? e).Message);
+            }
+        }
+
+        List<string> files = GeneratedProjectFiles(projectRoot);
+        report.AppendLine(string.Format("generated project files: {0}", files.Count));
+        foreach (string file in files)
+        {
+            FileInfo info = new FileInfo(file);
+            report.AppendLine(string.Format("  {0}  {1:N0} B  {2:yyyy-MM-dd HH:mm:ss}",
+                Path.GetFileName(file), info.Length, info.LastWriteTime));
+        }
+
+        if (files.Count == 0)
+        {
+            report.AppendLine("nothing was generated.");
+            report.AppendLine("Set the external editor in Preferences > External Tools, or add a code editor package");
+            report.AppendLine("to Packages\\manifest.json - com.unity.ide.rider for Rider - let the editor import it,");
+            report.AppendLine("and run this method again.");
+        }
+
+        Debug.Log(report.ToString());
+
+        // An empty success is the failure mode worth guarding against here: the run looks green and the
+        // IDE is left with nothing to open. A gate that generates nothing has to say so.
+        if (files.Count == 0)
+        {
+            Debug.LogError("----- RebuildGate FAILED ----- no solution was generated");
+            EditorApplication.Exit(1);
+            return;
+        }
+        Debug.Log("----- RebuildGate OK -----");
+        EditorApplication.Exit(0);
+    }
+
+    /// <summary>The solution Unity generates for the project, named after the project folder.</summary>
+    private static bool SolutionExists(string projectRoot)
+    {
+        return Directory.GetFiles(projectRoot, "*.sln", SearchOption.TopDirectoryOnly).Length > 0;
+    }
+
+    /// <summary>Everything a generated solution consists of: the solution and the projects beside it.</summary>
+    private static List<string> GeneratedProjectFiles(string projectRoot)
+    {
+        List<string> files = new List<string>();
+        files.AddRange(Directory.GetFiles(projectRoot, "*.sln", SearchOption.TopDirectoryOnly));
+        files.AddRange(Directory.GetFiles(projectRoot, "*.csproj", SearchOption.TopDirectoryOnly));
+        files.Sort(StringComparer.OrdinalIgnoreCase);
+        return files;
+    }
+
     // ---------------------------------------------------------------- scene inspection
 
     /// <summary>The scene the player boots into: what VaM.exe itself would load first.</summary>

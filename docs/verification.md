@@ -258,6 +258,38 @@ exit 0. The engine-name adaptation in effect is `UnityEngine.Timeline.dll` -> `U
 with `UnityEngine.TimelineModule.dll` dropped, which is the whole of what 2019.4 changed under this
 list. See *The plugin compiler* in `rebuild-project.md` for the chain and for the A/B that measured it.
 
+### 8. IDE project files - `scripts\Invoke-SyncSolution.ps1`
+
+There is no `.sln` in the repository and there is not meant to be one: a solution states which
+assemblies Unity compiles out of which files with which references, and only the editor knows that.
+So the editor is asked for it - `RebuildGate.SyncSolution` calls the code editor integration behind
+*Preferences > External Tools*, and when that writes nothing, the built-in Visual Studio generator
+behind it.
+
+```
+scripts\Invoke-SyncSolution.ps1              # refuses while an editor holds the project
+scripts\Invoke-SyncSolution.ps1 -Force       # stops the running editors first
+```
+
+**The failure worth guarding against is an empty success**: a run that reports `OK` and leaves the IDE
+nothing to open. The method therefore counts the files it left in the project root, logs each one with
+its size, and fails the run at zero, naming the package to install. That zero is not hypothetical - it
+is exactly what a project with no `com.unity.ide.*` package gets from `SyncAll()`, because Unity then
+registers its own `DefaultExternalCodeEditor`, whose `SyncAll()` is an empty method.
+
+*Current state*: the project has no `com.unity.ide.*` package, so the run logs
+`code editor: UnityEditor.DefaultExternalCodeEditor, no external editor set in Preferences`, falls back
+to `UnityEditor.SyncVS.SyncSolution()`, and that one generates. It leaves four files in the project
+root - `VaM_Rebuild.sln` (1,897 B) and the three project files, `Assembly-CSharp.csproj` (2811 compile
+items), `Assembly-CSharp-Editor.csproj` (3) and `VaMUnityScript.csproj` (13) - and the generated
+solution checks out structurally: every project file the solution names exists, every `ProjectGuid`
+matches the file it names, and **all 620 `HintPath` entries across the three projects resolve** (the
+Unity assemblies from the editor installation, `RTTypeModel.dll` from `Assets\Plugins`, the plugin
+DLLs staged by `Setup-RebuildProject.ps1`), which is what an IDE needs to open the solution without
+hand-editing. The files are gitignored (`VaM_Rebuild/*.sln`, `VaM_Rebuild/*.csproj`): they are build
+output that changes with the editor and the package set, not source. See *The IDE solution* in
+`rebuild-project.md` for why the decompiled sources keep their own projects under `src\` as well.
+
 ## When a gate lies
 
 Both failure modes named first below have already happened once, and each of them produced a red verdict that had

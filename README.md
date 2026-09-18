@@ -84,6 +84,7 @@ python scripts\Extract-VaMShaders.py --out artifacts\shader-blobs
 python scripts\New-VaMShaders.py
 python tools\check_shaders.py
 scripts\Invoke-ManualPlay.ps1
+scripts\Invoke-SyncSolution.ps1         # writes VaM_Rebuild.sln, to open the rebuild in Rider
 ```
 
 `Sync-Sources.ps1` is easy to miss and expensive to skip: Unity compiles `VaM_Rebuild\Assets\Scripts\`,
@@ -127,6 +128,12 @@ default one.
 
 Stage details are in `docs\`, the source of truth for status is in `CHANGELOG.md`, and the detail behind
 its short sections is in [`docs/release-notes.md`](docs/release-notes.md).
+
+`Invoke-SyncSolution.ps1` writes `VaM_Rebuild.sln` and the project files beside it using the editor's
+own generator, because Unity is the only thing that knows which file belongs to which assembly. The
+solution and the project files are gitignored build output, regenerated on demand; `src\` keeps its own
+tracked projects, which are what to open when there is no editor around. Both sets and what they are
+for are described in [`docs/rebuild-project.md`](docs/rebuild-project.md).
 
 ## Layout
 
