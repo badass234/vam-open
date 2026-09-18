@@ -9,6 +9,101 @@ The analysis behind the measurements is in the other files in this directory - `
 look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the project and its harness,
 `asset-export.md` for the extraction, `parity-report.md` for the assembly.
 
+## 0.1.10-alpha
+
+- **The engine moved to Unity 2020.3 LTS (2020.3.49f1).** Hop three of the engine migration, made the same
+  way as the two before it (`Unity.exe -batchmode -nographics -quit -accept-apiupdate -projectPath
+  VaM_Rebuild`, then the editor opened and left to run its own passes), and by a wide margin the cheapest
+  of the three: the editor answered with **34 `error CS` lines**, then **1**, then **0** - against 612 in
+  the hop before it. Those 34 are two families and no more: **six `CS0121` ambiguities** in one
+  hair-rendering file and the `XRDevice` removals, and the single line of the second report is one removed
+  editor property in the gate script. `ProjectVersion.txt` names `2020.3.49f1` with revision
+  `18249dd5551b`; the asset import pipeline stays on **V2**, which is what hop 2 pinned, and both the batch
+  gates and the editor window still report `Using Asset Import Pipeline V2.`.
+- **One guide row needed code, and it is the UI one.** 2020.1 stopped declaring
+  `[RequireComponent(typeof(CanvasRenderer))]` on `UnityEngine.UI.Graphic`, so every user-written subclass of
+  it here declares the attribute itself - `NonDrawingGraphic.cs`, `ShineEffect.cs`, `TextPic.cs`,
+  `UIPrimitiveBase.cs`, each next to its `[AddComponentMenu]`, which is the fix the guide's own sample gives.
+  The other 2020 rows were checked and closed: no mesh import here generates secondary UVs
+  (`generateSecondaryUV: 1` in **0** `.meta` files), the project builds no AssetBundles of its own and loads
+  the ones 2018.1 built, no HLAPI package is added and no `NetworkIdentity`/`NetworkManager`/`NetworkServer`
+  is named anywhere in `src\`, nothing bakes lightmaps (`LightingData.asset` comes from the export and the
+  lightmaps from the game's bundles), and `AdaptivePerformance`, `ParticleSystemForceField` and the Code
+  Coverage package have 0 occurrences. The XR row's `renderScale` → `eyeTextureResolutionScale` was already
+  done - the 7 `XRSettings.eyeTextureResolutionScale` uses are the migrated form, and the 39 remaining
+  `renderScale` hits are local fields.
+- **An addition, not a removal, produced the six ambiguities.** `Material.SetBuffer(string, GraphicsBuffer)`
+  arrives in 2020.1, so a bare `null` at the six hair-rendering call sites in
+  `GPUTools\Hair\Scripts\Runtime\Render\HairRender.cs` (lines 57, 66, 74, 121, 130, 138) now matches two
+  overloads. Each is cast `(ComputeBuffer)null` where the decompiled call passed `null`.
+- **What `XRDevice` became.** `XRDevice.isPresent` (obsolete, `CS0619`) is `XRSettings.isDeviceActive` on
+  **5** sites - `OVRDebugHeadController.cs:63`, `SuperController.cs:18666` and `:19584` (the
+  `"XR device present is "` line), `UnityStandardAssets\WaterVR\Water.cs:235`, `UserPreferences.cs:3910`;
+  `XRDevice.model` (`CS0117`) is `InputDevices.GetDeviceAtXRNode(XRNode.Head).name` in
+  `SuperController.cs:19586`; and `Leap\Unity\XRSupportUtil.cs` moves `XRDevice.userPresence` and
+  `UserPresenceState` to the input-device feature
+  (`device.TryGetFeatureValue(CommonUsages.userPresence, out present)`), keying its warning on `!supported`.
+- **Two scripts and the manifest had to follow the editor.** 2020.2 ships no Boo/UnityScript under
+  `MonoBleedingEdge\lib\mono\unityscript\`, while the game's `CharacterMotor.cs` (the one file left in
+  `Assembly-UnityScript`) references `Boo.Lang`: `scripts\Setup-RebuildProject.ps1` now stages the game's own
+  `Boo.Lang.dll` (2.0.9.5, `PublicKeyToken=32c39770e9a21a67`) as a plugin when the editor's copy is gone,
+  where under 2019.4 the same run must not - **the branch has to flip back if the project ever returns to
+  2019.4**. `scripts\New-PlayerRuntimeLinks.ps1` stops linking `StreamingAssets` wholesale, because the
+  bumped `com.unity.purchasing` makes Unity Services write `UnityServicesProjectConfiguration.json` into it
+  on every editor start, which a junction refuses: it is a real directory now with that one file filtered
+  through. The plugin compiler's fixed reference list grew by one name - `UnityEngine.InputLegacyModule.dll`,
+  six entries to seven in `DynamicCSharp.cs` - because a plugin naming `Input` needs the module the engine
+  split it into. The gate script lost `CodeEditor.CurrentEditorPath` (removed in 2020.3) for
+  `CurrentEditorInstallation`, which carries the same `EditorPrefs "kScriptsDefaultApp"` value.
+- **The plugin compiler killed the editor on this hop, and that is the headline.** The first plugin compile
+  under 2020.3 died natively - not the plugin, the whole process - with `requested token for MethodBuilder`,
+  raised inside Mono's `mono_image_create_token` (`sre.c:1237`) as a non-continuable `g_error` and reached
+  from `ModuleBuilder.Save()` at `McsDriver.cs:221` under `ves_icall_ModuleBuilder_build_metadata`. The table
+  the token creator walks is the module's **overrides table**, and it has no case for an entry whose owner is
+  a `MethodOnTypeBuilderInst` - a method of a generic type that is still being built - so the branch ends in
+  `g_error("requested token for %s")` and there is no per-plugin failure to read. Exactly one plugin triggers
+  it: `everlaster.TittyMagic`, whose `EnumerableExtensions+<ForEach>c__Iterator0<T>` implements
+  `IEnumerator<T>.get_Current` and `IEnumerable<T>.GetEnumerator` and contributes **2** such entries into a
+  run that resolves **32**. It was named before it was fixed, and named without the editor: a 27-reference
+  harness driven by the machine's own `mcs.exe` over every plugin `.cs` reproduced the abort and printed the
+  two entries.
+- **The fix is in this project's own copy of the compiler** (`src\Assembly-CSharp\DynamicCSharp\Compiler\
+  McsDriver.cs`, +359 lines). Before the module is saved, `RepairMethodOverrideDeclarations` resolves each
+  `MethodOnTypeBuilderInst` entry onto the real `MethodInfo` of the created generic instantiation - matching
+  by `MetadataToken` when the entry carries one, else by name and parameter count - through
+  `ResolveOnTypeBuilderInst` / `ResolveBuilderType` / `FindField`, so the table holds `MethodBuilder` and
+  `MethodInfo` entries only. The repair is skipped when the module stays in memory (`generateInMemory`),
+  which is the path that never needed it. Two limits are worth stating: it repairs the *shape* rather than
+  one plugin's name, so the next plugin written like this compiles instead of aborting; and generic
+  *methods* on a builder type (`method_arguments.Length > 0`) are unhandled, because no harness run and no
+  real batch ever produced one.
+- **What the hop was verified by.** The scene that aborted the compile now compiles and renders: the Lady
+  Clown smoke logs `resolved 32 method override declaration(s)` (`McsDriver.cs:405`), leaves no crash report
+  and reaches `Benchmark complete. … Avg. FPS: 186.37` with the scene's **10 declared / 10 present / 0
+  missing** atoms (`artifacts\logs\hop3-methodimpl-ladyclown-smoke.log`). The boot-scene regression returns
+  hop 2's own reading - **18/18 atoms**, `Avg. FPS: 218.06` (`hop3-baseline-default-smoke.log`) - which is
+  what says the engine move changed no picture. The timed Play gate prints `errors and exceptions: 6` and
+  `----- RebuildGate OK -----` (`hop3-play-gate-120s-fixed.log`), the sixth error being the Purchasing one
+  below. The standalone player **builds and boots on 2020.3**: `----- RebuildPlayer OK -----`, 10 scenes with
+  `NewStart.unity` as the boot scene, `browser: 85 runtime files staged`,
+  `Version is '2020.3.49f1 (18249dd5551b) revision 1582237'` (`artifacts\player-build.log`), and the built
+  player boots clean at `Avg. FPS: 300.21` (`artifacts\logs\hop3-player-2020.3.log`). The plugin compiler
+  rebuilt from source under the new editor is **byte-identical** to the 2018.4 and 2019.4 builds
+  (1 967 104 B, SHA-256 `FC5C08BC…`).
+- **The package set moved with the LTS, and one move costs a log line.** The manifest rewrote six pins -
+  `com.unity.ads` 2.0.8 → 4.4.2, `com.unity.analytics` 3.2.3 → 3.6.12, `com.unity.collab-proxy` 1.2.15 →
+  2.0.4, `com.unity.purchasing` 2.2.1 → 4.8.0, `com.unity.textmeshpro` 1.4.1 → 3.0.6, `com.unity.timeline`
+  1.2.18 → 1.4.8 - and added `com.unity.ide.visualstudio` 2.0.18. The Purchasing bump is the visible one:
+  the timed gate's error list goes from **5 lines to 6**, and the sixth is
+  `UnityEditor.Purchasing.ProductCatalogEditor`'s type initializer failing to load
+  `UnityEngine.UnityWebRequestModule` in a `-batchmode` run - an editor-side package this project does not
+  call, arriving before the module it wants, and absent from the windowed editor the hand run uses.
+- **What this hop does not close.** The abort inside `mono-2.0-bdwgc.dll` is still open (plan item 2): it
+  has only ever been reproduced on 2019.4, and the four runs of this hop peak at **73 196** loaded objects
+  against the **272 217** of the run that faulted, so they are too small to count as the engine having
+  cleared it. A long batch play of that size is what would answer it, and a hand run of the editor is what
+  closes the hop itself.
+
 ## 0.1.9-alpha
 
 - **The engine moved to Unity 2019.4 LTS (2019.4.41f2).** Hop two of two, again made by the editor's own

@@ -3907,7 +3907,8 @@ public class UserPreferences : MonoBehaviour
 		{
 		case PhysicsRate.Auto:
 		{
-			if (!XRDevice.isPresent)
+			// XRDevice.isPresent is an obsolete-error from 2020.1; XRSettings.isDeviceActive is the surviving equivalent.
+			if (!XRSettings.isDeviceActive)
 			{
 				SetPhysics72();
 				if (autoPhysicsRateText != null)

@@ -31,7 +31,7 @@ namespace DynamicCSharp
 
 		public string[] assemblyReferences = new string[1] { "Assembly-CSharp.dll" };
 
-		public static readonly string[] unityAssemblyReferences = new string[6] { "UnityEngine.AudioModule.dll", "UnityEngine.CoreModule.dll", "UnityEngine.JSONSerializeModule.dll", "UnityEngine.ParticleSystemModule.dll", "UnityEngine.PhysicsModule.dll", "UnityEngine.UIModule.dll" };
+		public static readonly string[] unityAssemblyReferences = new string[7] { "UnityEngine.AudioModule.dll", "UnityEngine.CoreModule.dll", "UnityEngine.InputLegacyModule.dll", "UnityEngine.JSONSerializeModule.dll", "UnityEngine.ParticleSystemModule.dll", "UnityEngine.PhysicsModule.dll", "UnityEngine.UIModule.dll" };
 
 		public RestrictionMode namespaceRestrictionMode = RestrictionMode.Exclusive;
 

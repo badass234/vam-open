@@ -1,5 +1,8 @@
 namespace UnityEngine.UI.Extensions
 {
+	// 2020.1 removed the RequireComponent(CanvasRenderer) attribute from UnityEngine.UI.Graphic,
+	// so every subclass has to declare it to keep dragging the component in adding a CanvasRenderer.
+	[RequireComponent(typeof(CanvasRenderer))]
 	public class ShineEffect : MaskableGraphic
 	{
 		[SerializeField]

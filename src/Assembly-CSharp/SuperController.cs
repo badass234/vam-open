@@ -18663,7 +18663,8 @@ public class SuperController : MonoBehaviour
 			useInterpolation = true;
 			return;
 		}
-		bool isPresent = XRDevice.isPresent;
+		// XRDevice.isPresent is an obsolete-error from 2020.1; XRSettings.isDeviceActive is the surviving equivalent.
+		bool isPresent = XRSettings.isDeviceActive;
 		if (isMonitorOnly || !isPresent)
 		{
 			if (Time.fixedDeltaTime > 0.014f)
@@ -19581,9 +19582,10 @@ public class SuperController : MonoBehaviour
 		}
 		string loadedDeviceName = XRSettings.loadedDeviceName;
 		UnityEngine.Debug.Log("XR device active is " + XRSettings.isDeviceActive);
-		UnityEngine.Debug.Log("XR device present is " + XRDevice.isPresent);
+		UnityEngine.Debug.Log("XR device present is " + XRSettings.isDeviceActive);
 		UnityEngine.Debug.Log("Loaded XR device is " + loadedDeviceName);
-		UnityEngine.Debug.Log("XR device model is " + XRDevice.model);
+		// XRDevice.model was removed in 2020.1; the head InputDevice name is the surviving source.
+		UnityEngine.Debug.Log("XR device model is " + InputDevices.GetDeviceAtXRNode(XRNode.Head).name);
 		UnityEngine.Debug.Log("XR device refresh rate is " + XRDevice.refreshRate);
 		if (!XRSettings.isDeviceActive || loadedDeviceName == null || loadedDeviceName == string.Empty)
 		{

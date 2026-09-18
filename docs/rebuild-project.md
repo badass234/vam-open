@@ -16,7 +16,7 @@ VaM_Rebuild\                        6 518 files, 247.8 MB
     GameObject AnimeClip AnimatorController Avatar Cubemap Flare Font
     Material Mesh PhysicMaterial Resources Shader Sprite TextAsset Texture2D
   Packages\manifest.json
-  ProjectSettings\                   17 .asset + ProjectVersion.txt (2019.4.41f2)
+  ProjectSettings\                   23 .asset + ProjectVersion.txt (2020.3.49f1)
 ```
 
 ## What is replaced, and why
@@ -214,11 +214,26 @@ dependency nothing in this project controls; `Packages\packages-lock.json` now r
 default set is kept exactly as the editor left it, and the compile gate plus a hand run are green in
 that state.
 
+**The 2020.3 editor moved the same file again, and this time the manifest owns the one log line the hop
+costs.** Six pins were rewritten - `com.unity.ads` 2.0.8 → 4.4.2, `com.unity.analytics` 3.2.3 → 3.6.12,
+`com.unity.collab-proxy` 1.2.15 → 2.0.4, `com.unity.purchasing` 2.2.1 → 4.8.0, `com.unity.textmeshpro`
+1.4.1 → 3.0.6, `com.unity.timeline` 1.2.18 → 1.4.8 - and `com.unity.ide.visualstudio` 2.0.18 was added,
+the one entry nothing in this project asks for; the lock file gained `com.unity.ext.nunit`,
+`com.unity.nuget.newtonsoft-json`, `com.unity.services.core`, `com.unity.test-framework`,
+`com.unity.modules.androidjni` and `com.unity.modules.uielementsnative`. `com.unity.ugui` stays pinned at
+`1.0.0`. The Purchasing bump is the one that shows: the timed Play gate's error list went from **5 lines
+to 6**, and the sixth is `UnityEditor.Purchasing.ProductCatalogEditor`'s type initializer failing to load
+`UnityEngine.UnityWebRequestModule` in a `-batchmode` run - an editor package this project never calls,
+arriving before the module it wants, and absent from the windowed editor. It also writes
+`Assets\StreamingAssets\UnityServicesProjectConfiguration.json` on every editor start, which is what the
+player's link has to tolerate (see the player's runtime links below).
+
 ## The Unity editor that has to open this project
 
 `ProjectSettings\ProjectVersion.txt` names the editor, and the scripts read *that file* instead of
 hardcoding a path (`scripts\UnityEditor.ps1`), so a version hop needs no script edit. The project is
-now pinned to **2019.4.41f2**, the last 2019 LTS - hop two of two, both made; what the hops cost is in
+now pinned to **2020.3.49f1**, the last 2020 LTS - hop three of three so far, all made; what the hops
+cost is in
 [`release-notes.md`](release-notes.md), and the item-by-item audit of each hop against
 Unity's own upgrade guide is in [`unity-upgrade-audit.md`](unity-upgrade-audit.md).
 
@@ -236,9 +251,9 @@ rather than a jump to whatever is installed here (Unity 6000.6.0f1 also is).
 The licence blocked everything at first: the legacy validator in 2018.1.9f2 rejects the
 `Unity_lic.ulf` that Unity Hub keeps re-issuing. Activating once through the editor's own GUI fixed
 it (`C:\ProgramData\Unity\Unity_lic.ulf`), and the project imports, compiles and plays in batch mode.
-**Both later editors accepted that same file without being re-activated** - 2018.4's log opens with
+**All three later editors accepted that same file without being re-activated** - 2018.4's log opens with
 `Initiating legacy licensing module` and reports only `Next license update check is after ...`, and
-2019.4 imports, compiles and runs `-executeMethod` on it unchanged. Keep Unity Hub closed -
+2019.4 and 2020.3 import, compile and run `-executeMethod` on it unchanged. Keep Unity Hub closed -
 its `updateLicenses` pass re-breaks the 2018 editors. The history is in `unity-editor.md`.
 
 ## Project settings that are not defaults
@@ -407,7 +422,12 @@ imports it - the 261 bundles stay where the game put them and the project stays 
 The player's copy of that link lives *inside* the player's data folder, which a build rewrites, so
 every player build takes it down. `scripts\Invoke-PlayerBuild.ps1` runs `New-PlayerRuntimeLinks.ps1`
 again once the build succeeds, because without the link the player boots to the splash and then stops
-on a grey screen: the bundles and the scene list are all behind it.
+on a grey screen: the bundles and the scene list are all behind it. Since the 2020.3 hop there is one
+file in the way: the bumped `com.unity.purchasing` makes Unity Services write
+`UnityServicesProjectConfiguration.json` into `StreamingAssets` during the build, which means the build
+replaces the junction with a real directory to do it. The script therefore forgives that one name -
+anything else left in the folder still stops it - and relinks. That file is a build artifact the game
+never reads.
 
 This junction is what makes the wiping in `scripts\Setup-RebuildProject.ps1` dangerous: PowerShell 5.1's
 `Remove-Item -Recurse` deletes the files *behind* a junction rather than the link, so the script unlinks

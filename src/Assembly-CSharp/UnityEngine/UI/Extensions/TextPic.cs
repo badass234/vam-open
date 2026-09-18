@@ -9,6 +9,9 @@ namespace UnityEngine.UI.Extensions
 {
 	[AddComponentMenu("UI/Extensions/TextPic")]
 	[ExecuteInEditMode]
+	// 2020.1 removed the RequireComponent(CanvasRenderer) attribute from UnityEngine.UI.Graphic,
+	// so every subclass has to declare it to keep dragging the component in adding a CanvasRenderer.
+	[RequireComponent(typeof(CanvasRenderer))]
 	public class TextPic : Text, IPointerClickHandler, IPointerExitHandler, IPointerEnterHandler, ISelectHandler, IEventSystemHandler
 	{
 		[Serializable]

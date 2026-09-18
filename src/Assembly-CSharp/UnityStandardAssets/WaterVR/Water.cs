@@ -232,7 +232,8 @@ namespace UnityStandardAssets.WaterVR
 			dest.farClipPlane = src.farClipPlane;
 			dest.nearClipPlane = src.nearClipPlane;
 			dest.orthographic = src.orthographic;
-			if (!XRDevice.isPresent)
+			// XRDevice.isPresent is an obsolete-error from 2020.1; XRSettings.isDeviceActive is the surviving equivalent.
+			if (!XRSettings.isDeviceActive)
 			{
 				dest.fieldOfView = src.fieldOfView;
 			}

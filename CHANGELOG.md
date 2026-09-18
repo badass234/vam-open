@@ -5,6 +5,28 @@ last number counts patches inside the `0.1` line while the first two stand still
 design - the version history is meant to be readable - and the detail behind it, with the measurements, is
 in [`docs/release-notes.md`](docs/release-notes.md).
 
+## 0.1.10-alpha
+
+The engine is **Unity 2020.3 LTS** now (`2020.3.49f1`), the third hop from the `2018.1.9f2` the game ships
+with, and the first one that needed a code change rather than a rewrite: the editor's API Updater answered
+this hop in **34 errors, then 1, then 0**, against 612 the hop before. `UnityEngine.UI.Graphic` stopped
+declaring `[RequireComponent(typeof(CanvasRenderer))]` in 2020.1, so the four user-written `Graphic`
+subclasses here declare it; `Material.SetBuffer` gained a `GraphicsBuffer` overload, which turned six
+hair-rendering calls into genuine ambiguities until each `null` was cast; the `XRDevice` sites the 2020 guide
+names moved to `XRSettings` and `InputDevices`; and the setup script now stages the game's own `Boo.Lang.dll`,
+because 2020.2 ships no Boo/UnityScript compiler to fall back on. One real find came with the hop: **the first
+plugin compile under 2020.3 killed the whole editor**, `requested token for MethodBuilder` out of Mono's
+`mono_image_create_token`. The cause was a single plugin, `everlaster.TittyMagic`, whose iterator type
+contributes 2 `MethodImpl` entries that name a method of a generic type still being built - a shape Mono's
+token creator has no case for, so it raises a non-continuable error instead of failing the one plugin. It was
+diagnosed without the editor, with `mcs.exe` and a harness across every plugin source, and fixed in this
+project's copy of the compiler: the module's overrides table is resolved onto the real `MethodInfo` of the
+created generic instantiation before `Save()`. The scene that aborted the compile now loads and renders
+(`resolved 32`, Lady Clown at ~186 FPS), the boot scene returns hop 2's own reading (`18/18 atoms`), the
+standalone player builds and boots on 2020.3, and the plugin compiler rebuilt from source is still
+**byte-identical** to the 2018.4 and 2019.4 builds. The item-by-item audit against Unity's 2020 LTS guide is
+in [`docs/unity-upgrade-audit.md`](docs/unity-upgrade-audit.md).
+
 ## 0.1.9-alpha
 
 The engine is **Unity 2019.4 LTS** now (`2019.4.41f2`), the second and last hop from the `2018.1.9f2` the game

@@ -60,7 +60,8 @@ public class OVRDebugHeadController : MonoBehaviour
 			Vector3 vector2 = CameraRig.centerEyeAnchor.rotation * Vector3.right * x * Time.deltaTime * StrafeSpeed;
 			base.transform.position += vector + vector2;
 		}
-		if (XRDevice.isPresent || (!AllowYawLook && !AllowPitchLook))
+		// XRDevice.isPresent is an obsolete-error from 2020.1; XRSettings.isDeviceActive is the surviving equivalent.
+		if (XRSettings.isDeviceActive || (!AllowYawLook && !AllowPitchLook))
 		{
 			return;
 		}

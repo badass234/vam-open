@@ -382,7 +382,9 @@ public static class RebuildGate
 
         AssetDatabase.Refresh();
 
-        string editorPath = Unity.CodeEditor.CodeEditor.CurrentEditorPath;
+        // 2020.3 removed CodeEditor.CurrentEditorPath; CurrentEditorInstallation is the surviving
+        // public accessor for the same value (EditorPrefs "kScriptsDefaultApp").
+        string editorPath = Unity.CodeEditor.CodeEditor.CurrentEditorInstallation;
         Unity.CodeEditor.IExternalCodeEditor editor = Unity.CodeEditor.CodeEditor.CurrentEditor;
         report.AppendLine(string.Format("code editor: {0}, {1}", editor.GetType().FullName,
             string.IsNullOrEmpty(editorPath) ? "no external editor set in Preferences" : editorPath));

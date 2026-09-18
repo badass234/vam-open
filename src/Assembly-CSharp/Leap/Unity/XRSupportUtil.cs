@@ -14,17 +14,21 @@ namespace Leap.Unity
 
 		public static bool IsXRDevicePresent()
 		{
-			return XRDevice.isPresent;
+			// XRDevice.isPresent is an obsolete-error from 2020.1; XRSettings.isDeviceActive is the surviving equivalent.
+			return XRSettings.isDeviceActive;
 		}
 
 		public static bool IsUserPresent(bool defaultPresence = true)
 		{
-			UserPresenceState userPresence = XRDevice.userPresence;
-			if (userPresence == UserPresenceState.Present)
+			// UserPresenceState and XRDevice.userPresence were removed in 2020.1; CommonUsages.userPresence is the surviving source.
+			bool present = false;
+			InputDevice device = InputDevices.GetDeviceAtXRNode(XRNode.Head);
+			bool supported = device.isValid && device.TryGetFeatureValue(CommonUsages.userPresence, out present);
+			if (supported && present)
 			{
 				return true;
 			}
-			if (!outputPresenceWarning && userPresence == UserPresenceState.Unsupported)
+			if (!outputPresenceWarning && !supported)
 			{
 				Debug.LogWarning("XR UserPresenceState unsupported (XR support is probably disabled).");
 				outputPresenceWarning = true;

@@ -54,7 +54,8 @@ namespace GPUTools.Hair.Scripts.Runtime.Render
 				}
 				else
 				{
-					rend.material.SetBuffer("_Barycentrics", null);
+					// 2020.1 added Material.SetBuffer(string, GraphicsBuffer); a bare null is ambiguous, so the cast is required.
+					rend.material.SetBuffer("_Barycentrics", (ComputeBuffer)null);
 				}
 			}
 			else if (data.Barycentrics != null)
@@ -63,7 +64,7 @@ namespace GPUTools.Hair.Scripts.Runtime.Render
 			}
 			else
 			{
-				rend.material.SetBuffer("_Barycentrics", null);
+				rend.material.SetBuffer("_Barycentrics", (ComputeBuffer)null);
 			}
 			if (data.TessRenderParticles != null)
 			{
@@ -71,7 +72,7 @@ namespace GPUTools.Hair.Scripts.Runtime.Render
 			}
 			else
 			{
-				rend.material.SetBuffer("_Particles", null);
+				rend.material.SetBuffer("_Particles", (ComputeBuffer)null);
 			}
 		}
 
@@ -118,7 +119,8 @@ namespace GPUTools.Hair.Scripts.Runtime.Render
 				}
 				else
 				{
-					rend.material.SetBuffer("_Barycentrics", null);
+					// 2020.1 added Material.SetBuffer(string, GraphicsBuffer); a bare null is ambiguous, so the cast is required.
+					rend.material.SetBuffer("_Barycentrics", (ComputeBuffer)null);
 				}
 			}
 			else if (data.Barycentrics != null)
@@ -127,7 +129,7 @@ namespace GPUTools.Hair.Scripts.Runtime.Render
 			}
 			else
 			{
-				rend.material.SetBuffer("_Barycentrics", null);
+				rend.material.SetBuffer("_Barycentrics", (ComputeBuffer)null);
 			}
 			if (data.TessRenderParticles != null)
 			{
@@ -135,7 +137,7 @@ namespace GPUTools.Hair.Scripts.Runtime.Render
 			}
 			else
 			{
-				rend.material.SetBuffer("_Particles", null);
+				rend.material.SetBuffer("_Particles", (ComputeBuffer)null);
 			}
 			rend.material.SetVector("_LightCenter", data.LightCenter);
 			if (data.StyleMode)

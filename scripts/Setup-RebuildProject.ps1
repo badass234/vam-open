@@ -306,7 +306,23 @@ $unityProvidedBcl = @(
 # restricted to Standalone, because the auto-reference is unconditional:
 #   Assets/Scripts/Assembly-UnityScript/CharacterMotor.cs(15,65): error CS0433:
 #   The imported type `Boo.Lang.GenericGenerator<T>' is defined multiple times
-$unityProvidedProfile = 'Boo.Lang'
+#
+# 2020.2 removed Boo and UnityScript from the Mono distribution: the installed 2020.3 editor has no
+# Boo*.dll anywhere at all and lib\mono has no unityscript profile, so the unconditional
+# auto-reference disappeared with the file. Excluding VaM's copy there would break the only thing
+# that needs it - CharacterMotor.cs is the sole file in src\Assembly-UnityScript that references Boo
+# (UnityScript.Lang is not used anywhere) - with CS0246, so Unity's copy is excluded only while the
+# editor actually ships one and VaM's is staged as a plugin otherwise.
+#
+# Either way the swap is bytes, not identity: both copies declare themselves as
+# Boo.Lang, Version=2.0.9.5, PublicKeyToken=32c39770e9a21a67, and the original game shipped VaM's.
+$unityScriptBoo = Join-Path $EditorDataDir 'MonoBleedingEdge\lib\mono\unityscript\Boo.Lang.dll'
+$unityProvidedProfile = if (Test-Path -LiteralPath $unityScriptBoo) { 'Boo.Lang' } else { @() }
+if ($unityProvidedProfile) {
+    Write-Host '  Boo.Lang: excluded, this editor ships its own copy'
+} else {
+    Write-Host "  Boo.Lang: staged from VaM's Managed, this editor ships none"
+}
 
 # Neither is in the profile Unity compiles against: Mono.Cecil is needed by DynamicCSharp\Security,
 # and System.Drawing by ImageLoaderThreaded (scene and character thumbnails) and MaterialOptions
