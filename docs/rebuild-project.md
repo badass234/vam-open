@@ -335,6 +335,43 @@ runtime and does not depend on the reflected attribute.
 `Assets\Resources\DynamicCSharp_Settings.asset` keeps `mcs.dll` in its single `referenceRestrictions` entry
 - that list is a blocklist, and it exists so the plugin compiler cannot be handed to itself as a reference.
 
+The same asset carries the compiler's *reference* list, `assemblyReferences`, and it is a trap on an engine
+hop. The compiler does not scan `Managed\`; it compiles against the bare file names in that list, and Mono
+treats one name it cannot resolve as fatal for the whole compilation:
+
+```
+[CS6]: Metadata file `UnityEngine.Timeline.dll' could not be found
+Compile of MacGruber.Life.12:/Custom/Scripts/MacGruber/Life/MacGruber_Life.cslist failed.
+```
+
+The names are looked up in `Directory.GetCurrentDirectory()`, and then in `Settings.ReferencesLookupPaths`
+(`src\mcs\Mono\CSharp\AssemblyReferencesLoader.cs:10-16`) - which is why this defect looks different in the
+editor and in the player. In the editor the working directory is the installation root, whose
+`VaM_Data\Managed` still carries the game's own assemblies, so the names resolve; the player runs from its
+own folder, resolves against *our* `Managed`, and fails. The game was built with Unity 2018.1, where Timeline
+was an engine module shipped as `UnityEngine.Timeline.dll` (93,184 bytes) plus a
+5,632-byte `UnityEngine.TimelineModule.dll`. On 2019.4 Timeline is the package `com.unity.timeline` and the
+same API arrives in `Unity.Timeline.dll`, so two names in the shipped list could no longer be found, and
+every plugin naming them failed to compile - reported only as a plugin that does not load.
+
+The list is data, not code, so the adaptation is two lines - but `Assets\Resources` is generated from the
+export and not tracked, so a rebuild would undo an edit made by hand. `scripts\Update-PluginCompilerReferences.ps1`
+therefore holds the two-name table (`UnityEngine.Timeline.dll` -> `Unity.Timeline.dll`;
+`UnityEngine.TimelineModule.dll` dropped, this engine has no such assembly), refuses to run unless
+`Packages\manifest.json` declares `com.unity.timeline`, preserves the file's byte-order mark and line
+endings, and is idempotent. It is step 7 of `Setup-RebuildProject.ps1`, and `Invoke-PlayerBuild.ps1` runs it
+with `-Verify` against the player it has just built - the only Managed folder where the answer means
+anything, since the installation's copy still holds the old names.
+
+Both directions were measured in the editor on the boot scene. With the shipped list restored, the run
+printed 5 `Metadata file` lines, 2 `Compile of ... failed.` and no trace of the plugin beyond its failure;
+with the adaptation in place, both counts are **0**, and `MacGruber` appears 26 times as running code - so
+the defect was never the player's alone, and the same A/B is the regression test for the next engine hop
+(`artifacts\pluginrefs-stale.log` against `artifacts\pluginrefs-fixed.log`). What is left of that plugin is
+its own runtime fault, not the compiler's: `FieldAccessException: Field 'MiniQueue'1:position' is
+inaccessible from method 'MacGruber.Breathing/MiniQueue'1<T_REF>:.ctor ()'`.
+
+
 `Assets\Editor\RebuildGate.cs` is the batch entry point that proves all of this end to end; see
 `verification.md` for what each method checks and `scripts\Invoke-CompileGate.ps1` /
 `scripts\Invoke-SmokeTest.ps1` for how to run them.

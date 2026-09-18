@@ -48,6 +48,33 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   the output is **1 967 104 B with SHA-256 `FC5C08BC…`, identical to the 2018.4 build and to the
   `mcs.dll` in `artifacts\player\VAMOpen_Data\Managed\`**. So the compiler this project ships does not
   depend on which editor built it, and a hop needs no second look at it.
+- **The runtime plugin compiler needed one more thing after the hop, and it was data, not code.** Timeline
+  left the engine between 2018.1 and 2019.4 and became the package `com.unity.timeline`, which brings
+  `Unity.Timeline.dll` where the engine used to ship `UnityEngine.Timeline.dll` (93 184 B) plus a
+  5 632-byte `UnityEngine.TimelineModule.dll`. `DynamicCSharp` does not scan `Managed\`: it compiles a
+  plugin against the **bare file names listed in `Assets\Resources\DynamicCSharp_Settings.asset`**, and
+  Mono treats one name it cannot resolve as fatal for that whole compilation -
+
+  ```
+  [CS6]: Metadata file `UnityEngine.Timeline.dll' could not be found
+  Compile of MacGruber.Life.12:/Custom/Scripts/MacGruber/Life/MacGruber_Life.cslist failed.
+  ```
+
+  - so every community plugin naming Timeline stopped loading, reported as nothing more than a plugin that
+  never appears. The names are resolved in `Directory.GetCurrentDirectory()`, which is why this looked like
+  a player-only defect: in the editor the working directory is the installation root, whose `Managed` still
+  carries the game's own assemblies and both old names, while the player runs from its own folder. The
+  shipped list is generated with `Assets`, so the adaptation lives in
+  `scripts\Update-PluginCompilerReferences.ps1` (two names: `UnityEngine.Timeline.dll` →
+  `Unity.Timeline.dll`, `UnityEngine.TimelineModule.dll` dropped) and is step 7 of the project setup; a
+  build re-checks it against the player it has just made. **Measured both ways on the boot scene in the
+  editor: 5 log lines naming the missing file and 2 failed plugin compiles with the shipped list, 0 of each
+  with the adaptation** (`artifacts\pluginrefs-stale.log` against `artifacts\pluginrefs-fixed.log`), where
+  the earlier standing count to beat was **16 failed compiles**. What is left of that plugin is its own
+  runtime fault rather than the compiler's: `MacGruber.Breathing` now loads far enough to throw
+  `FieldAccessException` on a private field of its own nested generic type during `Init`. The A/B is the
+  regression test for the next engine hop, and the chain is written up under *The plugin compiler* in
+  `docs\rebuild-project.md` with the check itself as section 7 of `docs\verification.md`.
 - **The hop rewrote two more tracked project files, and touched nothing else.**
   `ProjectSettings\ProjectVersion.txt` now names `2019.4.41f2` (with the revision line the editor adds),
   and `ProjectSettings\GraphicsSettings.asset` came back with `serializedVersion: 12 → 13`, one more

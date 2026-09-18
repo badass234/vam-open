@@ -125,6 +125,21 @@ if (Test-Path -LiteralPath $exe) {
         Write-Host 'the player will show a grey screen instead of the menu - finish this by hand:' -ForegroundColor Yellow
         Write-Host ("  scripts\New-PlayerRuntimeLinks.ps1 -PlayerPath `"{0}`"" -f $player) -ForegroundColor Yellow
     }
+
+    # The plugin compiler resolves DynamicCSharp's reference list against <exe>_Data\Managed, so the
+    # player that was just built is the only honest place to check it. A name in that list that this
+    # engine does not ship is fatal for every plugin compilation that asks for it, and the failure
+    # shows up much later, as a plugin that quietly does not load. See
+    # docs\rebuild-project.md, "The plugin compiler".
+    $refScript = Join-Path $root 'Update-PluginCompilerReferences.ps1'
+    if (Test-Path -LiteralPath $refScript) {
+        Write-Host ''
+        Write-Host 'checking the plugin compiler reference list against this build'
+        & $refScript -Verify -PlayerPath $player
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'the reference list does not match this build - see the warnings above' -ForegroundColor Yellow
+        }
+    }
 } else {
     Write-Host ("verdict: OK by the log, but no player at {0}" -f $exe)
     exit 1

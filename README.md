@@ -105,14 +105,20 @@ afterwards:
 
 ```powershell
 scripts\Invoke-PlayerBuild.ps1        # Unity batch mode, output in artifacts\player
-scripts\New-PlayerRuntimeLinks.ps1    # links the installation's data and copies the key in
-artifacts\player\VAMOpen.exe
+scripts\Invoke-Player.ps1             # links the installation's data, then starts the exe
+scripts\Invoke-Player.ps1 -Seconds 150
 ```
 
-Start the player from its own folder - the game resolves its data relative to the working directory -
-and note that it logs to `%USERPROFILE%\AppData\LocalLow\MeshedVR\VaM\output_log.txt`. The failure to
-watch for there is the package count: `Scanned 18 packages` means the key was found, `Scanned 9`
-means it was not.
+Start the player through the launcher rather than by hand: the game resolves everything - the packages,
+`Custom`, `Saves`, the cache, the key file - relative to the process working directory, and a shell that
+sits somewhere else (an elevated one starts in `system32`) strips the player of all of it in silence.
+The launcher sets the working directory, checks the runtime links, refuses to run two players at once and,
+with `-Seconds`, watches the run and reads its log back. Double-clicking `artifacts\player\VAMOpen.exe`
+in Explorer is the one manual equivalent, because Explorer starts a process in the folder it lives in.
+
+The log is the player's own, `%USERPROFILE%\AppData\LocalLow\MeshedVR\VaM\Player.log` (`-LogFile`
+overrides it). The failure to watch for there is the package count: `Scanned 79 packages` means the
+installation's data was found, `0` - or single digits - means the links are missing.
 
 If the editor comes up showing `Failed to load window layout`, play mode never starts: an editor that
 was killed rather than closed leaves an empty or stale `LastLayout.dwlt` in

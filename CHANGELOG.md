@@ -17,9 +17,15 @@ editor's own package manager, and under 2019.4 it is what produced **548 of the 
 first open. `com.unity.ugui` had to be pinned explicitly, because 2019.2 moved Unity UI out of the built-in
 editor extensions and into a package. The **plugin compiler is rebuilt from source under the new editor and
 comes out byte-for-byte identical** to the 2018.4 build (same size, same SHA-256), so that recipe does not
-depend on the editor. Compile gate `verdict: OK`, 0 unique errors, the standalone player builds and boots on
-2019.4, and the item-by-item audit against Unity's 2019 LTS guide is in
-[`docs/unity-upgrade-audit.md`](docs/unity-upgrade-audit.md).
+depend on the editor. The hop also moved Timeline out of the engine and into a package, which the runtime
+compiler does not see on its own: it compiles against a fixed list of assembly names in
+`Assets\Resources\DynamicCSharp_Settings.asset`, and one name it cannot resolve is fatal for that whole
+compilation, so every plugin naming Timeline silently did not load. Two names are adapted for the package
+form (`scripts\Update-PluginCompilerReferences.ps1`, step 7 of the project setup); measured on the boot
+scene, **5 log lines naming the missing file and 2 failed plugin compiles without the adaptation, 0 of
+each with it**, and the plugin whose compilation failed now runs. Compile gate `verdict: OK`, 0 unique
+errors, the standalone player builds and boots on 2019.4, and the item-by-item audit against Unity's 2019
+LTS guide is in [`docs/unity-upgrade-audit.md`](docs/unity-upgrade-audit.md).
 
 ## 0.1.8-alpha
 

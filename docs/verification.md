@@ -227,6 +227,32 @@ runs compare the mean, and read the counts as the run in front of you. The shado
 command with the frames it just wrote, so a play report names its own measurement instead of leaving it
 to be reconstructed after the fact.
 
+### 7. Plugin compiler references - `scripts\Update-PluginCompilerReferences.ps1 -Verify`
+
+VaM compiles the user's plugins at runtime, and `DynamicCSharp` hands Mono a fixed list of bare
+assembly names - `assemblyReferences` in `Assets\Resources\DynamicCSharp_Settings.asset` - rather than
+scanning `Managed\`. One name in that list that the engine does not ship is fatal for the whole
+compilation, and nothing in the log calls it that: the plugin simply never loads. Names are resolved in
+`Directory.GetCurrentDirectory()`, so the same list can pass in the editor (working directory = the
+installation root, whose `Managed` holds the game's own assemblies) and fail in the built player.
+
+```
+scripts\Update-PluginCompilerReferences.ps1 -Verify            # report only, exit 0/1
+scripts\Update-PluginCompilerReferences.ps1                    # apply the two-name adaptation
+scripts\Update-PluginCompilerReferences.ps1 -Verify -PlayerPath artifacts\player
+```
+
+The check is a file-existence test over the list, taken against `<player>_Data\Managed`, and it is the
+player it has to be taken against: the installation's `Managed` still carries the 2018.1 Timeline
+assemblies, so verifying there passes whether or not this project is fixed. `Invoke-PlayerBuild.ps1`
+runs it automatically after a build, and the fix script itself is step 7 of
+`Setup-RebuildProject.ps1`.
+
+*Current state*: **27 references, 99 managed assemblies in the player, every reference resolves** -
+exit 0. The engine-name adaptation in effect is `UnityEngine.Timeline.dll` -> `Unity.Timeline.dll`
+with `UnityEngine.TimelineModule.dll` dropped, which is the whole of what 2019.4 changed under this
+list. See *The plugin compiler* in `rebuild-project.md` for the chain and for the A/B that measured it.
+
 ## When a gate lies
 
 Both failure modes named first below have already happened once, and each of them produced a red verdict that had
@@ -1197,6 +1223,16 @@ for a cube-shadow point light it declares `unityShadowCoord3` = `worldPos - _Lig
 and leaves the slot it uses for screen/depth shadows unused, so `i.pos` carries the seed in no varying.
 
 ## Still open
+
+- **`MacGruber.Life` compiles now but throws on load.** This is the one plugin the boot scene names
+  (`plugin#0`), and after the reference-list adaptation above it gets as far as running its own code:
+  `FieldAccessException: Field 'MiniQueue'1:position' is inaccessible from method
+  'MacGruber.Breathing/MiniQueue'1<T_REF>:.ctor ()'`, then `NullReferenceException` in
+  `MacGruber.Breathing.Init`/`Cleanup`, then `failed to initialize`. It is not a gate failure - the
+  scene loads 18 of 18 atoms with the plugin broken - but a reader comparing logs against the
+  installation will see the difference. Tracked as item 16 of the plan; the fields it names are in the
+  plugin's own nested generic type, accessed from that type's constructor, which a compiler should not
+  emit at all.
 
 - **The shadow filter is proven to be ours, but not tuned.** The transcribed disk darkens the body by
   8.26/255 on the lit pixels under the scene's own three point lights at `shadowStrength` 0.10, where

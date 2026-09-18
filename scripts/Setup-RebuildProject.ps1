@@ -510,6 +510,26 @@ if ((Test-Path -LiteralPath (Join-Path $installRoot 'AddonPackages')) -and (Test
                    "stay empty and the editor will scan 0 packages. Run: scripts\New-RuntimeDataLinks.ps1")
 }
 
+# ------------------------------------------------------- 7. plugin compiler references
+# The runtime compiler (DynamicCSharp) does not scan the Managed folder: it compiles against the bare
+# file names in Assets\Resources\DynamicCSharp_Settings.asset, and one name it cannot resolve is fatal
+# for that whole compilation ("Metadata file `UnityEngine.Timeline.dll' could not be found"). The
+# export ships the list the *game* was built with, under Unity 2018.1, where Timeline was an engine
+# module; on 2019.4 it is the package com.unity.timeline and the file is Unity.Timeline.dll. The list
+# is generated with the rest of Assets, so the two names are adapted here instead of being committed.
+# The adaptation is applied here and *verified* against the built player instead
+# (Invoke-PlayerBuild.ps1): the Managed folder this script knows is the installation's, where the
+# stale names still exist, so checking against it would pass either way.
+$refScript = Join-Path $PSScriptRoot 'Update-PluginCompilerReferences.ps1'
+if (Test-Path -LiteralPath $refScript) {
+    Write-Host ''
+    & $refScript -ProjectPath $TargetDir
+} else {
+    Write-Warning ("No $refScript, so the plugin compiler keeps the game's own reference list " +
+                   'and every plugin that asks for Timeline fails to compile. Run: ' +
+                   'scripts\Update-PluginCompilerReferences.ps1')
+}
+
 Write-Host ''
 Write-Host "Project ready: $TargetDir"
 Get-ChildItem -LiteralPath $TargetDir | ForEach-Object { "  $($_.Name)" }
