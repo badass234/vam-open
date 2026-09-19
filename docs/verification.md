@@ -1653,6 +1653,122 @@ maps would be a false test to write. `AutoLight.cginc` is what leaves the pixel 
 for a cube-shadow point light it declares `unityShadowCoord3` = `worldPos - _LightPositionRange.xyz`
 and leaves the slot it uses for screen/depth shadows unused, so `i.pos` carries the seed in no varying.
 
+## A third-party plugin the new engine refuses: Decal Maker
+
+**What a hand run shows.** Play, 2021.3.45f2, and the third-party plugin **Chokaphi's Decal Maker** ends
+an unhandled coroutine with `UnityException: Failed to create texture because of invalid parameters.`
+The warning printed immediately above it states the rule itself -
+`Compressed TextureFormat RGBA Compressed DXT5|BC3 requires a texture size that is a multiple of 4` -
+and the throw is the *four-argument* `Texture2D` constructor, which pins the source line exactly: the
+package ships **readable C# and no DLL** (one generated `.cs`, 220 502 bytes, compiled at load time by
+DynamicCSharp, which is why every plugin frame carries an assembly GUID instead of a path), and it
+contains exactly one four-argument construction - `new Texture2D(1, 1, TextureFormat.DXT5, linear)` at
+`VAM_Decal_Maker.cs:219`, the cache-miss line of `GetResource`. `1` is not a multiple of 4, Unity
+validates a compressed format when the texture is constructed, and `LoadImage` - which would have
+reallocated the surface to the decoded 4096x4096 - never runs.
+
+**It is the plugin's defect, it has always been one, and 2021.3 only promoted it.** The plugin assembly
+is not compiled by the editor, so no hop can have changed its behaviour, and the *previous* hop's logs
+carry the same stack with the device printing the arguments numerically:
+`d3d11: failed to create 2D texture id=2645 width=1 height=1 mips=3 dxgifmt=29 [D3D error was 80070057]`
+- `E_INVALIDARG`, twice in each of the three 2020.3 baseline logs. Under 2020.3 Unity logged an
+assertion and continued with an invalid texture; the `multiple of 4` check is a 2021.2/2021.3 addition
+(no 2020.3 log contains that message at all), and with it a silent degradation became fatal, because
+`GetResource` and every frame above it is unguarded. The reconstruction contributes nothing: the
+dimensions are the plugin's own literals, no game API on the path supplies a size, and the shipped game's
+own DXT5 idiom is the legal one - `new Texture2D(4, 4, TextureFormat.DXT5, ...)` at `ImageControl.cs:880`
+and `SkyshopLightController.cs:364`, both reproduced in `src\`.
+
+**The fix is a patch to the package, and it is delivered.** `scripts\New-DecalMakerPatch.ps1` copies all
+46 entries of `Chokaphi.DecalMaker.37.var` byte-for-byte and rewrites that one line to
+`new Texture2D(4, 4, TextureFormat.DXT5, linear)` - the author's format, exactly one DXT5 block, and the
+game's own number. (`TextureFormat.RGBA32` is the alternative and has no size constraint at all; it was
+not taken because it would change the format the texture reports before `LoadImage` runs, which is wider
+than the defect needs.) The result is a sibling package, `AddonPackages\Chokaphi.DecalMaker.38.var`
+(1 350 901 bytes); the shipped `.37` is untouched, so the patch is a version bump and the rollback is
+`-Remove`. All three `AddonPackages` paths in play - the installation, the editor project and the
+standalone player - resolve to one directory through junctions.
+
+**That the higher number wins on its own is not true, and the source says so.** `FileManager.GetPackage`
+(`src\Assembly-CSharp\FileManager.cs:1560-1592`) reaches the package *group* for exactly two spellings -
+`.latest` and `.minNN` - and resolves everything else by an exact lookup on the uid or the path, where the
+uid of a file inside a package is the version-qualified string itself (`VarFileEntry.Uid = vp.Uid + ":/" +
+InternalSlashPath`, `VarFileEntry.cs:29`). A scene that says `Chokaphi.DecalMaker.37:/...` therefore loads
+revision 37 whether or not `.38` exists, and the first A/B run proved it operationally by loading `.37`
+with `.38` sitting next to it. Reaching the scenes that already exist needs the scene's own version token
+repointed - an edit on a loose scene file, which is what the A/B did on a copy. `scripts\New-DecalMakerPatch.ps1`
+also carries `-InPlace` (rewrite the shipped `.37`, saving the shipped bytes to `<package>.var.original`
+first, `-Remove` restoring them), but that is a capability of the tool and not this project's route: the
+package belongs to its author, so the delivery is the new revision and the token is the consumer's own
+edit.
+
+The second gate is the package's confirmation state. `VarPackage.LoadUserPrefs` (`VarPackage.cs:314-335`)
+reads `<userPrefsFolder>/<Uid>.prefs` and defaults `pluginsAlwaysEnabled` to `false` when the file is
+absent, after which `MVRPluginManager` hands the package to `UserConfirm` instead of compiling it - an
+interactive panel a headless run cannot answer. So a delivered package also needs a 125-byte prefs file,
+which the script now writes (and `-Remove` deletes only if it is byte-identical to the one the script
+wrote, so a recorded denial is left alone).
+
+What makes the repack
+checkable is that it is a byte-level copy rather than a zip-library rewrite: the two script entries have
+the same length, share their first and last sixteen bytes, and differ at **exactly two offsets** (11 662
+and 11 665, `0x31` -> `0x34`), while every other entry hashes identically.
+
+**Two things are observed and not yet explained, and the acceptance has to respect that.** First, the run
+also prints `The referenced script (VAM_Decal_Maker.ButtonExt) on this Behaviour is missing!` twelve times
+and `VAM_Decal_Maker.Decal_Maker` once (log `:24999-25014`) - but that block is not decal-specific:
+`MacGruber.SuperShot`, `MacGruber.UIDynamicTextInfo` and `VRAdultFun.EmotionEngine` appear in it too, and
+the plugin demonstrably *ran*, since the exception is thrown from inside it. Two readings settle the block:
+in the 1.6 GB log it sits at `:24999-25014`, some twenty-two thousand lines *after* the crash at
+`:2935-2956`, so it belongs to a later moment of one long session rather than to the crash; and in the paired
+A/B below it reads **0 in both** runs, the control that still crashes and the candidate that does not, which
+makes it unusable as a marker in either direction. The tempting explanation -
+that `FileManager`'s incremental package registration (`RegisterPackage`: `uidToVarFileEntry.Add` and
+`pathToVarFileEntry.Add` for four keys, with no build-then-swap step) leaves the index half-built when a
+read throws inside it - is real as a mechanism but **does not apply here**, because in `GetResource` the
+read returns before the constructor throws. Second, the log names the package nowhere else at all: no
+`Chokaphi` line, no `.var` path. So **the absence of the exception is not evidence that the plugin
+loaded**, and the acceptance was therefore designed as an A/B (`.37` against `.38`) looking for positive
+evidence that the plugin initialises, not for the exception's silence.
+
+**The acceptance has since run, and it passed.** A `.37`-against-`.38` A/B on the same scene, its only
+difference a version token, measured per block rather than per raw line count (the raw count *rises*,
+28 -> 42, because the eight benign `GetCurrentGPUTexture` blocks the fixed plugin now reaches are matches
+too): `Failed to create texture` **2 -> 0**, the plugin's own `multiple of 4` block **1 -> 0**,
+`at VAM_Decal_Maker....GetResource` frames **6 -> 0**, `GetResource`/`ConvertNormal` anywhere **2/2 ->
+0/0**, `UpdateSkinImage` frames **1 -> 8**, and `GetCurrentGPUTexture` frames **0 -> 8** - which is the
+decal-specific positive evidence the paragraph above asked for, since it is the plugin's own skin-image
+path being reached instead of throwing on its first cache miss. The run also unloads the plugin's own
+bundle by the new revision's name (`Unloading unused asset bundle Chokaphi.DecalMaker.38:...`) and
+destroys its component cleanly. Two honest caveats stay attached: that unload line exists only because
+the editor was closed gracefully, and the control side of the A/B loaded through the package while the
+candidate loaded through a loose copy of the same scene, because a package's internal JSON cannot be
+edited in place.
+
+**The mechanism was then isolated on its own, and the pair re-run.** A throwaway edit-mode probe
+(`DecalSizeProbe`, editor-side scratch, deleted after the run; its output survives as
+`artifacts\decal-repro\step1-texture-probe.txt`) built the constructor the
+plugin calls: DXT5 is **refused at 1x1, 2x2 and 3x3, with and without a mip chain**
+(`UnityException: Failed to create texture because of invalid parameters.`) and **accepted at 4x4, 8x8,
+4x4 DXT1 and 1x1 RGBA32** - so `1, 1` -> `4, 4` is both necessary and sufficient, and the refusal is a size
+rule rather than a mip or a format one. `LoadImage` onto a 4x4 DXT5 placeholder then returned `True` on six
+real plugin images, every time reallocating the texture to the image's own size (4096x4096, and 8192x8192
+for `GenitalMaker/_FemaleGenitals.png`) with a rebuilt thirteen-level mip chain - the "only the format ever
+mattered" sentence measured rather than argued. The re-run as a pair (`decal-repro-A37.log` against
+`decal-repro-B38.log`, census `step3-ab-pair.txt`) gives the same verdict on 1375 and 2151 lines: the control
+prints the rule at `:1132`, the exception at `:1147` and the six-frame stack at `:1151-1157` with
+`GetCurrentGPUTexture` at 0, and the candidate prints none of them with `UpdateSkinImage` /
+`GetCurrentGPUTexture` at **8 / 8**. One reading from that pair is worth keeping: the control crashed
+**three times in one session**, because a stray mouse click (`LookInputModule:ProcessMousePressAlt` ->
+`MVRPluginManager:RemoveAllPlugins`) loaded a second scene - so a raw crash count tracks how many scenes were
+loaded rather than the defect, and the per-block reading is the one that means something.
+
+Full record: `artifacts\decal-repro\REPORT.md`, machine analysis
+`artifacts\decal-repro\step2-acceptance.txt`.
+
+The full record - the method verbatim, the call chain with its IL offsets, the package provenance, the
+2020.3 A/B and the evidence file list - is `docs\decal-texture-crash.md`.
+
 ## Still open
 
 - **`MacGruber.Life` compiles now but throws on load.** This is the one plugin the boot scene names
