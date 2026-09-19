@@ -19,11 +19,19 @@ to use: it is the one the original game itself boots into, and it loads with not
 scenes are for the gates that audit them, not for eyeballing - opening several scenes in one editor
 session has crashed the player.
 
+-LeakTraces turns on the stack-recording form of Unity's native-container leak check for this run, so
+the `A Native Collection has not been disposed` warning is followed by the allocation stack instead of
+asking for `Full StackTraces`. The editor side reads it from the environment (`VAMOPEN_LEAK_TRACES`),
+which the child editor process inherits from this script; without the switch the editor keeps its own
+default and a normal run is unchanged. It costs an allocation stack per native container and does not
+change whether the warning fires.
+
 The editor is started detached, so this script returns as soon as the process is up.
 
 .EXAMPLE
 scripts\Invoke-ManualPlay.ps1
 scripts\Invoke-ManualPlay.ps1 -WarmupSeconds 30
+scripts\Invoke-ManualPlay.ps1 -LeakTraces -Force -WarmupSeconds 25
 scripts\Invoke-ManualPlay.ps1 -Scene "MeshedVR.DemoScenes.2:/Saves/scene/MeshedVR/DemoScenes/Cyber/CyberDemoAlt.json" -Force
 #>
 [CmdletBinding()]
@@ -33,7 +41,8 @@ param(
     [string] $ProjectPath,
     [string] $LogFile,
     [string] $UnityExe,
-    [switch] $Force
+    [switch] $Force,
+    [switch] $LeakTraces
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +95,15 @@ if ($Scene) {
 Write-Host ("Starting the editor on {0}" -f $ProjectPath)
 Write-Host ("Scene to load after {0} s: {1}" -f $WarmupSeconds, $Scene)
 Write-Host 'The editor enters play mode by itself; it has no deadline and writes no report.'
+
+# The mode lives in the editor process, not in a project setting, so the only way to ask for it is the
+# environment the child inherits. It is set here rather than assumed, and reported so the log and the
+# console agree on which run this was.
+if ($LeakTraces) {
+    $env:VAMOPEN_LEAK_TRACES = '1'
+    Write-Host 'Leak traces: VAMOPEN_LEAK_TRACES=1, the editor will raise NativeLeakDetection.Mode'
+}
+
 $process = Start-Process -FilePath $UnityExe -ArgumentList $arguments -WorkingDirectory $ProjectPath -PassThru
 Write-Host ("Editor PID {0}, log {1}" -f $process.Id, $LogFile)
 Write-Host 'Stop play mode (or close the editor) when the testing is done.'

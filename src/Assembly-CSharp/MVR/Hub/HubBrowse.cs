@@ -488,6 +488,9 @@ namespace MVR.Hub
 		{
 			using (UnityWebRequest webRequest = UnityWebRequest.Post(uri, postData))
 			{
+				// Post() has already installed an upload handler of its own. Replacing it strands that
+				// handler's native byte buffer, so release it before handing over the JSON body.
+				webRequest.uploadHandler?.Dispose();
 				webRequest.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(postData));
 				webRequest.SetRequestHeader("Content-Type", "application/json");
 				webRequest.SetRequestHeader("Accept", "application/json");
