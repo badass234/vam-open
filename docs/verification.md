@@ -835,6 +835,336 @@ domain interpolates world-space values, which would make it agree with the plain
 reconstruction itself the seam. Evidence: `artifacts\seam1..seam5.seam.txt` with their frames; the
 absolute numbers above are `seam5`.
 
+#### The skin's materials and textures, read out of the bundle that ships them
+
+Verdict: **the Inspector being asked for does not exist in this project, and cannot.** The character's
+17 skin materials and its 23 skin textures are objects *inside the character's own asset bundle*, not
+imported project assets, so there are no `.meta` importer settings and no `.mat` file to open. What
+would be on those two screens is the serialized data below, and the two specular textures that meet on
+the leg are **identical in every one of those fields**. The entire difference between them is in their
+pixels: 0.2560 against 0.2990 mean level, 16.8 %, which the shader turns into a factor of 1.42 in
+`s.spec`.
+
+- **No project asset for this skin, and so no importer settings for it.** `VaM_Rebuild\Assets\` holds
+  72 `.mat` (54 in `Material\`, 18 in `Resources\`) and 167 `png`. The 72 materials are gizmo, UI,
+  sky, particle, hair, cursor and projection materials - their `m_Shader` lines are the built-in
+  Standard shader, three built-in internal shaders or a Battlehub/skyshop shader guid, and **not one of
+  the 72 names a `Custom/Subsurface/*` shader**; the 167 images are editor icons, sky cubemap faces,
+  smoke frames, blue-noise tiles and placeholder art, and the only two whose names contain `SPEC` are
+  `Cubemap\museum_SPEC.png` and `Cubemap\untitled_SPEC1.png`, neither of which is used by any material.
+  Nothing under `VaM_Rebuild\Assets\` has `Lexi` in its name, and no `.mat` in the project has a skin
+  map in any slot. The report says the same thing per submesh: `material="Legs-1"
+  (Custom/Subsurface/GlossNMTessMappedFixed, bundle only (not in project))`,
+  `artifacts\play.report.txt:401`. (The *shaders* do exist in the project - `Irises-1` reads
+  `(bundle (project defines one))` - the materials do not.)
+- **For contrast, what an importer's settings look like in this project.** Of the 167 imported `png`s,
+  99 are `sRGBTexture: 1` and 68 are `sRGBTexture: 0`, and the two closest in role to a body material's
+  companion maps - `Material\Chest_DetailMap.png` and `Material\Chest_MaskMap.png`, a detail map and a
+  mask map of one material - carry *identical* importer settings to each other:
+
+  | field | `Chest_DetailMap.png` | `Chest_MaskMap.png` | the 23 bundle `Texture2D` objects |
+  | --- | --- | --- | --- |
+  | `sRGBTexture` / `m_ColorSpace` | 0 | 0 | 1 on D, 0 on S, G and N |
+  | `enableMipMap` / `m_MipCount` | 1 | 1 | 13 |
+  | `filterMode` / `m_FilterMode` | 1 | 1 | 1 |
+  | `aniso` / `m_Aniso` | 1 | 1 | 1 |
+  | `mipBias` / `m_MipBias` | 0 | 0 | 0.0 |
+  | `wrapU`, `wrapV` / `m_WrapU`, `m_WrapV` | 0, 0 | 0, 0 | 0, 0 |
+  | `maxTextureSize` | 2048 | 2048 | 4096, the asset's own size |
+  | format | `textureFormat: 1`, platform `-1` = Automatic, `overridden: 0` | same | 10 = DXT1 on D/S/G, 12 = DXT5 on N |
+  | `nPOTScale`, `alphaIsTransparency`, `isReadable` | 1, 0, 0 | 1, 0, 0 | fields do not exist |
+
+  Where the two chains *can* be compared they agree on every field, and the project's importers carry
+  exactly one `platformSettings` entry each (`DefaultTexturePlatform`, `textureFormat: -1`,
+  `textureCompression: 1`, `overridden: 0`), so no texture in this project is imported differently for
+  one platform than for another either.
+- **Where the skin actually lives.** `VaM_Data\StreamingAssets\f_rlx_mat`, 136.8 MB, contains exactly
+  1 `AssetBundle`, 29 `Material` and 23 `Texture2D` objects, and no mesh and no renderer (read with
+  `UnityPy` 1.25.3). A texture reference inside it is either `m_FileID=0` (the same bundle) or
+  `m_FileID=2` (external) - the latter only for the three `_TessTex` masks. `f_rlx` next to it is the
+  behaviour half (12 `MonoBehaviour`, 1 `GameObject`, 1 `Transform`, plus 7 `MonoScript`) - so the names
+  *are* on disk after all, as the `m_Name` of those 23 `Texture2D` objects, which refines the earlier
+  remark in this document that they are "not on disk or in any `.var`": they are not in the project tree
+  and not in any package, but they are in the character's bundle.
+- **The upstream tiles, and the resolution they were authored at.** The preset itself carries no paths -
+  all 24 of its texture-URL fields are empty strings - so the source package has to be established from
+  the game's own import cache instead, and there it is exact. `artifacts\player\Cache\Textures\` holds
+  one `<name>_<sourcebytes>_<time>__<space>.vamcache` plus a `.vamcachemeta` for every tile the
+  compositor loaded, and the byte size baked into each cache *name* equals the size of the matching
+  entry in `AddonPackages\Riddler.Skin_6_4k.8.var` (151.2 MB, 40 entries, 35 of them images):
+
+  | cached tile | bytes in cache name | matching entry in the package | bytes |
+  | --- | --- | --- | --- |
+  | `TorsoD (Shaved)` | 5,128,805 | `.../Skin 6 4k/Shaved/TorsoD (Shaved).jpg` | 5,128,805 |
+  | `TorsoS (Shaved)` | 5,903,643 | `.../Shaved/TorsoS (Shaved).jpg` | 5,903,643 |
+  | `TorsoG (Shaved)` | 4,480,183 | `.../Shaved/TorsoG (Shaved).jpg` | 4,480,183 |
+  | `TorsoN (Shaved)` | 16,013,554 | `.../Shaved/TorsoN (Shaved).jpg` | 16,013,554 |
+  | `LimbsD` / `LimbsS` / `LimbsG` / `LimbsN` | 5,744,950 / 6,499,322 / 4,812,178 / 17,073,505 | `.../Skin 6 4k/Limbs{D,S,G,N}.jpg` | identical |
+  | `FaceD` / `FaceS` / `FaceG` / `FaceN` | 5,728,558 / 6,630,261 / 4,838,361 / 21,438,001 | `.../Skin 6 4k/Face{D,S,G,N}.jpg` | identical |
+  | `GenitalsD (shaved)` / `S` / `G` / `N` | 596,415 / 618,420 / 479,636 / 1,148,469 | `.../Shaved/Genitals{D,S,G,N} (Shaved).jpg` | identical |
+
+  Sixteen tiles, sixteen exact size matches, so this character's skin *is* that package - and it is the
+  package's `/Shaved/` halves for the torso and the genitals side by side with the unsaved face and
+  limbs, which is what the package's own layout offers, because `/Shaved/` contains only `Torso*` and
+  `Genitals*`. Everything in that folder tree is **4096 x 4096**: all four maps of all four parts, and
+  every decal sheet. The four 512 x 512 images in the package are preset thumbnails
+  (`Custom/Atom/Person/Skin/Preset_Skin 6*.jpg`), not maps. So there is no lower-resolution map anywhere
+  in the tile set and no part whose maps differ from its neighbours' - the "roughness map is a smaller
+  atlas than the diffuse" family (claim 2) has nothing here to attach to.
+- **The second pipeline's importer settings, and they agree with the first.** Every tile above was
+  loaded through `ImageLoaderThreaded`, whose disk-cache entry is named after the flags the loader was
+  asked for - `ImageLoaderThreaded.cs:119-150`: `setSize` prepends `width_height`, then `compress`
+  appends `_C`, `linear` appends `_L`, `isNormalMap` appends `_N`, `createAlphaFromGrayscale` appends
+  `_A`, `createNormalFromBump` appends `_BN<bumpStrength>`, `invert` appends `_I`. Those flags are set
+  by map type in one switch, `DAZCharacterTextureControl.cs:881-896`:
+
+  ```
+  bool createMipMaps = true;   // :881  for every map type
+  bool linear = false;         // :882  the default, i.e. sRGB
+  bool isNormalMap = false;    // :883
+  bool compress = true;        // :884
+  switch (ttype) {
+  case TextureType.Specular:
+  case TextureType.Gloss:  linear = true; break;                                  // :887-889
+  case TextureType.Normal:
+  case TextureType.Detail: linear = true; isNormalMap = true; compress = false;
+                           break;                                                  // :891-896
+  }
+  ```
+
+  `Diffuse` and `Decal` therefore match no case and keep the defaults. The cache file names are a
+  readback of that rule, and the JSON beside each one repeats its result:
+
+  | map | flags in the entry name | decoded | `.vamcachemeta` | bundle-baked twin |
+  | --- | --- | --- | --- | --- |
+  | `TorsoD (Shaved)`, `LimbsD`, `FaceD`, `GenitalsD (shaved)` | `__C` | compressed, **not** linear | `"format": "DXT1"`, 4096 x 4096 | `Lexi_*D`: format 10 = DXT1, `m_ColorSpace` 1 = sRGB |
+  | `TorsoS/G`, `LimbsS/G`, `FaceS/G`, `GenitalsS/G` | `__C_L` | compressed, linear | `"format": "DXT1"`, 4096 x 4096 | `Lexi_*S/G`: format 10 = DXT1, `m_ColorSpace` 0 = linear |
+  | `TorsoN`, `LimbsN`, `FaceN`, `GenitalsN` | `__L_N` | linear, normal map, **not** compressed | `"format": "RGBA32"`, 4096 x 4096 | `Lexi_*N`: format 12 = DXT5, `m_ColorSpace` 0 = linear |
+  | the same cache's overlay sheets: `FaceDecal`, `FaceDecal_A`, `Face_D` | `__C`, `__C_A` | compressed, sRGB (the `_A` ones also build alpha from grayscale) | `"format": "DXT5"`, `"DXT1"` for `Face_D`, 4096 x 4096 | - |
+  | `Face_S` | `__C_L` | compressed, linear | `"format": "DXT5"`, 4096 x 4096 | - |
+
+  Both pipelines therefore put the diffuse map in sRGB and the specular, gloss and normal maps in
+  linear space, and both compress diffuse, specular and gloss - under a rule that is stated per map
+  *type* and never per body part, so no part can be treated differently from its neighbour. They differ
+  only on the normals, where the runtime obeys an explicit `compress = false` (`:895`) and keeps
+  `RGBA32` while the bundle bakes `DXT5`; that is a quality choice on one map type, again uniform
+  across all four parts. `createMipMaps = true` (`:881`) is likewise unconditional, for every map type.
+  This bullet also settles where the variant suffixes come from: they are the compositor's, matched to
+  preset fields rather than inherited from file names, since `skin/Face = 'D'` lands on `Lexi_FaceD (D)`
+  (`play.report.txt:786`) and `skin/Nails = 'Purple'` on `Lexi_LimbsD (Purple)` (`:787`) although
+  `Purple` is not a file name in any of the 79 `*Skin*.var` packages in `AddonPackages\`.
+- **The runtime binds those objects unmodified**, on two independent tells: the bound maps are
+  **DXT1/DXT5** (`play.report.txt:807-939`), which a runtime-composed sheet cannot be, because the
+  compositor builds `RGBA32` (`DAZCharacterTextureControl.cs:1377`); and the report's own
+  averages reproduce the pixels decoded out of the bundle - `Lexi_TorsoD` prints as
+  `avg=(0.64, 0.41, 0.33)` (line 828) and decodes to a linear mean of 0.6479, 0.4059, 0.3261. That
+  convention is worth stating once, because the numbers below depend on it: **the report prints each
+  map's average as the GPU samples it** - linearised for the sRGB-flagged diffuse maps (a stored 0.82
+  prints as 0.64) and raw for the linear S/G/N maps (a stored 0.256 prints as 0.26).
+
+**The material side - which slots the character's 17 skin materials carry.** Every material in this
+table has all four skin maps from its own tile set; none of them shares a sheet with a material of a
+different tile set:
+
+| tile set | shipped `Material` objects carrying it | `_MainTex` | `_SpecTex` | `_GlossTex` | `_BumpMap` | `_TessTex` |
+| --- | --- | --- | --- | --- | --- | --- |
+| torso | `Head-1`, `Neck-1`, `Ears-1`, `Torso-1`, `Hips-1`, `Nipples-1` | `Lexi_TorsoD` | `Lexi_TorsoS` | `Lexi_TorsoG` | `Lexi_TorsoN` | `torso_tess_mask2` on `Torso-1`/`Hips-1`; none on `Nipples-1` |
+| limbs | `Shoulders-1`, `Legs-1`, `Forearms-1`, `Hands-1`, `Feet-1`, `Toenails-1`, `Fingernails-1` | `Lexi_LimbsD` (`Lexi_LimbsD (Purple)` on both nail slots) | `Lexi_LimbsS` | `Lexi_LimbsG` | `Lexi_LimbsN` | `legs_tess_mask` on `Legs-1`, `shoulders_tess_mask` on `Shoulders-1`; none on the rest |
+| face | `Face-1`, `Lips-1` | `Lexi_FaceD` (`Lexi_FaceD (D)` at runtime) | `Lexi_FaceS` | `Lexi_FaceG` | `Lexi_FaceN` | none |
+| face | `Nostrils-1` | `Lexi_FaceD` | `Lexi_FaceS` | `Lexi_FaceG` | *(no `_BumpMap` slot at all)* | none |
+| genitals | `defaultMat-1` | `Lexi_GenitalsD` | `Lexi_GenitalsS` | `Lexi_GenitalsG` | `Lexi_GenitalsN` | none |
+
+Two things about that table matter for a seam:
+
+- **Every texture slot on every one of those materials has `m_Scale=(1,1)`, `m_Offset=(0,0)`.** No
+  material carries a `_ST`, a `_tex_ST`, or any per-slot transform: the four maps of a material are
+  sampled at the same `uv` through `TRANSFORM_TEX`, and the identity here is what guarantees it. The
+  three properties whose names look like texture offsets - `_DiffOffset`, `_SpecOffset`, `_GlossOffset`
+  - are **not** UV transforms; they are scalar biases added after the sample
+  (`shader-src\VamGpuSkinning.cginc:564`, `:595`, `:596`), so they cannot move one map against
+  another either. They are stored data rather than anything computed at draw time: the appearance
+  preset's own `skin` storable carries them by name - `Diffuse Texture Offset`, `Specular Texture
+  Offset`, `Gloss Texture Offset`, quoted as `-0.003`, `-0.156`, `0.5`, which is exactly the triple
+  the bundle materials carry.
+- **The tile sets are per body region, and the boundaries fall at the hip and the shoulder.** `Legs-1`
+  is the limb tile and its world box is `center (0.00, 0.45, 0.00) size (0.35, 0.60, 0.19)`
+  (`play.report.txt:401`), i.e. it ends at `y = 0.75`; `Hips-1` is the torso tile and its box starts at
+  `y = 0.745` (`:420`). The only place on the upper leg where two *different* sheets can meet is
+  therefore that boundary. The shoulder tile is the same story read the other way round: `Shoulders-1`
+  takes the *limb* sheet, between the torso sheet above it and the rest of the arm below, so the arm is
+  one sheet from hand to deltoid and the seam is pushed onto the shoulder line. `Hips-1` to `Torso-1`
+  is invisible for the same reason - both are the torso sheet.
+
+**The scalar side.** Identical on all 15 body/limb/face/genital slots, in the bundle
+(`play.report.txt:940-969`, the 30 `materials[]` lines) and in the runtime dump (the 30
+`GPUmaterials[]` lines `:775-803`); only the two nail slots
+differ, and they differ in the direction of *less* shading, not more:
+
+| property | body/limb/face/genitals | both nail slots |
+| --- | --- | --- |
+| `_SpecOffset` | -0.156 | 0 |
+| `_GlossOffset` | 0.5 | 0 |
+| `_DiffOffset` | -0.003 | 0 |
+| `_SpecInt` | 2.272 | 1.0 |
+| `_Shininess` | 6.408 | 6.0 |
+| `_Fresnel` | 0.8 | 0.0 |
+| `_DiffuseBumpiness` | 0.447 | 1.0 |
+| `_SpecularBumpiness` | 1.092 | 1.0 |
+| `_IBLFilter` | 0.0 | 0.0 |
+| `_Tess` / `_TessPhong` | 3.35 / 0.5, tessellated family only | - |
+| `_Color` | (1, 1, 1, 1) | (1, 1, 1, 1) |
+| `_SpecColor` asset-side | (1, 1, 1, 1) | (1, 1, 1, 1) |
+| `_SubdermisColor` | (0.902, 0.804, 0.733, 1) | (0.902, 0.804, 0.733, 1) |
+
+**The texture side - the whole "import settings" equivalent, all 23 objects.** Identity of name for
+name; the names in one row share every field in it, and the names in different rows differ *only* in
+the column that differs:
+
+| `Texture2D` objects | size | `m_TextureFormat` | `m_ColorSpace` | `m_MipCount` | `m_FilterMode` | `m_Aniso` | `m_MipBias` | `m_WrapU/V/W` | `m_IsReadable` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `Lexi_TorsoD`, `Lexi_LimbsD`, `Lexi_FaceD`, `Lexi_FaceD (A)`, `Lexi_FaceD (B)`, `Lexi_FaceD (C)`, `Lexi_FaceD (D)`, `Lexi_LimbsD (Pink)`, `Lexi_LimbsD (Purple)`, `Lexi_LimbsD (Red)`, `Lexi_GenitalsD` | 4096 x 4096 | 10 = DXT1 (BC1) | **1 = sRGB** | 13 | 1 = bilinear | 1 | 0.0 | 0, 0, 0 = Repeat | False, except the four `Lexi_Genitals*` = True |
+| `Lexi_TorsoS`, `Lexi_LimbsS`, `Lexi_FaceS`, `Lexi_GenitalsS` | 4096 x 4096 | 10 = DXT1 (BC1) | 0 = linear | 13 | 1 = bilinear | 1 | 0.0 | 0, 0, 0 = Repeat | False, except `Lexi_GenitalsS` = True |
+| `Lexi_TorsoG`, `Lexi_LimbsG`, `Lexi_FaceG`, `Lexi_GenitalsG` | 4096 x 4096 | 10 = DXT1 (BC1) | 0 = linear | 13 | 1 = bilinear | 1 | 0.0 | 0, 0, 0 = Repeat | False, except `Lexi_GenitalsG` = True |
+| `Lexi_TorsoN`, `Lexi_LimbsN`, `Lexi_FaceN`, `Lexi_GenitalsN` | 4096 x 4096 | **12 = DXT5 (BC3)** | 0 = linear | 13 | 1 = bilinear | 1 | 0.0 | 0, 0, 0 = Repeat | False, except `Lexi_GenitalsN` = True |
+
+No object has a `platformSettings` list, an `sRGBTexture`, an `alphaIsTransparency` or an `npotScale`,
+because none of them was imported - those fields belong to `TextureImporter`, and there is no importer
+in the chain. The only fields that exist are the ones above. And the one asymmetry in them is the
+correct one: normals are BC3 while albedo/specular/gloss are BC1, because a BC1 normal map would have
+one channel for two.
+
+**The two specular textures, side by side.** `Lexi_TorsoS` is on the pelvis, `Lexi_LimbsS` is on the
+leg; they are the two maps that meet at the boundary found above:
+
+| | `Lexi_TorsoS` | `Lexi_LimbsS` |
+| --- | --- | --- |
+| size / format / colour space | 4096 x 4096, DXT1 (BC1), linear | *identical* |
+| mips / filter / aniso / mip bias / wrap | 13 / bilinear / 1 / 0.0 / Repeat | *identical* |
+| readable | False | False |
+| bundle | `f_rlx_mat` | `f_rlx_mat` |
+| material slot scale / offset | (1, 1) / (0, 0) | (1, 1) / (0, 0) |
+| mean level as sampled | **0.2560** | **0.2990** |
+| after `saturate(sample + _SpecOffset)` | **0.1018** | **0.1447** |
+
+So on the *settings* axis the two specular maps are indistinguishable, and on the *pixel* axis they
+differ by 16.8 % of level. That difference is the only one that survives in this pair, and the shader
+multiplies it by a highlight that does not clamp it away: `s.spec = saturate(sample + _SpecOffset) *
+_SpecColor` is 1.42x larger on the leg side, the Blinn-Phong highlight
+(`VamLightHighlight`, `shader-src\VamGpuSkinning.cginc:637-646`) is linear in `s.spec`, and its two
+remaining factors move the other way by only 1.3 %: gloss feeds `gg = 2g - g^2` to
+`mip = 7 + gg * (1 - _Shininess)` and `exponent = exp2(1 + gg * (_Shininess - 1))` (`VamGlossTerms`,
+`:671-676`), which for the shipped `_GlossOffset = 0.5` and `_Shininess = 6.408` gives mip 2.679
+against 2.663, exponent 40.03 against 40.56 and `specScale` 6.689 against 6.773. **The highlight is
+worth 1.44x across that boundary and the gloss is worth 1.3 %.**
+
+The albedo side of the same boundary is much smaller and the reason is worth keeping: the two diffuse
+sheets agree in mean level to 3.5 % (decoded linear means 0.6946 against 0.7109 in channel mean, with
+the blue channel further apart, 0.5958 against 0.6332) - the report rounds both to 0.64. What *is*
+large between the two sheets is per-pixel artwork: 8.9 % mean absolute difference, with 65 % of pixels
+more than 0.05 apart. That number has to be read carefully, because it is a *whole-sheet* statistic
+comparing texels that are not the same point on the body - the two sheets are different images with
+their own detail density, and their uv islands are disjoint (measured earlier in this section). It
+bounds the mismatch; it is not the mismatch at the boundary. The boundary-local version of this number
+is the bounded check at the end of this subsection.
+
+**The compositor is present, and it is not engaged.** `src\Assembly-CSharp\DAZCharacterTextureControl.cs`
+implements the tile compositing - `Region {Face, Torso, Limbs, Genitals}`, `TextureType {Diffuse,
+Specular, Gloss, Normal, Detail, Decal}`, `Init()` at `:2000`, `OnImageLoaded` at `:718`,
+`StartSyncImage` at `:868`, `FindTexturesInDirectory` at `:1753` - and its output is a sheet per
+body region, always built as `new Texture2D(w, h, TextureFormat.RGBA32, true, linear)` (`:1377`), with
+the genital-blend paths refusing to run unless the torso sheet is exactly 4096x4096 (the four guards at
+`:1480`, `:1546`, `:1612`, `:1678`, each followed by its own `LogError`). Three things about that
+constructor matter for the seam. It takes the region's **own** source size - `new
+Texture2D(inTorsoTex.width, inTorsoTex.height, ...)`, `:1377` - so a region's output is as large as its
+input and no region is resampled to a common size. It allocates `RGBA32` with a full mip chain (`true`),
+so the sheets behind the seam are uncompressed and mipmapped when they are made, whatever they are
+baked to afterwards. And its `linear` argument is passed per map by the four call sites, which state
+the colour-space rule outright: `BlendGenitalTexture(texture2D, value, false, true)` for the diffuse
+sheet (`:1491`, sRGB), `(..., true, false)` for gloss (`:1557`) and specular (`:1623`), and
+`(..., true, false, true)` for the normal (`:1689`) - the same split the bundle and the cache both
+carry, now a third independent statement of it. The composite is driven entirely by the
+appearance preset's texture URLs and by `customTexture_MainTex`, and for this character **every one of
+its 24 texture-URL fields is empty** in `Preset_Ren_Lexi.vap` - `{face, torso, limbs, genitals}` times
+`{Diffuse, Specular, Gloss, Normal, Detail, Decal}` - every `customTexture_*` field is `""` too, and
+the only non-empty texture fields the preset has are `skin/Face = 'D'`, `skin/Nails = 'Purple'` and the
+two blend switches `autoBlendGenitalTextures = 'false'`, `autoBlendGenitalSpecGlossNormalTextures =
+'true'`. So no sheet is composed at runtime; the
+`Lexi_*` names that the materials reference are the compositor's **baked** output, shipped in the
+character's bundle. The naming betrays the provenance: the preset carries `"Face":"D"` and
+`"Nails":"Purple"` and the bound textures are `Lexi_FaceD (D)` (`play.report.txt:786`) and
+`Lexi_LimbsD (Purple)` (`:787`), against a bare-named `Lexi_FaceD` sitting unused in the same bundle -
+the `(variant)` suffix is the compositor's variant selector, and the naked name is its default. The
+compositor therefore *is* the mechanism that wrote these tiles, and its per-region tile size is the
+4096 the shipped sheets still have.
+
+#### The six candidate causes, against that data
+
+| # | claim | verdict | what settles it |
+| --- | --- | --- | --- |
+| 1 | sRGB mismatch inside one material | **refuted** | every map of every skin material follows one rule with no exception - D `m_ColorSpace=1` (sRGB), S, G and N `=0` (linear) - across all 23 objects in the bundle, and there are no import settings or `platformSettings` that could override a flag for one map. Independently, the only other importer in the chain - the game's own texture cache, written where these tiles were decoded before compositing - made the *same* split, and states it in its own file names: `_C` compressed and not linear on the four diffuse sheets, `_C_L` compressed and linear on the eight specular and gloss sheets, `_L_N` linear and normal map on the four normals, decoded from `ImageLoaderThreaded.cs:119-150` against the flag switch at `DAZCharacterTextureControl.cs:881-896` that sets `linear = true` only for `Specular`, `Gloss`, `Normal` and `Detail`. Two independent importers, same colour space per map kind, no exception - so the mismatch would have to be *inside* one tile, not between the tiles that meet |
+| 2 | low-resolution roughness atlas against high-resolution diffuse | **refuted as stated** | all four map kinds of the character are 4096 x 4096 with the full 13 mips; the gloss and specular sheets are exactly as large as the diffuse ones. The substance survives in a different form - see below |
+| 3 | hardware / anisotropic filtering | **refuted** | `m_FilterMode=1` (bilinear), `m_Aniso=1` (anisotropy off), `m_MipBias=0.0`, `m_WrapU/V/W=0` (Repeat) on **all 23** objects, so no map is filtered differently from the map beside it; and no filtering rule draws a straight edge |
+| 4 | mipmap downgrade | **refuted** | `m_MipCount=13` - the full chain for 4096 - on all 23, and `m_MipBias=0.0`; the runtime report prints the bound maps at the same 4096 in DXT1/DXT5, so no map is a smaller or mipless copy of itself; and the pipeline that builds the sheets asks for mips unconditionally - `bool createMipMaps = true` (`DAZCharacterTextureControl.cs:881`) sits above the per-type switch and is never reassigned |
+| 5 | atlas corner bleeding at UV seams | **refuted, and not applicable** | there is no atlas: four sheets per region, one map per slot, one material per region, all slots at scale (1,1) offset (0,0). The nearest real structure is the tile's own outer ring, which is measurably not the interior (on `Lexi_LimbsS` the outer 4 px average 0.376 against an interior 0.288), but with `m_WrapU/V=0` = Repeat an out-of-range uv wraps instead of clamping to that ring, so it is only reachable by an island that reaches the sheet border |
+| 6 | material parameters computed per draw call | **refuted** | the parameters are asset data, and every one the report prints agrees between the asset and the GPU: `materials[0]` (`play.report.txt:940`) and `GPUmaterials[0]` (`:775`) both read `_SpecInt=2.272; _Shininess=6.408; _Fresnel=0.800; _DiffuseBumpiness=0.447; _SpecularBumpiness=1.092`, and the tessellated pair carries `_Tess=3.350; _TessPhong=0.500` on both sides. The three offset floats are not printed by the report at all; the bundle's typetree gives `_DiffOffset=-0.003`, `_SpecOffset=-0.156`, `_GlossOffset=0.5` as floats on every body, limb, face and genital material, and 0 on both nail materials - and the same triple is stored, not computed, in the appearance preset's `skin` storable as `Diffuse Texture Offset`, `Specular Texture Offset`, `Gloss Texture Offset`. The one quantity the runtime does change, `_SpecColor`, is `(1.000, 1.000, 1.000)` in the asset (`:940`, `:957`) and `(0.678, 0.725, 0.769)` on the GPU (`:775`, `:792`), and that triple is exactly the preset's `Specular Color` HSV(0.5797102, 0.117347, 0.7686275) converted to RGB (0.6784, 0.7255, 0.7686) - one field of the appearance preset, applied to all 30 slots, so it multiplies both tiles by the same vector and cancels out of any step between them |
+
+**What is left.** Nothing in the settings, the flags, the sampling state or the parameters differs
+between the two maps that meet on the upper leg; the maps themselves do, by 16.8 % of specular level
+and 1.44x of highlight, and by 3.5 % in whole-sheet albedo mean. So the seam is either (a) that level
+difference - two sheets baked separately, from a source set that has no cross-tile continuity to give -
+or (b) not a texture-side effect at all. One measured asymmetry looked strong enough to be the answer on
+its own and is **not**: the tessellation density masks are the only differently-sized maps in the whole
+material set, and the pair that meets on the upper leg is the pair that disagrees - `legs_tess_mask`
+2048 x 2048, mean 0.12 (`play.report.txt:811`) against `torso_tess_mask2` 1024 x 1024, mean 0.44
+(`:833`) - which through `VamTessDensity` (`shader-src\VamGpuSkinning.cginc:1150-1156`, `sample * _Tess
++ 0.01`, with `VAM_TessScale` defined as `_Tess` at `:231` and defaulted to the asset's own 3.35 at
+`:233`) is a **3.6x step in edge factor - 0.41 against 1.48 - on a shared position**. It is not a cause,
+and the reason is the same one that makes the hull a hull: `VamTessHull` returns its control points
+unchanged (`:1178-1179`), so `VamTessInterpolate` (`:1206`) evaluates the *same* function of bary on
+both sides, and a more sub-divided patch is the un-divided one sampled more often. **A density step
+moves coverage, not geometry** - which is the same conclusion this document already reached from the
+other end, where doubling the density moves the frame by a quarter of what killing the projection moves.
+What the density step is good evidence *of* is that these regions were authored as separate regions, at
+two resolutions, with a four-fold difference in density. And between two such regions the thing the
+shader does not smooth over is the **boundary normals**: each submesh has its own, they were smoothed
+apart from each other, and `VamTessInterpolate` feeds them into both the position
+(`posOS = lerp(flat, phong, VAM_TessPhong)`, `:1216`, with `_TessPhong = 0.500` on **both** sides,
+`play.report.txt:794` and `:795`) and the normal that goes to the pixel
+(`nrmOS = p[0].nrm * bary.x + ...`, `:1217`). A step in the border normals is therefore a step in the
+normal field exactly on the boundary line - tone and surface detail both change, abruptly, along a
+straight edge, with no texture involved. That is a better fit to the symptom than a 1.4x highlight is,
+and both `Legs-1` and `Hips-1` are the **same** shader family here (`GlossNMTessMappedFixedComputeBuff`,
+`:879` and `:898`), so it is not the family split this document already refuted - it is a *mesh* split
+inside one family.
+
+**Three bounded checks, none needing the editor.** They are what separates (a) from (b), and they are
+named here rather than run because the mesh is in a bundle on the other agent's side of the fence:
+
+1. **The boundary-local pixel ratio - this decides (a).** From the character's mesh, take the border
+   loop shared by the `Legs-1` submesh (`play.report.txt:401`) and the `Hips-1` submesh (`:420`), report
+   the (u, v) of those vertices in each sheet, and sample `Lexi_TorsoS` against `Lexi_LimbsS` *there*
+   rather than as whole-sheet means. The whole-sheet means say the sheets are 16.8 % apart; only this
+   says whether the texels that actually meet are. It is a UV read of a mesh plus two `Texture2D`
+   decodes. Prediction if (a) holds: the ratio at the loop stays near 1.42 after `_SpecOffset`.
+2. **The border-normal read - this decides (b).** From the same mesh, take both sides of that border
+   loop and report the vertex normals the two submeshes carry at coincident positions. If they agree to
+   a few degrees, the geometric path is smooth across the seam and (a) stands; if they disagree - which
+   is what separately smoothed per-region submeshes do at a border - then the primary cause is geometry
+   and no texture, import setting or material value will remove it. This check also has a prediction:
+   the seam's magnitude should scale with `_TessPhong`, so an existing frame taken at `_TessPhong = 0`
+   should show it *reduced* while one at `_TessPhong = 1` should show it *increased* - a comparison the
+   same-size pass behind `seam1..seam5` can make from frames already on disk.
+3. **The two-sided frame test.** On a captured frame with the seam visible, sample a line across the
+   boundary and report the diffuse-only and the total difference separately: a step that is present in
+   the lit result but absent in the albedo locates it in the highlight or in the geometry, not in the
+   texture. This is the same shape of measurement as the `seam1..seam5` passes, on frames already
+   captured, and it needs no new render.
+
+Remaining unknowns on this axis: which submesh boundary the front-most edge of the visible seam lies on
+(this document has the boxes, not the posed screen-space line); whether the islands reach any sheet
+border (which is what makes claim 5's ring reachable at all); and the boundary-local level ratio of
+check 1.
+
 ### Defect 2 - the scalp patch floating in the air
 
 Verdict: **the hair-card draw path, plus the three hair families being absent from the project.**
