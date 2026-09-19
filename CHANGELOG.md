@@ -115,6 +115,21 @@ and the plugin's own `RegisterUIElements` and `Init` 0 → 4 each. Neither deliv
 old revision, because `FileManager.GetPackage` resolves a version-qualified uid exactly - so the shipped revisions
 stay untouched and repointing a scene's own version token is the consumer's edit.
 
+The stub shaders came out of that work and went back in, and the reason is worth more than the count. The project
+holds 159 `.shader` files: 88 reconstructions and 71 AssetRipper placeholders, each of which compiles and reports
+itself supported while drawing a flat `POSITION`-only pass. A cleanup had deleted 45 of the 71 - every placeholder
+whose GUID no scene, prefab or material carries - because the names looked like they were only ever reached through
+`Shader.Find`, which `VamShaderProvider` answers from the shipped originals. That reading of "referenced" is one of
+three, and the other two are by **name**, not by GUID: `Fallback "Marmoset/Specular IBL Soft"` in the generator's own
+twinned `Custom_Subsurface/*` shaders (16 declarations over 6 names), and the 24 names the decompiled source passes
+to `Shader.Find` - the 14 `Hidden/Post FX/*`, `Hidden/NGSS_Directional`, `Custom/Discard` and eight `Oculus/*`. All 30
+were in the deleted set, and neither the compile gate nor the Play gate changed when they went: the lookups happen
+when a component builds its material, so a missing file means a null shader and a material that draws nothing.
+`tools\remove_shader_stubs.py` is gone, its 45 files are back from the export with their original `.meta` GUIDs, and
+`tools\audit_shader_stubs.py` now reports the three readings per name - 25 by an asset, 30 by name, 16 by nothing - as
+step 5b of `scripts\Setup-RebuildProject.ps1`, so a rebuild prints the census and the reasoning is in
+[`docs/rebuild-project.md`](docs/rebuild-project.md) (*What is left of them*).
+
 ## 0.1.10-alpha
 
 The engine is **Unity 2020.3 LTS** now (`2020.3.49f1`), the third hop from the `2018.1.9f2` the game ships

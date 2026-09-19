@@ -507,6 +507,25 @@ if ($python -and (Test-Path -LiteralPath $shaderGen)) {
     Write-Warning 'Python not found; skipped the ComputeBuff shader generation.'
 }
 
+# ------------------------------------------------------- 5b. what is left as a placeholder
+# Not a cleanup step: the export's placeholders stay. A placeholder is not dead weight - it keeps its
+# family's real property list, and 71 of them are still the only project definition of their name.
+# tools\audit_shader_stubs.py reports which of the three ways a name can be reached points at each
+# one - an asset reference, a Fallback declaration in another shader, or a string literal in the
+# decompiled source - and 25 are reached the first way, 30 the second or third. The remaining 16 are
+# reached by nothing in the project and are kept anyway: deleting them buys nothing, while it costs
+# the fallback for a name reached only from a package. The generator overwrites the ones it
+# reconstructs, so the count is the generator's business and this script only prints it. See
+# docs\rebuild-project.md.
+$stubAudit = Join-Path $PSScriptRoot '..\tools\audit_shader_stubs.py'
+if ($python -and (Test-Path -LiteralPath $stubAudit)) {
+    Write-Host ''
+    & $python.Source $stubAudit --project $TargetDir --references 0
+    if ($LASTEXITCODE -ne 0) { throw 'Placeholder shader audit failed' }
+} else {
+    Write-Warning 'Python not found; skipped the placeholder shader audit.'
+}
+
 # ------------------------------------------------------- 6. runtime data links
 # The wipe at the top takes the junctions into the installation's AddonPackages and Custom with it,
 # and the export puts empty folders back in their place. FileManager then scans 0 packages, a scene

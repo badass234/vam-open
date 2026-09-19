@@ -529,20 +529,31 @@ wrote 88 shaders (256 passes, 15 tessellated)
   `TransparentCutoutSeparateAlpha`, `TransparentGloss`, `TransparentGlossSeparateAlpha`,
   `TransparentGlossNoCull`, `TransparentGlossNoCullSeparateAlpha`, `TransparentGlossNMSeparateAlpha`,
   `TransparentGlossNMNoCullSeparateAlpha` and `TransparentGlossNMDetailNoCullSeparateAlpha`.
-- **25 AssetRipper stubs** left untouched - *plus* the stub of every family the generator claims:
-  the stub and the rebuilt sibling are two files for the same family name, and the sibling is what
-  Unity compiles, because it carries the same name and is the one in the compiled set. The 25 are
-  the families nothing claims: Marmoset lit (7), sky/dome/overlay (3), `Marmoset/Projection Box`
-  (1), the geometry-shader family (`GPUTools/MeshedVR/Hair`, `HairOpt`, `HairOptSinglePass`,
-  `GPUTools/Painter`, `Hidden/NGSS_Directional` - 5), and 9 unlit gizmo/UI/cursor/silhouette
-  shaders. A stub is only a hazard where a name is *looked up* instead of referenced - the
-  `ComputeBuff` swap, or `DAZImportMaterial`'s JSON lookup - and `VamShaderProvider` now answers
-  those from `z_sha`.
+- **71 AssetRipper placeholders** left in the project - the stub of every family the generator claims
+  is *overwritten* by the rebuilt sibling, because both files carry the same family name, so one name is
+  one file. They fall in three groups, and `tools\audit_shader_stubs.py` reports which is which:
+  - 25 are referenced by a scene, prefab or material - 13 `Battlehub` gizmo/handle shaders,
+    `GPUTools`' four (`MeshedVR/Hair`, `HairOpt`, `HairOptSinglePass`, `Painter`), `Marmoset`'s five
+    (`Diffuse IBL`, `Projection Box`, `Skybox IBL`, `Skydome IBL`, `Skydome Overlay IBL`),
+    `Obi/Particles`, `Valve/VR/Silhouette` and `Unlit/Transparent Cursor`. These are what is left to
+    transcribe.
+  - 30 are reached by name only - 24 through a `Shader.Find` string in the decompiled source (the 14
+    `Hidden/Post FX/*`, `Hidden/NGSS_Directional`, `Custom/Discard` and eight `Oculus/*`) and 6 through 16
+    `Fallback` declarations in the generator's twinned shaders (`Marmoset/Specular IBL*`).
+  - 16 are reached by nothing in the project, `Standard (Backfaces)` among them, whose bytecode the
+    extraction did not preserve, so there the placeholder is the only definition of the name.
 
-So `Assets\Shader\` holds two file families for many names. Counting the leftovers as "25 stubs"
-hides the interesting half of that: 41 plain contracts now have a rebuilt shader of their own, and
-`VaM_Rebuild\Assets\Shader\` reads as 113 files = 47 rebuilt `*ComputeBuff` + 41 rebuilt plain + 25
-stubs.
+  A placeholder is a hazard wherever a name is *looked up* rather than referenced - the `ComputeBuff`
+  swap, or `DAZImportMaterial`'s JSON lookup - because `Shader.Find` answers a placeholder as readily
+  as it answers a reconstruction. None of the 71 is deleted for that reason: "nothing points at it"
+  is not "nothing can hold it", and a removal that read only the asset references took out all 30 of
+  the name-reached ones without failing a build, since they are looked up at runtime only.
+
+So the export holds a stub beside every rebuilt sibling; the project holds one file per name.
+Counting the leftovers as "stubs" hides the interesting half of that: 41 plain contracts now have a
+rebuilt shader of their own, and `VaM_Rebuild\Assets` reads as 159 `.shader` files = 88 reconstructed
+under `Assets\Shader\` + 71 placeholders (31 under `Assets\Shader\`, 40 under `Assets\Resources\`). See
+`docs\rebuild-project.md` for the census and the three readings behind it.
 
 ## Who answers a name
 

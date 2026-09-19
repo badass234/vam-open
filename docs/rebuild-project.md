@@ -672,8 +672,9 @@ for reading the code.
 
 ## Shaders are placeholders
 
-The one part of the game that did not come across in a usable form. All 128 `.shader` files under
-`Assets` are AssetRipper placeholders carrying `//DummyShaderTextExporter`: no `StructuredBuffer`, no
+The one part of the game that did not come across in a usable form. All 128 `.shader` files the export
+writes under `Assets` are AssetRipper placeholders carrying `//DummyShaderTextExporter`: no
+`StructuredBuffer`, no
 lighting, `_Color` only, and positions taken from the mesh's own `POSITION` attribute. The export
 produced them despite `ShaderExportMode = Decompile` (`docs\asset-export.md:48`), because VaM ships
 shader bytecode rather than source and the export holds no shader blobs to decompile.
@@ -689,4 +690,64 @@ What the placeholders *do* preserve is worth having: every stub keeps its shader
 (with names, types, ranges and defaults) and its `Fallback` chain, because AssetRipper rebuilt them
 from the compiled reflection. That is what makes a replacement shader a tractable job rather than a
 guess - the property names the materials expect are known.
+
+### What is left of them
+
+The export's 128 placeholders are not the project's current shader set. `New-VaMShaders.py` writes a
+reconstruction over the names it can read out of the shipped bytecode and leaves the rest alone, so the
+project reads:
+
+| | files | names |
+|---|---|---|
+| reconstructed by the generator (`Assets\Shader`) | 88 | 88 |
+| placeholder (`Assets\Shader`) | 31 | 31 |
+| placeholder (`Assets\Resources`, `Resources\shaders`, `Resources\obimaterials`) | 40 | 40 |
+| **total `.shader` files under `VaM_Rebuild\Assets`** | **159** | **159** |
+
+One file per name, so the counts coincide: no name is defined twice, which is the state the generator's
+`written_names` list assumes.
+
+A placeholder keeps the family's real property list, compiles, and reports itself supported - it draws
+a flat white `POSITION`-only pass where the shipped shader would draw correctly. It is therefore a
+*wrong* shader, but it is still a *definition* of its name, and `Shader.Find` answers a placeholder
+just as happily as it answers a reconstruction. That is the property the census has to be read
+against: a name is safe to lose only if nothing in the project can be holding it. There are three
+ways something holds a name, and the earlier census checked only the first:
+
+1. **An asset.** A scene, prefab or material whose `m_Shader` carries the placeholder's GUID. A
+   dangling `m_Shader` is a magenta material, not merely a wrong one. 25 of the 71 placeholders are
+   held this way.
+2. **A `Fallback` declaration.** Unity resolves `Fallback "name"` by name, not by GUID, and the
+   generator's own `Custom_Subsurface\*` twinned shaders fall back to `Marmoset/Specular IBL*`: 16
+   declarations, in `Marmoset/Specular IBL Soft` (7 files), `Marmoset/Specular IBL SoftComputeBuff` (5),
+   `Marmoset/Specular IBL Soft NoCullComputeBuff`, `Marmoset/Specular IBL`, `Marmoset/Bumped Specular IBL`
+   and `Marmoset/Transparent/Specular IBL` - 6 names.
+3. **A string literal in the decompiled source.** A `Shader.Find("name")` caller does not go through
+   the provider, so a name with no file at all resolves to null and the caller's material ends up
+   shaderless. The whole post FX stack (`Hidden/Post FX/*`, 14 names, from
+   `UnityEngine\PostProcessing\*`), `Hidden/NGSS_Directional`, `Custom/Discard`, and eight `Oculus/*`
+   shaders are held this way.
+
+`tools\audit_shader_stubs.py` reports all three readings per name. Its output for the current project
+is 25 by an asset, 30 by name only (24 of them from the source strings above, 6 from `Fallback`), and
+16 by nothing at all. Both gates - the compile gate and the play gate's per-shader report - are what
+confirm the two counts that matter (nothing drawn on a placeholder that should not be, nothing
+unsupported), and `scripts\Setup-RebuildProject.ps1` prints the census as its step 5b so a rebuild
+surfaces a drift in the count the same way the GUID check does.
+
+The 16 reached by nothing (`Custom/SteamVR_*`, `Custom/Subsurface/EmissiveGlow`,
+`Marmoset/Transparent/*IBLComputeBuff`, `Obi/Simple Particles`, `Oculus/Underlay *`, `UI/Default-Overlay`,
+`Particles/Alpha Blended Premultiply Lit`, `Standard (Backfaces)`) are kept. Nothing in the project
+needs them removed and nothing needs them to be correct either, so removing them is a behaviour change
+with no upside: they cost a file, and one of them is the only definition of a name a package loaded at
+runtime can still ask for.
+
+**The 45 that were once deleted are back, and they were not spare.** A hand-run of a remover that only
+checked reading 1 of the three deleted every one of the 30 names that are reached by name - the post FX
+stack, `NGSS_Directional`, `Custom/Discard`, the eight `Oculus/*` and the six `Fallback` targets - plus
+15 of the 16 that are reached by nothing. Nothing failed at build time, which is why it looked safe:
+the names are only looked up at runtime, by the components that build those materials. The files were
+restored from `work\ripped-core\ExportedProject\Assets` with their original `.meta` GUIDs, so the
+census is back to 159 names. The remover tool is gone; the audit remains, because the lesson is that
+"referenced" has three readings and an audit that checks one of them is worse than no audit at all.
 

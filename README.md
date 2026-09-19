@@ -54,10 +54,19 @@ needed named where it is made.
   `Marmoset/Transparent/Simple Glass/Specular IBLComputeBuff`), the overlay helpers and
   `Unlit/UnlitOverlayShader`. `Marmoset/` is a different shading model - its own SH, exposure and
   sky-range uniforms - so it needs a second model beside the reconstructed one, not an extension of it.
-- 25 of the project's shader files are still AssetRipper placeholders that declare no pass, and the
-  families that fall back to a Unity built-in, to `GPUTools/Painter` or to `GPUTools/MeshedVR/HairOpt`
-  cannot be moved onto one: a placeholder compiles and draws *less* than the shipped shader it stands
-  in for, and its takeover would trade a wrong picture for a missing one.
+- 71 of the project's 159 shader files are still AssetRipper placeholders. Each keeps its shader's real
+  property list, but the stage it declares is a `POSITION`-only vertex pass and a flat fragment one, so
+  the families that fall back to a Unity built-in, to `GPUTools/Painter` or to `GPUTools/MeshedVR/HairOpt`
+  cannot be moved onto one: a placeholder compiles and reports itself supported, so its takeover would
+  trade a wrong picture for a missing one. 25 of the 71 are pointed at by a scene, prefab or material and
+  are what is left to transcribe; 30 more are reached by name alone - 24 `Shader.Find` string literals in
+  the decompiled source (the 14 `Hidden/Post FX/*`, `Hidden/NGSS_Directional`, `Custom/Discard` and eight
+  `Oculus/*`) and 6 through 16 `Fallback` declarations in the generator's own twinned shaders; the last 16
+  nothing in the project reaches. Every one of them stays. `Shader.Find` answers a placeholder as readily as it answers
+  a reconstruction, so a name is free to lose only when nothing can be holding it, and a removal that
+  checked the asset references alone deleted all 30 of the name-reached ones without failing a build -
+  they are only looked up at runtime. `tools\audit_shader_stubs.py` reports the three readings and runs
+  as step 5b of `scripts\Setup-RebuildProject.ps1`.
 - Code is partially readable but needs refactoring.
 
 ## Plan

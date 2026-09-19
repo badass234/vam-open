@@ -994,7 +994,9 @@ materials exist and are named in the report:
 GPUmaterials=30: Custom/Subsurface/GlossNMTessMappedFixedComputeBuff, ...
 ```
 
-but **all 128 `.shader` files in the project are AssetRipper placeholders**. Every one carries
+but **all 128 `.shader` files in the project are AssetRipper placeholders** (that is what the export
+wrote for every name; 88 of them have since been replaced by reconstructions - see
+`docs\rebuild-project.md`). Every one carries
 `//DummyShaderTextExporter`, not one declares a `StructuredBuffer`, and not one has a `verts`
 property - so `SetBuffer` binds to nothing, silently, because a `Material` accepts any property name.
 The stub's vertex shader transforms the mesh's *own* `POSITION` attribute and returns `_Color` with no
@@ -2006,7 +2008,7 @@ this section keeps is the measurement, because the measurement is what caught th
   answers - AssetRipper wrote a placeholder with that name - so a redirection gated on
   `Find != null` would swap the hair's optimised path onto a one-pass placeholder and draw *less*. The
   generator now emits `VamProjectShaders.cs`, the 88 names the run wrote, and 0 of them collides with
-  the 25 placeholders.
+  the 71 placeholders.
 - **The census was asking the same wrong question.** `ProjectDefinesShader` was loose enough to accept
   `Standard`, `Unlit/Texture` and every placeholder, so 36 materials were counted as take-overs waiting
   to happen. A separate `ProjectReconstructionDefines` refuses a name only a placeholder carries, and
@@ -2044,10 +2046,24 @@ Two sets are therefore left alone **on purpose**, and a future reader should not
   (`mov o0.xyz, l(0,0,0,0)`), so the project's pass - which writes the colour - would paint black cards
   over the hair until that pass is verified against the original.
 - **Everything behind a placeholder.** The interaction rig (`GPUTools/Painter`, 34 slots), the hair
-  optimiser (`GPUTools/MeshedVR/HairOpt`), the sky (`Marmoset/Skydome`) and the particles
-  (`Marmoset/Diffuse IBL`) all answer through a placeholder that keeps more passes than the shader it
-  would replace, so the redirection must not touch them until the families themselves are transcribed
-  (item 3).
+  optimiser (`GPUTools/MeshedVR/HairOpt`), the sky (`Marmoset/Skybox IBL`, `Marmoset/Skydome IBL`) and
+  the particles (`Marmoset/Diffuse IBL`) all answer through a placeholder that keeps more passes than
+  the shader it would replace, so the redirection must not touch them until the families themselves are
+  transcribed (item 3).
+
+How large the placeholder set is was measured twice, and the second measurement changed a decision. Of
+the 71 placeholders the project holds, 25 are referenced by an asset (the examples the two bullets
+name), 30 are reached by name only - 24 `Shader.Find` string literals in the decompiled source and 6
+names behind 16 `Fallback` declarations in the generator's own twinned shaders - and 16 are reached by
+nothing. **None of them is deleted.** An attempt to remove the 45 that no asset referenced took out all
+30 of the name-reached ones - a name looked up at runtime resolves to null once its file is gone, and a
+null shader draws nothing - and **neither gate moved**: the compile gate read `verdict: OK` with 0
+unique errors and the Play gate read `----- RebuildGate OK -----` with 0 unsupported and 0 material on a
+stub, in the deleted state and in the restored state alike, because the lookups happen when a component
+builds its material and no boot-scene material goes through the components that do it. The files were
+restored from the export with their original `.meta` GUIDs; `tools\audit_shader_stubs.py` now reports
+the three readings side by side, and `docs\rebuild-project.md` (*What is left of them*) carries the
+census and the reasoning.
 
 ## Found by measuring: VaM's own point-light shadow filter, and who computes the darkening
 

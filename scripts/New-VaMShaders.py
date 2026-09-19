@@ -92,10 +92,10 @@ CGINC_INCLUDE = "../VaMShaders/VamGpuSkinning.cginc"
 # across -- but only for a name on this list.  The list is written here rather
 # than kept by hand because it changes with every shader that is ported, and
 # because a name on it that is *not* really reconstructed is worse than a
-# missing one: Shader.Find answers with the 25 AssetRipper placeholders left in
-# Assets/Shader just as happily, and a material moved onto one of those loses
-# the shading it came with (GPUTools/MeshedVR/HairOpt among them, which the
-# hair's optimised path does use).
+# missing one: Shader.Find answers with the 71 AssetRipper placeholders the
+# project still holds just as happily, and a material moved onto one of those
+# loses the shading it came with (GPUTools/MeshedVR/HairOpt among them, which
+# the hair's optimised path does use).
 PROJECT_SHADER_LIST = REPO / "src" / "Assembly-CSharp" / "MeshVR" / "VamProjectShaders.cs"
 # The same file where it is compiled from. The generator runs after the project has been assembled
 # (its output is the .shader files, which the assembly step wipes), so the copy src\ holds is the

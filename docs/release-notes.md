@@ -275,6 +275,37 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   never a success line. The records are the *Decal Maker* section and section 12 of
   [`docs/verification.md`](docs/verification.md), plus [`docs/decal-texture-crash.md`](docs/decal-texture-crash.md).
 
+- **The 45 deleted placeholder shaders are back, and what put them back is a second reading of "referenced".**
+  The project holds 159 `.shader` files - 88 reconstructions from `scripts\New-VaMShaders.py` and 71 AssetRipper
+  placeholders - and a placeholder is a file that compiles, reports itself supported and draws a `POSITION`-only
+  pass with a flat white fragment. It is a *wrong* shader but still a *definition* of its name, which is the part
+  that matters, because `Shader.Find` answers a placeholder as readily as it answers a reconstruction. A cleanup
+  deleted the 45 placeholders that no scene, prefab or material referenced by GUID, on the argument that
+  `VamShaderProvider.FindByName` answers those names from the shipped originals in the `z_sha` bundle. That argument
+  holds only for a name reached *through the provider*; two of the three ways a name can be held are by name, and
+  the audit counted only the asset way. Reading two: `Fallback "name"`, which Unity resolves by name and not by
+  GUID - 16 declarations in the generator's own twinned shaders (`Custom_Subsurface_Cull`, `…Cutout`,
+  `…CutoutNoCull`, `…CutoutSeparateAlpha`, `…CutoutSeparateAlphaNoCull`, `…EmissiveGlow`, `…NoCull`,
+  `…CullComputeBuff`, `…CutoutComputeBuff`, `…CutoutNoCullComputeBuff`, `…CutoutSeparateAlphaComputeBuff`,
+  `…CutoutSeparateAlphaNoCullComputeBuff` and `…NoCullComputeBuff`) naming 6 `Marmoset/Specular IBL*` names.
+  Reading three: a string literal in `src\Assembly-CSharp`, which is a `Shader.Find` caller that never touches the
+  provider - 24 names, the 14 `Hidden/Post FX/*` (`UnityEngine\PostProcessing\*`), `Hidden/NGSS_Directional`
+  (`NGSS_Directional.cs:95`), `Custom/Discard` (`MaterialOptions.cs`) and eight `Oculus/*` (`OVRCameraComposition`,
+  `OVRSandwichComposition`, `OVRScreenFade`, `OVROverlay`, `OVRExternalComposition`). **All 30 of those names were
+  in the deleted 45**, and both gates were green without them - the compile gate has no opinion on a missing shader
+  and the Play gate's per-shader report draws nothing through the components that build those materials, so the
+  whole effect is a `Shader.Find` returning null at the moment a material is assembled. The 45 files were restored
+  from `work\ripped-core\ExportedProject\Assets` with their original `.meta` GUIDs, `tools\remove_shader_stubs.py`
+  is deleted so nothing can repeat the removal, and `tools\audit_shader_stubs.py` reports the three readings per
+  name - now **25 by an asset, 30 by name only, 16 by nothing** - and runs as step 5b of
+  `scripts\Setup-RebuildProject.ps1`, printing the census on every rebuild the way the GUID check does. The 16
+  reached by nothing (the `Custom/SteamVR_*` helpers, `Custom/Subsurface/EmissiveGlow`, four
+  `Marmoset/Transparent/*IBLComputeBuff`, `Obi/Simple Particles`, `Oculus/Underlay *`, `UI/Default-Overlay`,
+  `Particles/Alpha Blended Premultiply Lit` and `Standard (Backfaces)`) stay too: removing them buys nothing, and a
+  package loaded at runtime can still name one. The reasoning is in
+  [`docs/rebuild-project.md`](docs/rebuild-project.md) (*What is left of them*) and the measurement in
+  `artifacts\shader-stub-audit.txt`.
+
 ## 0.1.10-alpha
 
 - **The engine moved to Unity 2020.3 LTS (2020.3.49f1).** Hop three of the engine migration, made the same
