@@ -49,9 +49,16 @@ throws - so the read raised `InvalidOperationException` on every declaration, a 
 swallowed it, and the repair returned having changed nothing while the plugin failed with an empty error list.
 `ReadMethodToken` now prefers the property and falls back to `GetToken().Token`, the builder's metadata index,
 and the case is measured as a pair against the run before it: `get_MetadataToken` frames 2 → 0,
-`[CS]: System.InvalidOperationException` 2 → 0, the repair's marker once reading 32. What it does **not** fix
-is stated with it - a second unguarded call at `McsDriver.cs:483` still aborts the repair for one plugin, and
-no gate can repeat the measurement, because the gate disables plugins on purpose.
+`[CS]: System.InvalidOperationException` 2 → 0, the repair's marker once reading 32. The second unguarded read
+in the same repair was resolved with it, and by the same kind of measurement: the instantiation it enumerates is
+a `TypeBuilderInstantiation`, whose `GetMethods` throws by construction and which no `MakeGenericType` call can
+be routed around, so the override declaration is now resolved from the created methods by token instead - with
+a rethrow when the index has nothing, because the catch-and-continue alternative would leave the builder in the
+overrides array and hand `Save()` the writer state that killed the editor at hop 3. On the same pair the
+defect's blocks go 1 → 0 and the repair's marker from once to twice (32 and 75 declarations), which is one
+plugin finishing where it used to abort. No gate can repeat the measurement, because the gate disables plugins
+on purpose; the pair is the check, and section 11 of [`docs/verification.md`](docs/verification.md) is the
+record.
 
 ## 0.1.10-alpha
 

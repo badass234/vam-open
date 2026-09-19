@@ -424,6 +424,41 @@ standing in front of that fault, and hop four's hand run is the answer to how fa
 compiles, its `Breathing` MonoBehaviour is instantiated and torn down cleanly, and neither fault appears
 (`artifacts\manual-play.log` against the control `artifacts\manual-play-cs584-before.log`).
 
+#### The override repair, and the two reads inside it
+
+The compiler's other patched surface is not in `src\mcs` at all but in the game's own `DynamicCSharp` layer.
+Hop three's first plugin compile under 2020.3 **killed the whole editor** - `requested token for MethodBuilder`
+out of Mono's `mono_image_create_token`, reached from `ModuleBuilder.Save()` (`McsDriver.cs:221`) - and the
+cause was exactly one plugin: `everlaster.TittyMagic`, whose iterator type contributes `MethodImpl` entries
+naming a method of a generic type that is still being built. `RepairMethodOverrideDeclarations`
+(`McsDriver.cs:292`), called from `Compile` (`:220`) on the writing path only (`if (!generateInMemory)`,
+`:218-221`), now resolves every override declaration to a real created method through the token index mcs fills
+as it emits (`CollectCreatedMethods`), so `Save()` is never handed a builder at all. The shape is repaired, not
+the plugin's name.
+
+Two reads on that path were themselves unguarded, and each cost a plugin its load before being caught.
+
+| read | why it throws | what the repair does now |
+|---|---|---|
+| `MemberInfo.MetadataToken` | `MethodBuilder` never overrides the property, and the base implementation only throws `InvalidOperationException` | `ReadMethodToken` (declared `:429`) prefers the property (`:433`) and falls back to `GetToken().Token` (`:437`), the index the created method reports |
+| `inflated.GetMethods(...)` (`:489`) | the instantiation is a `TypeBuilderInstantiation`, which implements that query as an unconditional `throw new NotSupportedException()`, and `ResolveBuilderType` cannot get around it because `AssemblyBuilder.MakeGenericType` answers with another one | the declaration is resolved from `base_method` through the same token index (`ResolveCreatedMethod`, `:552`), with `throw;` (`:501`) when the index has nothing - today's outcome, and `Save()` stays unreached - and a throw rather than returning a builder no created type accounts for (`:536`) |
+
+**Catching and continuing at either site is the wrong fix**, and that is why both end in a throw rather than a
+`null`. A `null` routes the entry to the `unresolved` list (`:316`, filled at `:369-373` and again at
+`:390-394`, warned about at `:407-409`), leaves the builder in the overrides
+array on its way there, and lets `Save()` reach the very writer state that killed the editor at hop 3. The
+throw is protective.
+
+Both were accepted by hand runs on a boot scene **with plugins enabled**, which is the only kind of run that
+can see them: `RebuildGate.cs:658` calls `LoadPlayScene(sceneName, pluginsEnabled: false)` on purpose, because
+every package's `.prefs` in this install carries `pluginsAlwaysEnabled:false`, so no gate log names a plugin at
+all. `docs\verification.md` sections 9 to 11 are the record, and section 10's script
+(`scripts\Test-PluginCompilerRepair.ps1`) is the census that replaced the hand greps. What is **not** settled
+either way is whether a builder declaration answered with the created method of its generic *definition* is the
+semantically right row - it is writable, and the loader refuses it (`TypeLoadException`, `Method overrides a
+class or interface that is not extended or implemented by this type`), on `everlaster.TittyMagic.70` first and
+on `AcidBubbles.Timeline.283` after the second read was fixed. That is one open defect in the plugins' own
+shape, not two.
 
 `Assets\Editor\RebuildGate.cs` is the batch entry point that proves all of this end to end; see
 `verification.md` for what each method checks and `scripts\Invoke-CompileGate.ps1` /

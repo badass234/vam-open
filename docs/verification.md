@@ -368,6 +368,10 @@ line number because the helper shifted every line below `:380`:
 | `[CS]: System.NotSupportedException` | 0 | 2 |
 | plugins that failed to compile | `everlaster.TittyMagic.70`, `AcidBubbles.Timeline.283` | the same two |
 
+Every row of that table is the **token fix's own** pair, and the last two rows are read there for the first
+time: the `NotSupportedException` is the second call this section reaches on the way, and section 11 is where it
+was resolved and where the pair is read again, one step further on.
+
 The marker reports itself from `McsDriver.cs:405`, which is the `UnityEngine.Debug.Log` call at the end of
 `RepairMethodOverrideDeclarations` (`:292`) - reached from `Compile :220` and `CompileFromSettings :128` in the
 same stack - and not a further token read. The token reads in that file are `:265`, `:474` and `:494`, all on
@@ -379,8 +383,8 @@ The exception moves rather than disappears, and that is the fix working. The con
 :220` <- `CompileFromSettings :128` - the repair giving up on its first declaration. The post-fix stack is
 `TypeBuilderInstantiation.GetMethods` <- `ResolveOnTypeBuilderInst [0x00086] :483` <-
 `RepairMethodOverrideDeclarations [0x001d5] :361` - the repair now reaching its own resolution step on the
-same plugin and meeting a limit of `System.Reflection.Emit` there. **Nothing was added to catch that, and it
-needs nothing added:** it escapes `McsDriver.Compile`, and `CompileFromSettings`'s `catch (Exception)`
+same plugin and meeting a limit of `System.Reflection.Emit` there. **Nothing was added to catch that, and at
+that point it needed nothing added:** it escapes `McsDriver.Compile`, and `CompileFromSettings`'s `catch (Exception)`
 (`McsCompiler.cs:130`) turns it into a `CompilerError` through `ErrorText = ex.ToString()`, which is exactly
 what the `[CS]:` line and the frames under it are - so `Save()` is never reached **for that plugin** and the
 editor survives. The control shows the same containment, so containment is not the difference; the repair
@@ -396,9 +400,10 @@ it is one line of the log, wrapped nowhere here - with only the manager's own `E
 System.TypeLoadException: Could not set up parent class, due to: Generic Type Definition failed to init, due to: Parent class vtable failed to initialize, due to: Method overrides a class or interface that is not extended or implemented by this type assembly:data-00000271549756A0 type:ColliderModel member:(null) assembly:data-00000271549756A0 type:ColliderModel`1 member:(null) assembly:data-00000271549756A0 type:ColliderModel`1 member:(null)
 ```
 
-`AcidBubbles.Timeline.283` still fails through the residual `NotSupportedException` above. Both are recorded
-as they are: the same two plugins failed before the fix, one of them now fails later and for a reason of its
-own, and that reason is a different class of defect.
+`AcidBubbles.Timeline.283` still failed at this point, through the residual `NotSupportedException` above -
+that second call was resolved afterwards, and section 11 is its record; the reading above is left as it
+stood. Both are recorded as they are: the same two plugins failed before the fix, one of them now fails later
+and for a reason of its own, and that reason is a different class of defect.
 
 When counting failures in these logs, mind three traps. `Select-String` is **case-insensitive by default**, so
 a search for `Compile of ` also matches `Exception during compile of ...` and reports four hits where two
@@ -471,11 +476,102 @@ the header, `:802` skips every entry beginning `[CS]`, `:804` logs the survivors
 instead of reporting "no errors". And defect B - `TypeBuilderInstantiation.GetMethods` →
 `NotSupportedException` from `ResolveOnTypeBuilderInst :483` - is printed as its **own named block** and is
 never folded into the token verdict: in the candidate it is one block at `:1049` (raw 2 / 2 / 2 for
-`NotSupportedException`, `TypeBuilderInstantiation`, `ResolveOnTypeBuilderInst`), and it is a separate, still
-open defect whose acceptance will need the same pair again.
+`NotSupportedException`, `TypeBuilderInstantiation`, `ResolveOnTypeBuilderInst`). At that point it was a
+separate, still open defect; it has since been resolved, and section 11 is its record - the numbers above are
+the pre-fix side of section 11's pair, and sections 10 and 11 read the same script.
 
 The long form of the script's own validation, its trap list and its measured runs is
 `artifacts\plugin-compiler\acceptance\README.md`, written by the workstream that built it.
+
+### 11. The repair's second call, resolved - the same script, read as a pair
+
+Check 10's candidate carried one defect away with it, and check 9's record named it: the repair
+`RepairMethodOverrideDeclarations` resolves a `MethodOnTypeBuilderInst` by enumerating
+`inflated.GetMethods(...)` (`McsDriver.cs:489`), and for the shape mcs produces when the interface itself is
+still a builder that enumeration cannot be reached at all. Read out of the corelib the editor actually loads:
+`TypeBuilderInstantiation.GetMethods(BindingFlags)` is `throw new NotSupportedException()` with no condition.
+The resolution that looked like a way around it is closed too - `ResolveBuilderType`'s
+`TypeBuilderInstantiation` branch ends in `definition.MakeGenericType(args)` (`:637`), which for a builder
+`definition` is `AssemblyBuilder.MakeGenericType`, whose whole body, read out of the emit implementation rather
+than inferred, is `return new TypeBuilderInstantiation(gtd, typeArguments);` - so "resolve `inflated` through `ResolveBuilderType`
+first" is **refuted by the source** rather than by experiment: it can only answer with another type that
+refuses every method query.
+
+The other shape mcs produces (`MethodOnTypeBuilderInst` out of `MethodBuilder.MakeGenericMethod`) does
+enumerate, because its instantiation is an ordinary `TypeBuilder` - but `TypeBuilder.GetMethods(DeclaredOnly)`
+answers with the builder's own method array, i.e. with `MethodBuilder`s, and that is the same unwritable member
+the hop-3 abort was about: `Save()` asks it for a token and `mono_image_create_token` kills the process. One
+shape threw and the other returned a builder, so the resolver had **no** path to a member the writer could name.
+
+**The resolution is a token lookup into the index the repair already builds, and never a catch.** `createdMethods`
+(`:303`, filled by `CollectCreatedMethods :261`) is what already resolves the non-generic `MethodBuilder`
+declarations, and it is the writer-usable route: the member it answers with is a method of this module, and the
+token the writer reads off it is the one the method reports (`ReadMethodToken`, check 9). `ResolveOnTypeBuilderInst`
+(`:454`) now takes that dictionary, wraps the enumeration and, on `NotSupportedException` (`:491`), resolves
+`base_method` through a new `ResolveCreatedMethod` (`:552`); a `bySignature` candidate is put through the same
+helper before it leaves the method (`:531`). Two guard rails keep the outcomes honest: with nothing in the index
+for `base_method` the exception is **rethrown** (`:501`), which is today's outcome and leaves `Save()` unreached,
+and a builder candidate no created type accounts for now **throws** (`:536`) rather than being returned. Catching
+and returning `null` was rejected rather than merely not chosen: it routes the entry to the `unresolved` list
+(`:316`, filled at `:369-373` and again at `:390-394`, warned about at `:407-409`), leaves the `MethodOnTypeBuilderInst` in the overrides array, and lets `Save()` reach the writer
+state that aborted the editor at hop 3 - so the throw is protective, not merely a failure.
+
+*Acceptance, as a pair* - the fixed run `artifacts\defect-b\ladyclown-tokenindex.log` against check 10's
+candidate `artifacts\compiler-fix-ladyclown.log`, one hand-run plugin-enabled editor session each on
+`SoftEros777.Lady_Clown.1:/Saves/scene/ladyclown.json`, read per block by the check-10 script:
+
+| reading | before | after |
+|---|---|---|
+| defect-B blocks (`[6]`: `NotSupportedException`, `TypeBuilderInstantiation`, `ResolveOnTypeBuilderInst`) | 1 block at `:1049`, raw 2/2/2 | **0** |
+| `Compile of … failed. Errors:` headers (`[4]`) | 1 - `AcidBubbles.Timeline.283`, `:1075` | **0** |
+| the repair's marker (`[3]`) | 1 block, `:894`, `resolved 32` | **2 blocks** - `:825` `resolved 32`, `:980` `resolved 75` |
+| quiet `Exception during compile of …` (`[7]`) | 1 - `everlaster.TittyMagic.70`, `:921` | 2 - `…70` at `:852`, `AcidBubbles.Timeline.283` at `:1007` |
+| token blocks (`[1]`), `get_MetadataToken` frames (`[2]`) | 0, 0 | 0, 0 |
+| `System.NotSupportedException`, `requested token for MethodBuilder`, `mono_image_create_token` | 2, 0, 0 | 0, 0, 0 |
+| `could not be resolved` (the `unresolved` warning) | 0 | 0 |
+
+The first two rows together with the marker are the reading that matters: the pass that used to abort inside the
+repair now completes, and it completes **twice** (32 and 75 declarations), because a repair that finishes on one
+plugin lets the manager go on to the next. The fourth row is the honest boundary - `Timeline` ends in the *same*
+shape the control already showed for `TittyMagic`: it compiles and mono refuses its generic vtable at load,
+
+```
+System.TypeLoadException: Could not set up parent class, due to: Generic Type Definition failed to init, due to: …
+```
+
+so what the fix does is **move that plugin's failure from the repair to the loader**, which is where the other
+one already was. The two plugins are the same two before and after; the difference is that both now fail outside
+the code this project wrote, and `ColliderModel\`1` is present in the control as well, so it is pre-existing
+rather than introduced.
+
+*Run it as check 10 does, but read the `[6]` line rather than the verdict.* The pair whose control exhibits
+defect B cannot produce a `PASS`, because the script's verdict is about the token family and that control has no
+token defect in it:
+
+```powershell
+# note the roles: the post-token-fix run is the control here, the defect-B run is the candidate
+scripts\Test-PluginCompilerRepair.ps1 -Control artifacts\compiler-fix-ladyclown.log `
+                                      -Candidate artifacts\defect-b\ladyclown-tokenindex.log
+# -> RESULT FAIL - INCONCLUSIVE CONTROL, exit 1, printing: defect B control 1 block(s), candidate 0 block(s)
+```
+
+`INCONCLUSIVE CONTROL` is the script refusing to claim more than its control supports, and the `defect B` line
+under it is the measurement itself - the same arrangement check 10 describes, where that family is printed
+separately and never folded into the token verdict. Judged on its own instead
+(`-Log artifacts\defect-b\ladyclown-tokenindex.log`) the fixed run is a **`PASS`**, exit **0**.
+
+*What the fix leaves unsettled, stated with it.* The repair now hands `Save()` a writable member, not necessarily
+the *right* one: answering with the created method of the generic **definition** is what the code's own comment
+(`:482-484`) intends, and it is the loader that rejects that row. Whether a `MethodImpl` row could instead name
+the closed instantiation's own method is **not** settled here - it is the same question the `TypeLoadException`
+poses for `TittyMagic`, so it is one open defect and not two. The three `return null` paths the method already
+had (`:461` for a reflection field that is not there, `:467` for an instantiation or base method that will not
+resolve, `:472` for an instantiation `ResolveBuilderType` refuses, plus a `bySignature` left null at `:485`) were
+deliberately left alone - all four still route the entry to the `unresolved` list and let the compile fail there
+rather than write a row the writer cannot name. The new
+`NotSupportedException` guard rail at `:536` was **not exercised** by either run - `System.NotSupportedException`
+is 0 in the post-fix log - so it is written and unproven by observation. And one scene with one plugin set was
+run, which is the standing policy rather than a limit of this check.
 
 ## When a gate lies
 

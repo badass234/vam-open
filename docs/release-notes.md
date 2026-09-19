@@ -156,15 +156,45 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   failure in the logs that carry it - 2 of 2 in `artifacts\manual-play.log`, 5 of 5 in the big run; the sixth
   there, `Blazedust/VAMLaunch`, is a post-compile security rejection rather than a compile failure - and
   post-fix it explains none. **The exception moves rather than disappears, and that is the fix working:**
-  `AcidBubbles.Timeline.283` now dies one step further on, in `TypeBuilderInstantiation.GetMethods` →
-  `NotSupportedException` from `McsDriver.cs:483`, which is a **second, separate** unguarded call in the same
-  repair and is left open rather than caught, for the reason above. `everlaster.TittyMagic.70` no longer dies in
+  `AcidBubbles.Timeline.283` then died one step further on, in `TypeBuilderInstantiation.GetMethods` →
+  `NotSupportedException` from `McsDriver.cs:483` - a **second, separate** unguarded call in the same repair,
+  resolved afterwards in this same release and recorded in its own bullet below. `everlaster.TittyMagic.70` no longer dies in
   the repair at all - it compiles and then fails to *load*, with `TypeLoadException` on its own
   `ColliderModel\`1` vtable while the scene restores its plugin URL, outside the repair entirely. **No gate can
   repeat this measurement**, and that is a limit of the harness rather than of the fix:
   `src\Assembly-CSharp\RebuildGate.cs:658` calls `LoadPlayScene(sceneName, pluginsEnabled: false)` on purpose,
   because every package's `.prefs` in this install carries `pluginsAlwaysEnabled:false`, so the gate logs name
   no plugin path at all and have no plugin failures to count.
+
+- **The repair's second call, resolved in the same release.** The other unguarded read in
+  `RepairMethodOverrideDeclarations` is `inflated.GetMethods(...)` (`McsDriver.cs:489`).
+  `TypeBuilderInstantiation` implements that query as an unconditional `throw new NotSupportedException()`, and
+  the way round it that looks obvious - resolving the instantiation through `ResolveBuilderType` first - cannot
+  work, because `AssemblyBuilder.MakeGenericType` answers with another `TypeBuilderInstantiation` whose body is
+  a single `return new TypeBuilderInstantiation(gtd, typeArguments);`. The other shape mcs produces when the
+  interface is a builder rather than the instantiation *does* enumerate, and it answers with `MethodBuilder`s -
+  the same unwritable member hop 3 aborted over - so the repair had no path to a writer-usable method before
+  this fix at all. On `NotSupportedException` the declaration is now resolved from `base_method` through the
+  index the created methods are already in (`ResolveCreatedMethod`, `:552`, built on the `ReadMethodToken`
+  lookup above); an index hit returns the created method, an index **miss rethrows** (`:501`), which is today's
+  outcome and leaves `Save()` unreached, and the by-signature candidate goes through the same lookup before the
+  method returns (`:531`) with a throw rather than a builder no created type accounts for (`:536`). **The
+  catch-and-return-`null` alternative is the wrong fix and that is the point:** it routes the entry to the
+  `unresolved` list (`:316`, filled at `:369-373` and again at `:390-394`, warned about at `:407-409`), leaves the `MethodOnTypeBuilderInst` in the overrides array, and lets
+  `Save()` reach exactly the writer state that killed the editor at hop 3 - so today's throw is *protective*.
+  Measured on the pair above (control `artifacts\compiler-fix-ladyclown.log` against candidate
+  `artifacts\defect-b\ladyclown-tokenindex.log`): the defect's blocks **1 → 0**, the
+  `Compile of AcidBubbles.Timeline.283:... failed. Errors:` header **1 → 0**, and the repair's marker from
+  **once, reading 32**, to **twice, reading 32 and 75** - a repair that finishes on one plugin lets the plugin
+  manager go on to the next. What that plugin meets instead is the shape `everlaster.TittyMagic.70` already
+  showed, a defect of its own rather than of ours: it compiles, and the loader refuses its generic vtable
+  (`TypeLoadException`, its own `ColliderModel\`1`, `Method overrides a class or interface that is not
+  extended or implemented by this type`). One honest limit is recorded with it - answering a builder
+  declaration with the created method of the generic **definition** is what the code's own comment
+  (`:482-484`) intends, and it is the loader that rejects that row, so whether a `MethodImpl` row could name
+  the closed instantiation's own method is not settled by this fix. The check is section 11 of
+  [`docs/verification.md`](docs/verification.md), which reads the same script as section 10 and reports the
+  defect's block as a pair.
 
 ## 0.1.10-alpha
 

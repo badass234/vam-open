@@ -358,7 +358,7 @@ namespace DynamicCSharp.Compiler
 							MethodInfo instance = overrides[i];
 							if (instance != null && instance.GetType().Name == "MethodOnTypeBuilderInst")
 							{
-								MethodInfo resolvedInstance = ResolveOnTypeBuilderInst(instance);
+								MethodInfo resolvedInstance = ResolveOnTypeBuilderInst(instance, createdMethods);
 								if (resolvedInstance != null)
 								{
 									overrides[i] = resolvedInstance;
@@ -443,12 +443,15 @@ namespace DynamicCSharp.Compiler
 		/// only an instantiation of a generic type built from the declaring builder's own parameters.
 		/// </summary>
 		/// <remarks>
-		/// mcs hands such an interface method over as a MethodOnTypeBuilderInst - an instantiation of a
-		/// generic interface whose arguments are the generic parameters of a type being built. Once every
-		/// type is closed those parameters stand for real ones, so the instantiation is rebuilt on the
-		/// created types and the interface method is read back from it.
+		/// mcs hands such an interface method over as a MethodOnTypeBuilderInst, and the instantiation it
+		/// carries is read back on the created types where that is possible. It is not possible while the
+		/// interface itself is still a builder: rebuilding the instantiation answers with another
+		/// TypeBuilderInstantiation, and that type answers every method query with NotSupportedException.
+		/// The declaration is then taken from the created methods by token instead - which is also what a
+		/// candidate read off a builder needs, because TypeBuilder.GetMethods answers with the builders it
+		/// holds and the writer cannot name a builder.
 		/// </remarks>
-		private static MethodInfo ResolveOnTypeBuilderInst(MethodInfo instance)
+		private static MethodInfo ResolveOnTypeBuilderInst(MethodInfo instance, Dictionary<int, MethodInfo> createdMethods)
 		{
 			Type instanceType = instance.GetType();
 			FieldInfo instantiationField = FindField(instanceType, "instantiation");
@@ -480,7 +483,26 @@ namespace DynamicCSharp.Compiler
 			// method specification, and the parameters the interface is instantiated with are already
 			// part of the interface type the row refers to.
 			MethodInfo bySignature = null;
-			foreach (MethodInfo candidate in inflated.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+			MethodInfo[] inflatedMethods;
+			try
+			{
+				inflatedMethods = inflated.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+			}
+			catch (NotSupportedException)
+			{
+				// An instantiation of a generic type that is still a builder: it has no methods to list,
+				// and no argument list changes that. The method the definition was declared with is in
+				// the index under the token this declaration reports, so it is read from there.
+				MethodInfo defined = ResolveCreatedMethod(baseMethod, createdMethods);
+				if (defined == null)
+				{
+					// Nothing the writer can name: let the compile fail here instead of leaving a
+					// declaration in the overrides for Save() to abort the process over.
+					throw;
+				}
+				return defined;
+			}
+			foreach (MethodInfo candidate in inflatedMethods)
 			{
 				if (candidate.Name != baseMethod.Name)
 				{
@@ -506,7 +528,44 @@ namespace DynamicCSharp.Compiler
 					bySignature = candidate;
 				}
 			}
-			return bySignature;
+			MethodInfo created = ResolveCreatedMethod(bySignature, createdMethods);
+			if (created == null && bySignature != null)
+			{
+				// A candidate read off a builder that no created type registered: the writer has no
+				// token for it and Save() would abort the process over it.
+				throw new NotSupportedException(string.Format("the method override declaration {0}::{1} is a method builder no created method accounts for", bySignature.DeclaringType, bySignature.Name));
+			}
+			return created;
+		}
+
+		/// <summary>
+		/// Answers with the runtime method a declaration stands for, or with the declaration itself when
+		/// it is already one, and with null when the declaration is a builder the created types do not
+		/// know.
+		/// </summary>
+		/// <remarks>
+		/// A declaration that is not a builder already carries the token the writer asks it for - a
+		/// method definition when it is in this module, a member reference when it is not - so it is
+		/// answered as it stands. A declaration that is still a builder is named by the token it will
+		/// carry, which ReadMethodToken answers with and which the created method is indexed under.
+		/// </remarks>
+		private static MethodInfo ResolveCreatedMethod(MethodInfo declaration, Dictionary<int, MethodInfo> createdMethods)
+		{
+			if (declaration == null)
+			{
+				return null;
+			}
+			MethodBuilder methodBuilder = declaration as MethodBuilder;
+			if (methodBuilder == null)
+			{
+				return declaration;
+			}
+			MethodInfo created;
+			if (!createdMethods.TryGetValue(ReadMethodToken(methodBuilder), out created) || created == null || created.Name != declaration.Name)
+			{
+				return null;
+			}
+			return created;
 		}
 
 		/// <summary>
