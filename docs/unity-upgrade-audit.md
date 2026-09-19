@@ -416,9 +416,205 @@ a type token in a serializer, or a comment.
   mono has at `mcs/mcs/generic.cs:1534`; see *The plugin compiler* in `rebuild-project.md` for the chain and
   `verification.md` section 9 for the A/B. The lesson this hop leaves behind: a guide can only name an API *this
   project* calls, and this defect lived in the compiler the project ships to other people's plugins, so only
-  running a plugin could show it.
+  running a plugin could show it. The 2021.3 hand run confirms the fix on both counts: `[CS584]` falls from **10**
+  to **0** and `Compile of MacGruber.Life.12:…failed.` from **5** to **0** (`manual-play-cs584-before.log:899,993,`
+  `1231,1325,…` against `manual-play-prefix-leak.log`, which holds **0** of each), and the plugin now does its work -
+  the run loads and unloads the `MacGruber.Life.12:` and `.13:` bundles with their `Breathing_*` morphs
+  (`manual-play-prefix-leak.log:962-1976`). What the run also shows is that the failure mode moved rather than
+  vanished: **6** `Compile of … failed.` remain in `manual-play-prefix-leak.log`, none of them MacGruber -
+  `AcidBubbles.Timeline.287` twice (`:1368`, `:1496`),
+  `AcidBubbles.Embody.61` (`:1414`), `Blazedust.ToySerialController+VAMLaunch.12` (`:1435`, which is the plugin
+  sandbox refusing `System.Net` rather than a compiler fault), `everlaster.TittyMagic.70` (`:2755`) and
+  `AcidBubbles.Timeline.283` (`:2901`) - and the `[CS]` line under them changed from
+  `Mono.CSharp.InternalErrorException … FatalException: Internal compiler error: The method or operation is not
+  implemented.` (baseline `:920`) to `System.InvalidOperationException: Operation is not valid due to the current
+  state of the object.` (`manual-play-prefix-leak.log:1343,1389,1471,2730,2876`). Four of those six lines have an exact
+  counterpart in the 2020.3 gate, which fails the same `Timeline.287` twice, `Embody.61` and
+  `Blazedust…VAMLaunch.12` (`artifacts\logs\hop3-play-gate-120s.log:1534,1705,1862,2009`), so four of the six are
+  not new to this hop; `everlaster.TittyMagic.70` is the one compile failure no earlier log names. The post-fix runs
+  read the same two counts from the other end: `[CS584]` and `Compile of MacGruber.Life.12:…failed.` are both **0** in
+  the two post-fix runs that reached plugin compilation (`manual-play-postfix-run1.log`, `manual-play.log`) and
+  `error CS` is **0** in every one of the seven, so none of the seven read a pre-fix assembly - the five that stalled
+  in the boot load are silent on the plugin because they never got to it, not because they passed it. What the two
+  complete runs show instead is that they are not comparable line for line: the list of six belongs to the longer
+  pre-fix log, the 14:09 run reports two of them, `everlaster.TittyMagic.70` (`manual-play-postfix-run1.log:955`) and
+  `AcidBubbles.Timeline.283` (`:1101`), each preceded by the same `System.InvalidOperationException` (`:930`, `:1076`),
+  and the 14:49 run reports none at all (`Compile of` **0**), so which plugins the sandbox compiles varies between runs
+  while the compiler does not. Both runs are also runs in which `MacGruber.Life.12` compiles: the 14:09 run releases
+  its Breathing bundle as unused with a live `MacGruber.Breathing` component destroyed (`:1987`, `:1993`) and the 14:49
+  run does the same (`manual-play.log:934`, `:940`) - the compile the baseline never got, against five
+  `Compile of MacGruber.Life.12:…failed.` in the baseline itself (`manual-play-cs584-before.log:972,1304,1688,2071,
+  2454`).
+
+**The hop's second finding from the hand run is a native-container warning, and its stack names a line this project
+owns.** The warning is new with this editor: `A Native Collection has not been disposed, resulting in a memory leak.
+Enable Full StackTraces to get more details.` occurs **3** times under `C:\Games\VaM_Updater`, all three in hop-4
+editor runs (`manual-play-prefix-leak.log:861`, `manual-play-pre-leaktraces.log:1571`, `smoke-play.log:831`), and
+**0** times in every 2018.4, 2019.4 and 2020.3 log and in the player builds. The sentence itself asks for the mode
+that replaces it:
+`Unity.Collections.NativeLeakDetection.Mode = Unity.Collections.NativeLeakDetectionMode.EnabledWithStackTrace`, a
+static property of `UnityEngine.CoreModule` (the enum member exists from 2019.4 on, and 2018.x has neither name), so
+it is not a project setting and has to be raised from the editor side.
+`VaM_Rebuild\Assets\Editor\NativeLeakDetection.cs`
+does that from an `[InitializeOnLoad]` constructor, **only** when `VAMOPEN_LEAK_TRACES` is `1`, and re-applies it on
+`playModeStateChanged` for `ExitingEditMode` and `EnteredPlayMode` - a play-mode transition reloads the domain and
+would otherwise drop the mode. Both the type and the enum member are reached by reflection, so an editor that has
+neither logs a warning instead of failing the gate's compile. The switch that sets the variable for a run is
+`scripts\Invoke-ManualPlay.ps1 -LeakTraces` (`:102-105`, set before `Start-Process` so the editor child inherits it;
+a run without the switch is unchanged). When the hook does change the mode it says so once, with the
+`[InitializeOnLoad]` stack under it - `----- NativeLeakDetection: VAMOPEN_LEAK_TRACES=1, Mode = EnabledWithStackTrace
+on 2021.3.45f2 -----` (`manual-play-postfix-run2-banner-stall.log:217-227`, and the same line at
+`manual-play-prefix-leak.log:222`) - and it stays silent when the mode is already the one asked for, because the
+editor persists it as an EditorPref, `Unity.Colletions.NativeLeakDetection.Mode_h1068644476` = `0x3` for
+`EnabledWithStackTrace` (Unity's own spelling of `Collections`). That persisted mode is what any run inherits after an
+earlier traced run, so a traced run's banner is evidence the hook acted, not a condition of it.
+
+In that mode the sentence ends `… resulting in a memory leak. Allocated from:` and the allocation stack follows it,
+with the warning still firing exactly **1** time per run. `manual-play-prefix-leak.log:861-877`, bottom frame first:
+`UserPreferences:Start()` (`UserPreferences.cs:5069`), `UserPreferences:InitUI()` (`:4923`),
+`UserPreferences:SyncEnableHub()` (`:4213`), `MVR.Hub.HubBrowse:set_HubEnabled(Boolean)` (`HubBrowse.cs:259`),
+`JSONStorableBool:set_val(Boolean)` (`JSONStorableBool.cs:54`), `JSONStorableBool:InternalSetVal(Boolean, Boolean)`
+(`:347`), `MVR.Hub.HubBrowse:SyncHubEnabled(Boolean)` (`HubBrowse.cs:522`), `MVR.Hub.HubBrowse:GetHubInfo()`
+(`:1787`), `MonoBehaviour:StartCoroutine`/`StartCoroutineManaged2`, `SetupCoroutine:InvokeMoveNext`,
+`MVR.Hub.<PostRequest>d__146:MoveNext()` (`HubBrowse.cs:489`),
+`UnityEngine.Networking.UnityWebRequest:Post(String, String)`, `:SetupPost(UnityWebRequest, String)`,
+`UnityEngine.Networking.UploadHandlerRaw:.ctor(Byte[])` and, last,
+``Unity.Collections.NativeArray`1:.ctor(Byte[], Allocator)``.
+
+The verdict is that this one is ours, and the stack says both where and why. `HubBrowse.cs:489` opens
+`using (UnityWebRequest webRequest = UnityWebRequest.Post(uri, postData))`, and `Post` allocates an upload handler of
+its own inside `SetupPost` - the bottom frame is that allocation, made by the engine on the caller's behalf - which
+the next statement then replaces with a second `UploadHandlerRaw`
+(`webRequest.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(postData))`, `:491` in the assembly the log
+was written from, `:494` in the tree now). The handler the `using` reaches at the end of the enumerator is the second
+one, so the first handler's byte buffer is never released: one container stranded per POST, not a container that
+accumulates. The same three lines sit at `src\Assembly-CSharp\MVR\Hub\HubDownloader.cs:122-124`, and those two files
+hold the only `uploadHandler =` assignments in `src\`. The other numbers the warning is weighed against agree with
+one-per-run rather than a growing leak: memory is flat across **5** scene reloads (2.80 → 2.79 GB, **254 277** →
+**253 119** objects) and no earlier hop prints the warning at all. The release for the replaced handler is in the
+working tree at both sites - `webRequest.uploadHandler?.Dispose();` at `HubBrowse.cs:493` and
+`HubDownloader.cs:124`, landed after `HubBrowse.cs:490` and `HubDownloader.cs:121` by the diff's own numbering
+(`git diff --numstat` reads `3 0` for each file, `git ls-files --eol` reads `w/lf` for both). It is uncommitted work
+in progress, the two files dated 13:52:25 and the `Assembly-CSharp.dll` built from them 13:53:25, so the seven runs
+below - all of them past 14:06 - are runs of the released code, which is a claim about the compiled method as much as
+about the dates.
+
+**The tree the editor compiles is not `src\`, so the copy that feeds it is part of the reading.** `src\` is where the
+sources are edited; the tree Unity compiles is the ignored mirror `VaM_Rebuild\Assets\Scripts\Assembly-CSharp\`, which
+is why the old stack's innermost frame names `Assets\Scripts\Assembly-CSharp\MVR\Hub\HubBrowse.cs:489` and not a `src\`
+path. Nothing links the two and no gate copies between them: `Invoke-ManualPlay.ps1`, `Invoke-SmokeTest.ps1` and
+`Invoke-CompileGate.ps1` never call `scripts\Sync-Sources.ps1`, and the step is written down as manual at
+`docs\verification.md:26` - "**Before every run: `scripts\Sync-Sources.ps1`**". The sync made immediately before the
+last run printed `copied 0, deleted 0, already identical 13`, `verdict: OK - 2824 source(s) in the project are
+identical to src`, `newest source: MVR\Hub\HubBrowse.cs (2026-09-19 13:52:25)` and `Assembly-CSharp.dll: 2026-09-19
+13:53:25 - newer than every source`. The same check had read `Assembly-CSharp.dll: 2026-09-19 13:46:23 - STALE` before
+that, taken while the release was still waiting for the recompile that followed it; the assembly reads 13:53:25 on
+every later check, after the 13:52:25 sources and before all seven runs. That is the third thing a run of this kind
+has to show: `error CS` **0** *and* the assembly newer than the sources *and* the warning count **0**. A run whose
+assembly predates the sources says nothing about the release in either direction - it would turn a surviving warning
+into a false failure and a vanished one into a false pass alike - so the timestamp is read beside the counts rather
+than trusted on its own.
+
+The timestamp is backed by the assembly's own instructions rather than by a date. A reflection walk over
+`VaM_Rebuild\Library\ScriptAssemblies\Assembly-CSharp.dll` (the 13:53:25 file) that lists the call instructions of the
+two iterator methods the old stack names prints, in IL order for
+`MVR.Hub.HubBrowse+<PostRequest>d__146:MoveNext` - the method the stack names at `HubBrowse.cs:489` - `call
+UnityEngine.Networking.UnityWebRequest::Post`, then `callvirt
+UnityEngine.Networking.UnityWebRequest::get_uploadHandler`, then `callvirt
+UnityEngine.Networking.UploadHandler::Dispose`, and only after those `call System.Text.Encoding::get_UTF8`, `callvirt
+System.Text.Encoding::GetBytes`, `newobj UnityEngine.Networking.UploadHandlerRaw::.ctor` and `callvirt
+UnityEngine.Networking.UnityWebRequest::set_uploadHandler`; `MVR.Hub.HubDownloader+<PostRequest>d__45` prints the same
+seven calls in the same order. A `get_uploadHandler` and a `Dispose` between `Post` and the replacement *is* the
+release, and it is compiled into the assembly the editor ran, at a call the baseline assembly did not make. The dump
+is kept at `artifacts\assembly-csharp-postrequest-il.txt`.
+
+**The defect class is closed, not just this sighting.** A sweep of the whole `src\` tree for `UnityWebRequest`,
+`UploadHandler` and `DownloadHandler` finds six sites: `HubBrowse.cs:426` and `:448` (both `Get`, so no body and no
+upload handler), `HubBrowse.cs:489` and `HubDownloader.cs:120` (the two that install a body of their own, now
+releasing the handler `Post` installed), `ImageLoaderThreaded.cs:1093` (a request held in a field and disposed at
+`:540`) and `MobileImporter.cs:12` (inside a `using`). The two fixed files hold the only `uploadHandler =` assignments
+in the tree, so no other site can strand a handler's buffer.
+
+**The release is measured: one warning before it, none after, in seven runs.** Seven
+`Invoke-ManualPlay.ps1 -LeakTraces -Force` runs were made against the fixed tree - the first froze at 14:06:32
+(`manual-play-postfix-stalled.log` 66 000 B, the run the stall paragraph below covers), one started at 14:09:07 and
+completed by itself (kept as `manual-play-postfix-run1.log`, 275 377 B), two stalled in the boot load at 14:14:24 and
+14:18:40 (`manual-play-postfix-run2-banner-stall.log`, 64 351 B, and
+`manual-play-postfix-run3-leak-banner-stall.log`, 64 658 B), two more after the source sync stalled the same way
+(`manual-play-postsync-sync1-stall.log`, 64 955 B, and `manual-play-postsync-sync2-stall.log`, 65 449 B) and the last
+one started at 14:44 and completed by itself, its log now at `manual-play.log` (192 756 B, process **31732**, last
+write 14:49:22) - and `A Native Collection has not been disposed` is **0** in all seven against **1** in each of the
+three logs that predate the edit (`manual-play-prefix-leak.log:861`, `manual-play-pre-leaktraces.log:1571`,
+`smoke-play.log:831`, and nowhere else in any `*.log` or `*.txt` under `C:\Games\VaM_Updater`). The absence is read
+where the warning used to fire rather than hoped for: the startup path that strands the handler runs in every one of
+them - `UserPreferences:InitScreenResolutionUI ()`, `UserPreferences:InitUI ()`, `UserPreferences:Start ()`
+(`manual-play-postfix-run1.log:849-851`, `manual-play-postfix-run2-banner-stall.log:823-825`,
+`manual-play.log:861-863`) - and the dozen lines below that block, the ones the warning always sat in, hold nothing.
+`error CS` and `[CS584]` are **0** in each of them too, so the assembly each one loaded was built from the edited
+file, and the `PostRequest` frame the old stack named is the frame this tree now releases from. The switch's purpose
+inverts with this: with the hook on, a leak prints its stack, so the pass is the **absence** of the message, which
+makes `-LeakTraces` an assertion to add to a run after a change of this kind rather than a mode to leave on.
+
+Both complete runs also ended by themselves, and they are the case the controls cover: `Application.Shutdown.*` steps
+(`manual-play-postfix-run1.log:2274-2314`), `Found no leaked weakptrs.` (`:2316`), `Memory Statistics:` (`:2318`) and
+the editor's own `##utp:{"type":"MemoryLeaks",…}` line as the last line of the log (`:2870`). The 14:44 run closes the
+same way and is the shorter read: `Application.Shutdown.*` from `manual-play.log:1222`, `Found no leaked weakptrs.` at
+`:1264`, `Memory Statistics:` at `:1266` and its own `##utp:` line as line **1818** of 1818, naming process **31732**
+where the 14:09 run's names **33928**, so the two complete traced runs were different editor processes and agree about
+the warning. The untraced control finished too - `smoke-play.log` closes with a 36-step shutdown sequence and `Found no
+leaked weakptrs.` of its own, and it still prints the warning at `:831` - so the difference between the two readings
+is not a stopped editor against a finished one, it is the released handler. The traced control was stopped by hand, but
+it prints the warning at line **861** of a log that grew to 1.6 GB, so nothing about its truncation reaches the reading
+either.
+
+**Five of the seven post-fix runs stall at the boot scene's load, and two do not.** The five freeze at the same point
+and write nothing more for minutes - `Unloading 31048 unused Assets / (26.1 MB). Loaded Objects now: 73519.` at
+`manual-play-postfix-stalled.log:913`, `manual-play-postfix-run2-banner-stall.log:887`,
+`manual-play-postfix-run3-leak-banner-stall.log:891`, `manual-play-postsync-sync1-stall.log:888` and
+`manual-play-postsync-sync2-stall.log:903`, the five logs ending at 917, 891, 899, 904 and 911 lines respectively -
+with the editor process alive and spending about a third of a core of CPU (its CPU time climbed 3.4 s per 10 s of wall
+clock), busy and silent rather than hung. The object count is not the discriminator: the third run that completed
+printed the same `Loaded Objects now: 73519.` (`manual-play.log:894`) and went on to finish, while the 14:09 run took
+the same unload job to **90 373** objects on the same line of the log (`manual-play-postfix-run1.log:913`, which is
+also why `Loaded Objects now: 7` does not match that run at all). Either way the two outcomes part company inside the
+scene load, before the first game frame and before the line the warning would have been printed on. An untraced run
+from before the release froze the same way (`manual-play-pre-leaktraces.log:1634`, `Loaded Objects now: 73533`), so the
+freeze is neither the leak nor the release, and it is not the source sync either, since two of the five came after one.
+Stopping the editor by hand aborts the player, which is why five of the seven runs have no shutdown sequence to read
+and the readings above rest on the two that have.
+
+**What the same tree says about the play session once the boot scene is up.** The traced control is the only run that
+was left alive long enough to show it: it reaches `----- RebuildGate play: armed after reload -----`
+(`manual-play-prefix-leak.log:25022`) and `----- RebuildGate play: first frame -----` (`:25412`) and then repeats
+exceptions for as long as it is left alive: `NullReferenceException` at `MotionAnimationControl.Update()`
+(`MotionAnimationControl.cs:301`) and at `DAZMorph.SyncJSON()` (`DAZMorph.cs:880`) under
+`SetDAZMorphFromAverageBoneAngle.Update()` (`:132`), and `GlobalStopwatch has not been started yet` from
+`GlobalStopwatch.GetElapsedMilliseconds()` (`GlobalStopwatch.cs:18`), all of it game code in the loaded scene rather
+than plugin code. That loop is what fills the log - **847 281** lines mention `GlobalStopwatch` inside **21 618 842**
+lines, 1.65 GB - so that run was stopped by hand. Both complete post-fix runs pass the same two gates and leave play
+mode on their own: `manual-play-postfix-run1.log:428` and `:524` in 2 870 lines, and `manual-play.log:229` and `:440`
+(`armed after reload`, twice) with `:536` (`first frame`) in 1 818 lines, each with **0** `NullReferenceException` and
+**0** `GlobalStopwatch` in the whole log, so the gate's end-of-run report is readable in both. The repeated
+`GetVirtualKey: Could not map char:` lines (`manual-play.log:316` onward, **37** of them) are the reboot's input
+layer, not errors, and the spin is scene code in a scene the release does not touch, not a second leak: the warning is
+a startup-path web request and the play session is downstream of it.
 
 ## What stays open after the 2021.3 hop
+
+- **The native-container warning is closed by measurement.** The release sits in the working tree at `HubBrowse.cs:493`
+  and `HubDownloader.cs:124` (`git diff --numstat` reads `3 0` for each; uncommitted), and seven `-LeakTraces` runs
+  made after it read **0** warnings where the three controls read **1** each, with `error CS` and `[CS584]` at **0** in
+  all seven and the assembly they loaded (13:53:25) newer than the two files it was built from (13:52:25), so the
+  absence is a rebuilt assembly and not a stale one - and the compiled `PostRequest` iterator is read directly at
+  `artifacts\assembly-csharp-postrequest-il.txt` rather than inferred from those timestamps alone. What stays open is
+  the edit rather than the reading: it wants a commit, and one ordinary run without `-LeakTraces` to confirm the
+  env-gated class leaves a normal gate run untouched.
+- **Five of the seven post-fix runs never finished the boot scene's load, and the cause is not in this finding.** They
+  freeze on `Loaded Objects now: 73519.` at 887-913 lines while the editor keeps spending CPU; the 14:09 run took the
+  job to **90 373** objects, the 14:44 run printed the same `73519` and finished anyway, so that number is not the
+  discriminator, and a run from before the release froze at that line too. Nothing in the log separates the outcomes,
+  so a run that stops growing there should be read as an editor-side load problem rather than as a run with no result,
+  and its acceptance counts speak only for what it reached.
 
 - **Three call sites change API, and one of them can fail quietly.** The mechanical part is the rewrite of
   `TextureScale.cs:67`, `mset\CubeBuffer.cs:815` and `PersistentTexture2D.cs:22` from `Resize` to `Reinitialize`,
