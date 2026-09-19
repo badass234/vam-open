@@ -9,6 +9,86 @@ The analysis behind the measurements is in the other files in this directory - `
 look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the project and its harness,
 `asset-export.md` for the extraction, `parity-report.md` for the assembly.
 
+## 0.1.11-alpha
+
+- **The engine moved to Unity 2021.3 LTS (`2021.3.45f2`, revision `88f88f591b2e`).** Hop four, made the
+  same way as the three before it (`Unity.exe -batchmode -nographics -quit -accept-apiupdate -projectPath
+  VaM_Rebuild`, then the editor left to run its own passes), and the first one where the API Updater had
+  our code to edit. The run took about 40 minutes and ended `Exiting batchmode successfully now!` /
+  `return code 0`, with **0 `error CS`**, the precompiled-assembly pass reporting `6/6 assembly(ies)
+  processed, 0 updated` for both of its runs, and the source pass printing its `Updated Files:` block at
+  line 16 220 of a 27 779-line log - which is the only marker that says the updater rewrote something.
+- **Six files rewritten, and every rewrite is a rename.** `Texture2D.Resize(int, int)` became
+  `tex.Reinitialize(int, int)` at `TextureScale.cs:67`, `PersistentTexture2D.cs:22` and
+  `mset\CubeBuffer.cs:815`; `TextureFormat.ASTC_RGB_6x6` became `ASTC_6x6` at
+  `OvrAvatarAssetTexture.cs:30` and `:35`; `ParticleSystem.CollisionModule.maxPlaneCount` became
+  `planeCount` at all seven of its sites in `PersistentCollisionModule.cs`; and
+  `ParticleSystem.TriggerModule.maxColliderCount` became `colliderCount` at all seven of its sites in
+  `PersistentTriggerModule.cs`. Counting honest: `PersistentCollisionModule.cs` holds an eighth mention of
+  the old name inside a `Debug.LogWarning` string, which is not a site and is left as it is. They were copied back into `src\` and `scripts\Sync-Sources.ps1` reports
+  **2824/2824 identical**, so the working tree and the project agree again. Three of the four renames were
+  not in the pre-hop audit; the updater's own diagnostic text names the replacement (`(UnityUpgradable) ->
+  X`), which is the cheap way to read them rather than guess.
+- **The one regression of the hop was invisible to the updater, because it is a runtime difference rather
+  than an API one.** `MeshVR.DAZImport.SetRegistryLibPaths()` reads
+  `HKEY_CURRENT_USER\Software\DAZ\Studio4\NumContentDirs` during `OnEnable`, the key does not exist on this
+  machine, and the 2021.3 Mono runtime returns **`null`** for a missing registry value where the 2020.3 and
+  2019.4 ones returned the default - so `(int)Registry.GetValue(...)` threw, twelve times per character
+  init, `SuperController.AddAtom` → `DAZCharacterSelector.EarlyInitCharacters` → `DAZImport.OnEnable`. The
+  Play gate caught it as **6 errors against the 2019.4 baseline's 5**, and the 6th was the exception. One
+  guard (`object` → null check → `int`) fixes it; the file's other registry read was already null-safe, and
+  those are the only two in `src\`. Re-run afterwards: **5 errors, 0 exceptions**, which is the baseline
+  exactly. The unfixed run is kept as `artifacts\logs\hop4-play-nre.log`, the fixed one as
+  `artifacts\smoke-play.log` - the before/after pair is the evidence.
+- **The three gates on 2021.3.** Compile: `verdict: OK`, **0 unique errors**, `Assembly-CSharp.dll`
+  **5 510 656 B**, `VaMUnityScript.dll` 16 384 B (`artifacts\compile-gate.log`). Scene integrity
+  (`-Method InspectScene`): 2 game objects, 3 components, 0 unresolved. Play (`-Method Play`,
+  `CyberDemoAlt`, `artifacts\smoke-play.log`): `----- RebuildGate OK -----`, played 30.0 s,
+  the scene load `refused=False`, **17 declared atoms / 17 present / 0 missing**, 25 `DAZImport`, 154
+  `DAZHairGroup` and 66 compute shader assets - the same readings hop 3 produced, **5 errors and 0
+  exceptions** after the fix.
+- **`Assembly-CSharp.dll` shrank by 9.4%, and it is not missing code.** 6 079 488 B on 2019.4 and 2020.3
+  against 5 510 656 B here, with 0 errors on both sides of the change. 2021.3 compiles against Roslyn
+  **reference assemblies** by default, so the assembly no longer carries the bodies of the framework
+  methods it calls. Size is not a health reading.
+- **`ZFBrowser.dll` stopped being thrown away, and the price is 16 warnings.** Every hop so far logged
+  `Unloading broken assembly Assets/Plugins/ZFBrowser.dll, this assembly can cause crashes in the runtime`
+  - 3 lines in the 2019.4 baseline, 9 in the 2020.3 log - and the 2021.3 run logs **0**. The assembly loads
+  now, and Mono then reports what it always could not resolve: 16 `Could not resolve field token` lines for
+  the single type `ZenFulcrum.EmbeddedBrowser.VRBrowserHand`, whose fields are typed
+  `UnityEngine.XR.XRNode` scoped to `UnityEngine.VRModule`. Measured across the installed editors: that
+  enum is declared **in** `UnityEngine.VRModule.dll` on 2019.4 (22 mentions in its IL) and **absent from it**
+  on 2020.3 and 2021.3, having moved to `UnityEngine.XRModule` in 2020.1. So the reference was already
+  stale when hop 3 was made; the difference is that the older Mono discarded the whole assembly instead of
+  reporting the field. These are warnings, not errors - the Play gate's error count did not move - and the
+  hand-tracking web browser was unusable on every hop before this one.
+- **Warnings, counted rather than left as a number:** the hop log holds 566 warning lines - `CS0618` 509,
+  `CS0219` 30, `CS0108` 12, `CS0067` 6, `CS0414` 6, `CS1717` 3. The **4 168 `[AssemblyUpdater] Failed to
+  resolve`** lines beside them are threshold noise, not breakage: they are emitted only because this hop set
+  `UNITY_ASSEMBLYUPDATE_LOGTHRESHOLD=Debug`, and hop 3's logs - which ran at `Warning` - contain **0** of
+  them while producing the same clean compile.
+- **The manifest did not move; two transitive pins did.** `Packages\manifest.json` is unchanged, and
+  `packages-lock.json` gained `com.unity.nuget.newtonsoft-json` 3.0.2 → **3.2.1** and `com.unity.services.core`
+  1.8.1 → **1.12.5**, both depth-2 or depth-1 dependencies rather than pins we chose. Under 2020.3 the same
+  package resolution had moved seven pins; on 2021.3 there was nothing left to move.
+- **Which 2021.3 patch, and why not the newest.** `2021.3.58f1` is an **extended-LTS** build and refuses on
+  a Personal licence with `Error: 'com.unity.editor.access.xlts' was not found.` before it opens the project
+  - return code 198, `ProjectVersion.txt` untouched. `2021.3.45f2` is the last public patch of the line and
+  passed the pre-flight. `scripts\Test-UnityEditorUsable.ps1 -Version <v>` reads an installed editor's
+  entitlements and exits 0 for usable, 1 for blocked or missing, so the wait is not spent on a run that
+  cannot work.
+- **The item-by-item audit against Unity's 2021 LTS guide** is in
+  [`unity-upgrade-audit.md`](unity-upgrade-audit.md), section `2020.3.49f1 → 2021.3 LTS`, together with a
+  `What stays open after the 2021.3 hop` list.
+- **Both gates were re-run against the frozen tree.** The six files the API Updater rewrote came back from
+  the editor with CRLF endings where their blobs held LF, which would have committed a whole-file
+  line-ending change on top of a one-line rename; the six were normalised back to LF before staging, so the
+  hop's source diff is 7 files carrying the hop's own edits and nothing else. The compile gate and the Play
+  gate were then re-run on those exact bytes: `unique errors: 0` with the same `Assembly-CSharp.dll`
+  5 510 656 B, and the Play gate returned the same 5 errors, 17/17/0 atoms, 66 compute shaders, 25
+  `DAZImport` and 154 `DAZHairGroup`. The line-ending check that found this is the same one hop 3 used
+  (`git ls-files --eol`, `git diff --numstat --ignore-cr-at-eol`).
+
 ## 0.1.10-alpha
 
 - **The engine moved to Unity 2020.3 LTS (2020.3.49f1).** Hop three of the engine migration, made the same

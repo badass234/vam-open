@@ -812,7 +812,7 @@ namespace mset
 		{
 			if (tex.width != faceSize || tex.height != faceSize * 6)
 			{
-				tex.Resize(faceSize, 6 * faceSize);
+				tex.Reinitialize(faceSize, 6 * faceSize);
 			}
 			Color32[] dst = tex.GetPixels32();
 			encode(ref dst, pixels, texColorMode, useGamma);

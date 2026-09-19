@@ -1580,7 +1580,14 @@ namespace MeshVR
 		public void SetRegistryLibPaths()
 		{
 			registryDAZLibraryDirectories = new List<string>();
-			int num = (int)Registry.GetValue("HKEY_CURRENT_USER\\Software\\DAZ\\Studio4", "NumContentDirs", 0);
+			// Registry.GetValue returns null when the whole key is missing, which is the normal
+			// state on a machine without DAZ Studio installed; unboxing that null is what threw.
+			object numContentDirs = Registry.GetValue("HKEY_CURRENT_USER\\Software\\DAZ\\Studio4", "NumContentDirs", 0);
+			int num = 0;
+			if (numContentDirs != null)
+			{
+				num = (int)numContentDirs;
+			}
 			for (int i = 0; i < num; i++)
 			{
 				string text = (string)Registry.GetValue("HKEY_CURRENT_USER\\Software\\DAZ\\Studio4", "ContentDir" + i, null);

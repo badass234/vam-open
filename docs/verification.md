@@ -1005,8 +1005,8 @@ The first reading of this defect was wrong in both halves, and both are worth ke
 
 The cause is one line of the generator. `scripts\New-VaMShaders.py` decoded the serialised render
 state's colour-write mask as `(1,R) (2,G) (4,B) (8,A)`. Unity's `ColorWriteMask` reads out of the
-engine we build with (`UnityEngine.CoreModule.dll`; the values were read under 2018.1.9f2 and both hops -
-2018.4 and 2019.4 - left them as they were) as `Alpha = 1, Blue = 2, Green = 4,
+engine we build with (`UnityEngine.CoreModule.dll`; the values were read under 2018.1.9f2 and re-read under
+every hop since - 2018.4, 2019.4, 2020.3 and 2021.3 all leave them as they were) as `Alpha = 1, Blue = 2, Green = 4,
 Red = 8, All = 15`. This family's passes serialise as **14**, i.e. **RGB**, and we emitted
 **`ColorMask GBA`** - so the shader never wrote the red channel and the red of whatever lay behind bled
 through. That is the whole symptom: an inverted colour that also reads as transparency, because the

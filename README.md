@@ -72,8 +72,10 @@ The hardest part here is the engine migration. Everything else after that is muc
 
 ## How to try it
 
-You need Windows, Unity **2020.3 LTS (2020.3.49f1)**, and your own Virt-a-Mate installation. Keep Unity Hub closed,
-otherwise it will reissue the license file and the older editors reject the reissued one.
+You need Windows, Unity **2021.3 LTS (2021.3.45f2)**, and your own Virt-a-Mate installation. Take that exact
+patch: the newer `2021.3.58f1` is an **extended-LTS** build, which needs Unity Industry or Unity Enterprise and
+exits before it opens anything on a Personal licence. `scripts\Test-UnityEditorUsable.ps1` reads that
+entitlement off an installed editor so you find out before spending a run on it.
 
 ```powershell
 scripts\Setup-RebuildProject.ps1
@@ -167,8 +169,9 @@ parameter with a portable default:
   take the version out of `VaM_Rebuild\ProjectSettings\ProjectVersion.txt` through
   `scripts\UnityEditor.ps1` and look for `%ProgramFiles%\Unity\Hub\Editor\<version>\Editor\Unity.exe`.
   That file is the one place an engine version lives, so a version hop needs no script edit - the
-  project now names **2020.3.49f1**, the last 2020 LTS. Pass `-UnityExe` for an installation
-  elsewhere, including one outside Unity Hub.
+  project now names **2021.3.45f2**, the last patch of the 2021 LTS line that is not extended-LTS
+  (`2021.3.58f1` is, and refuses to run on a Personal licence). Pass `-UnityExe` for an
+  installation elsewhere, including one outside Unity Hub.
 - **Everything inside the repository** is resolved relative to the script's own location, so the
   scripts work from any working directory. Beware that PowerShell's `Set-Location` does not move the
   process's current directory, which matters for the Unity runs; the runners handle it themselves.

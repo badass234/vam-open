@@ -5,6 +5,26 @@ last number counts patches inside the `0.1` line while the first two stand still
 design - the version history is meant to be readable - and the detail behind it, with the measurements, is
 in [`docs/release-notes.md`](docs/release-notes.md).
 
+## 0.1.11-alpha
+
+The engine is **Unity 2021.3 LTS** now (`2021.3.45f2`), hop four, and the first one that was not mostly
+cheap: the editor opened the project, compiled it and exited 0 without a single error, but the API Updater
+came with it and **rewrote six files of our own code** - the first hop where it had anything to rewrite.
+Four renames, all of them mechanical: `Texture2D.Resize(a, b)` became `tex.Reinitialize(a, b)` at three
+sites, `TextureFormat.ASTC_RGB_6x6` became `ASTC_6x6` at two, and the particle collision and trigger modules
+lost `maxPlaneCount`/`maxColliderCount` in favour of `planeCount`/`colliderCount` at seven sites each. The
+updater cannot see behaviour, and it did not see the one real regression of the hop: `DAZImport` reads
+`HKCU\Software\DAZ\Studio4\NumContentDirs` at start-up, that key does not exist on most machines, and the
+2021.3 Mono runtime returns `null` for a missing registry value where the older ones returned the default -
+so the cast threw `NullReferenceException` twelve times per character init. One null guard fixes it, and the
+Play gate then returns exactly what the 2020.3 baseline returns: **5 errors, 0 exceptions**. Two more things
+moved without being asked: `Assembly-CSharp.dll` shrank from 6 079 488 to 5 510 656 bytes with 0 errors,
+because 2021.3 compiles against Roslyn reference assemblies, and `ZFBrowser.dll` stopped being discarded as
+a broken assembly - it now loads and reports the 16 fields it cannot resolve, because the `UnityEngine.XR.XRNode`
+enum it was compiled against left `UnityEngine.VRModule` for `UnityEngine.XRModule` back in 2020.1. Those are
+warnings, not errors, and the plugin was already unusable. The item-by-item audit against Unity's 2021 LTS
+guide is in [`docs/unity-upgrade-audit.md`](docs/unity-upgrade-audit.md).
+
 ## 0.1.10-alpha
 
 The engine is **Unity 2020.3 LTS** now (`2020.3.49f1`), the third hop from the `2018.1.9f2` the game ships

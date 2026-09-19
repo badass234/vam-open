@@ -7,8 +7,11 @@
 > `Initiating legacy licensing module` and `Next license update check is after ...` in its log, and
 > 2019.4 and 2020.3 import, compile and run `-executeMethod` on the same file, so nothing here had to be
 > redone for any of them. Everything below is the breakdown of the failure causes and the
-> fallback paths: it is needed only if the license breaks again, and the only known way to break it
-> is to launch Unity Hub again (its `updateLicenses` will reissue the ULF).
+> fallback paths: it is needed only if the license breaks again. The one thing measured to break it is
+> Unity Hub's `updateLicenses` reissuing the ULF - **and only the 2018.1 editor cared.** Hub was
+> launched again on 2026-09-18, the file *was* reissued at 21:41:28, and 2019.4 and 2020.3 went on
+> importing, compiling and running `-executeMethod` on the reissued file, so the caution further down
+> is about the old legacy validator rather than about this project.
 
 ## Why
 
@@ -80,19 +83,58 @@ scripts\Invoke-CompileGate.ps1
 The verdict is the `----- RebuildGate OK -----` marker in the log, not the return code. Error breakdown:
 `tools\parse_unity_log.py` (invoked by the script itself).
 
-3. **Do not let Hub reissue the license**: keep Hub closed and launch the editor
-   directly (`-batchmode` or `-projectPath`). If you need Hub — after it reissues the ULF,
-   activation will have to be repeated.
+3. **A reissued license only matters to the 2018.1 editor.** Hub's `updateLicenses` rewrites
+   `Unity_lic.ulf`; the legacy validator in 2018.1 is the one that rejects the rewrite, and 2018.4,
+   2019.4 and 2020.3 were measured to keep importing and compiling on it. Launch the editor directly
+   (`-batchmode` or `-projectPath`) when you can, and re-run `Activate-UnityLicense.ps1` only if the
+   old editor starts asking again.
+
+## An extended-LTS patch is a patch this license cannot run
+
+Unity ships some patches past the end of a public LTS line as **extended-LTS (xLTS)** builds, and an xLTS
+build is entitlement-gated: it needs Unity Industry or Unity Enterprise. On a Personal license it refuses
+before it opens anything, which reads like a silent failure rather than a licensing one:
+
+```text
+[Licensing::Module] Error: 'com.unity.editor.access.xlts' was not found.
+This build of Unity 2021 is part of an Extended LTS release, which requires either a valid Unity
+Industry or Unity Enterprise license.
+Application will terminate with return code 198
+```
+
+Measured on this machine with `2021.3.58f1`: **return code 198**, with `ProjectVersion.txt` left at its
+previous value, nothing under `Assets\` touched and no `Temp\UnityLockfile` created, so the project was
+never opened - the log is kept at `artifacts\logs\hop4-apiupdate.log`. `2022.3.76f1`
+(`Unity 2022.3 Extended LTS`) carries the same gate; `6000.6.2f1` does not (`"entitlements":[]`).
+
+The entitlement is readable without launching the editor, out of the version folder Hub watches:
+
+```powershell
+scripts\Test-UnityEditorUsable.ps1                    # the version ProjectVersion.txt names
+scripts\Test-UnityEditorUsable.ps1 -Version 2022.3.76f1
+```
+
+It reports the build's product version and entitlements, the package versions its own
+`Editor\Data\Resources\PackageManager\Editor\manifest.json` ships and recommends, whether the Mono 4.5
+profile still carries `mcs.exe` (the runtime compiler plugin is built with it) and whether the Windows
+standalone playback engine is present, then a verdict. **The exit code is the answer** - 0 usable, 1
+blocked or not installed - because a blocked verdict is still non-empty text. An install made by the
+official installer rather than by Hub has no `metadata.hub.json` at all, and that is not the same thing
+as being entitled: the `2020.3.49f1` install here is one of those.
+
+Which patch of an LTS line is the usable one is therefore **not** the newest one. `2021.3.45f2` is the
+last public patch of 2021 LTS, and `2021.3.58f1` is the xLTS patch after it.
 
 ## Verified facts about the environment
 
 - Editor: `%ProgramFiles%\Unity\Hub\Editor\2018.1.9f2\Editor\Unity.exe`, FileVersion
   `2018.1.9.10931241` — matches the game's `VaM_Data\UnityPlayer.dll`. That is the editor the *game*
-  was built with. The project itself is built by `2020.3.49f1`
-  (`%ProgramFiles%\Unity\Hub\Editor\2020.3.49f1\Editor\Unity.exe`), which is the version
+  was built with. The project itself is built by `2021.3.45f2`
+  (`%ProgramFiles%\Unity\Hub\Editor\2021.3.45f2\Editor\Unity.exe`), which is the version
   `VaM_Rebuild\ProjectSettings\ProjectVersion.txt` names and the one every script launches
-  (the hop before it, `2019.4.41f2`, and the first one, `2018.4.36f1`, are still installed
-  alongside it).
+  (the hops before it, `2020.3.49f1` and `2019.4.41f2`, and the first one, `2018.4.36f1`, are all
+  still installed alongside it). `2021.3.58f1` and `2022.3.76f1` are also installed and are **not**
+  usable here - they are extended-LTS, see above.
 - Unity 6000.6.0f1 is installed alongside — not suitable for this project (different API, different serialization).
 - Hub CLI (`Unity Hub.exe -- --headless`) only supports `editors`, `install-path`, `install`,
   `install-modules` — there is no "open project" command, `unityhub://` only opens OAuth login.

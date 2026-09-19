@@ -16,7 +16,7 @@ VaM_Rebuild\                        6 518 files, 247.8 MB
     GameObject AnimeClip AnimatorController Avatar Cubemap Flare Font
     Material Mesh PhysicMaterial Resources Shader Sprite TextAsset Texture2D
   Packages\manifest.json
-  ProjectSettings\                   23 .asset + ProjectVersion.txt (2020.3.49f1)
+  ProjectSettings\                   23 .asset + ProjectVersion.txt (2021.3.45f2)
 ```
 
 ## What is replaced, and why
@@ -232,8 +232,9 @@ player's link has to tolerate (see the player's runtime links below).
 
 `ProjectSettings\ProjectVersion.txt` names the editor, and the scripts read *that file* instead of
 hardcoding a path (`scripts\UnityEditor.ps1`), so a version hop needs no script edit. The project is
-now pinned to **2020.3.49f1**, the last 2020 LTS - hop three of three so far, all made; what the hops
-cost is in
+now pinned to **2021.3.45f2**, the last non-extended-LTS patch of the 2021 LTS - hop four of the ladder so
+far, with 2022.3 and the 6000 line still ahead. The patch after it, `2021.3.58f1`, is extended-LTS and is
+refused on a Personal licence, so the newest-looking patch was not the usable one; what the hops cost is in
 [`release-notes.md`](release-notes.md), and the item-by-item audit of each hop against
 Unity's own upgrade guide is in [`unity-upgrade-audit.md`](unity-upgrade-audit.md).
 

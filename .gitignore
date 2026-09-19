@@ -37,6 +37,10 @@ VaM_Rebuild/Assets/*.meta
 VaM_Rebuild/Assets/Scripts/
 
 # --- Unity build state ------------------------------------------------------------------------
+# ProjectSettings is tracked, with these two exceptions: boot.config and the per-package settings
+# folder are written by the editor itself and carry nothing a reader needs.
+VaM_Rebuild/ProjectSettings/boot.config
+VaM_Rebuild/ProjectSettings/Packages/
 VaM_Rebuild/Library/
 VaM_Rebuild/Cache/
 VaM_Rebuild/Temp/

@@ -39,14 +39,14 @@ namespace Battlehub.RTSaveLoad.PersistentObjects
 			triggerModule.radiusScale = radiusScale;
 			if (colliders == null)
 			{
-				for (int i = 0; i < triggerModule.maxColliderCount; i++)
+				for (int i = 0; i < triggerModule.colliderCount; i++)
 				{
 					triggerModule.SetCollider(i, null);
 				}
 			}
 			else
 			{
-				for (int j = 0; j < Mathf.Min(triggerModule.maxColliderCount, colliders.Length); j++)
+				for (int j = 0; j < Mathf.Min(triggerModule.colliderCount, colliders.Length); j++)
 				{
 					object obj2 = objects.Get(colliders[j]);
 					triggerModule.SetCollider(j, (Component)obj2);
@@ -67,12 +67,12 @@ namespace Battlehub.RTSaveLoad.PersistentObjects
 				enter = triggerModule.enter;
 				exit = triggerModule.exit;
 				radiusScale = triggerModule.radiusScale;
-				if (triggerModule.maxColliderCount > 20)
+				if (triggerModule.colliderCount > 20)
 				{
 					Debug.LogWarning("maxPlaneCount is expected to be 6 or at least <= 20");
 				}
-				colliders = new long[triggerModule.maxColliderCount];
-				for (int i = 0; i < triggerModule.maxColliderCount; i++)
+				colliders = new long[triggerModule.colliderCount];
+				for (int i = 0; i < triggerModule.colliderCount; i++)
 				{
 					Component collider = triggerModule.GetCollider(i);
 					colliders[i] = collider.GetMappedInstanceID();
@@ -92,8 +92,8 @@ namespace Battlehub.RTSaveLoad.PersistentObjects
 			if (obj != null)
 			{
 				ParticleSystem.TriggerModule triggerModule = (ParticleSystem.TriggerModule)obj;
-				UnityEngine.Object[] array = new UnityEngine.Object[triggerModule.maxColliderCount];
-				for (int i = 0; i < triggerModule.maxColliderCount; i++)
+				UnityEngine.Object[] array = new UnityEngine.Object[triggerModule.colliderCount];
+				for (int i = 0; i < triggerModule.colliderCount; i++)
 				{
 					array[i] = triggerModule.GetCollider(i);
 				}

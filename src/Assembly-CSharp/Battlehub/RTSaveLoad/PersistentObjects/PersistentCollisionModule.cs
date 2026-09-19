@@ -77,14 +77,14 @@ namespace Battlehub.RTSaveLoad.PersistentObjects
 			collisionModule.sendCollisionMessages = sendCollisionMessages;
 			if (planes == null)
 			{
-				for (int i = 0; i < collisionModule.maxPlaneCount; i++)
+				for (int i = 0; i < collisionModule.planeCount; i++)
 				{
 					collisionModule.SetPlane(i, null);
 				}
 			}
 			else
 			{
-				for (int j = 0; j < Mathf.Min(collisionModule.maxPlaneCount, planes.Length); j++)
+				for (int j = 0; j < Mathf.Min(collisionModule.planeCount, planes.Length); j++)
 				{
 					collisionModule.SetPlane(j, (Transform)objects.Get(planes[j]));
 				}
@@ -116,12 +116,12 @@ namespace Battlehub.RTSaveLoad.PersistentObjects
 				voxelSize = collisionModule.voxelSize;
 				radiusScale = collisionModule.radiusScale;
 				sendCollisionMessages = collisionModule.sendCollisionMessages;
-				if (collisionModule.maxPlaneCount > 20)
+				if (collisionModule.planeCount > 20)
 				{
 					Debug.LogWarning("maxPlaneCount is expected to be 6 or at least <= 20");
 				}
-				planes = new long[collisionModule.maxPlaneCount];
-				for (int i = 0; i < collisionModule.maxPlaneCount; i++)
+				planes = new long[collisionModule.planeCount];
+				for (int i = 0; i < collisionModule.planeCount; i++)
 				{
 					planes[i] = collisionModule.GetPlane(i).GetMappedInstanceID();
 				}
@@ -143,8 +143,8 @@ namespace Battlehub.RTSaveLoad.PersistentObjects
 			if (obj != null)
 			{
 				ParticleSystem.CollisionModule collisionModule = (ParticleSystem.CollisionModule)obj;
-				UnityEngine.Object[] array = new UnityEngine.Object[collisionModule.maxPlaneCount];
-				for (int i = 0; i < collisionModule.maxPlaneCount; i++)
+				UnityEngine.Object[] array = new UnityEngine.Object[collisionModule.planeCount];
+				for (int i = 0; i < collisionModule.planeCount; i++)
 				{
 					array[i] = collisionModule.GetPlane(i);
 				}

@@ -19,7 +19,7 @@ namespace Battlehub.RTSaveLoad.PersistentObjects
 			Texture2D texture2D = (Texture2D)obj;
 			try
 			{
-				texture2D.Resize(width, height);
+				texture2D.Reinitialize(width, height);
 			}
 			catch
 			{
