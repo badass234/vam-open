@@ -88,6 +88,46 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   5 510 656 B, and the Play gate returned the same 5 errors, 17/17/0 atoms, 66 compute shaders, 25
   `DAZImport` and 154 `DAZHairGroup`. The line-ending check that found this is the same one hop 3 used
   (`git ls-files --eol`, `git diff --numstat --ignore-cr-at-eol`).
+- **The hand run found a real defect, and it was in this project's own plugin compiler.** Five loads of
+  `Saves\scene\MeshedVR\default.json`, and once per load - twice each, because the plugin is compiled twice -
+  `[CS584] Internal compiler error: The method or operation is not implemented. in <Unknown> at [687, 6]`,
+  under it `Compile of MacGruber.Life.12:/Custom/Scripts/MacGruber/Life/MacGruber_Life.cslist failed.` with an
+  **empty error list**. `Report.Error` throws `FatalException` the moment `ErrorsCount` reaches
+  `settings.FatalCounter`, so the one internal error aborts the compile before any of the plugin's own errors
+  is written, and the plugin simply does not load. `[687, 6]` is `b.Append(message).Append("\n")` inside
+  `MacGruber.Utils.LogTransform`: `StringBuilder.Append` carries a `ReadOnlySpan<char>` overload from 2020.3
+  on, so overload resolution reaches `ReadOnlySpan<T>`'s `ref readonly T this[int]` indexer and
+  `TypeParameterInflator.Inflate` threw `NotImplementedException` on the by-ref type. It handled a type
+  parameter and an array, and the 2.x compiler `src\mcs` was decompiled from predates the BCL's by-ref
+  members, so the branch was never written - upstream mono's is at `mcs/mcs/generic.cs:1534` and this copy now
+  has the same `ReferenceContainer` case. That also explains why 2018.4 and 2019.4 never logged a `CS584`:
+  the same plugin failed there too, for the older reason already tracked, but nothing in those profiles puts a
+  `Span` in an ordinary overload set.
+- **The fix was proven with the game's own compiler as the control, before it was deployed.** `artifacts\mcs-ab`
+  drives `Mono.CSharp.CompilerContext` directly - the editor's `mcs.exe` cannot drive a compiler whose identity
+  is `mcs, Version=0.0.0.0` - and takes its references from `MCS_REFS`. Three `Span` probes: the game's own
+  `mcs.dll` reports `CS0584` on every one, this build reports 0 errors. Then the real file, against the
+  original game's `VaM_Data\Managed` (63 assemblies - `Assembly-CSharp.dll` plus every `UnityEngine*.dll`,
+  because the plugin's `using AssetBundles;` resolves to a namespace that lives in `Assembly-CSharp` and in no
+  UnityEngine module): the control reproduces `(687,6): error CS0584: Internal compiler error: The method or
+  operation is not implemented.` - the in-game address to the character - and this build compiles it with **0
+  errors and 0 unresolved references**. Both arms fall silent on a partial reference set, which is the trap in
+  a test like this: silence means the reference set is wrong, not that the fix is moot. The rebuilt `mcs.dll`
+  is 1 967 104 bytes, SHA256 `3A3EE18E839E50990FE598BE0A7C0CB20AA15216EC42ACC56554C8944A4A0452`, and is
+  deployed to `Assets\Plugins\`.
+- **And 2021.3 can no longer build that compiler, so the build now chooses its editor.** The sources want
+  `Stack<T>` from `System.dll`; 2021 moved the type to `System.Collections.dll`, the profile carries it only as
+  a type-forwarding facade under `4.5\Facades\`, and a build against that fails with `CS0246: 'Stack' could not
+  be found` at ten sites - while adding `System.Collections` to the reference set fails with `CS0006`. The
+  profile is the thing to change, so `scripts\Build-McsCompiler.ps1` probes the project's editor with the
+  build's own `-r:System.dll -r:System.Core.dll` and falls back to the newest installed editor that passes,
+  which is `2020.3.49f1` - a 2020.3 profile building the compiler a 2021.3 game ships. What the emitted
+  assembly references is unchanged: `mscorlib`, `System`, `System.Core` and `System.Xml`, exactly four.
+- **What the fix does not settle.** Compiling clean is not loading, so the hand run that watches
+  `MacGruber.Life` compile and load under the new binary has not been taken. The plugin also still carries the
+  second, older fault of its own - `MacGruber.Breathing/MiniQueue`'s `FieldAccessException`, which the
+  plugin-reference A/B measured after the compiler stopped being the obstacle - so the repair removes one wall
+  rather than promising a working plugin.
 
 ## 0.1.10-alpha
 

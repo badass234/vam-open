@@ -25,6 +25,23 @@ enum it was compiled against left `UnityEngine.VRModule` for `UnityEngine.XRModu
 warnings, not errors, and the plugin was already unusable. The item-by-item audit against Unity's 2021 LTS
 guide is in [`docs/unity-upgrade-audit.md`](docs/unity-upgrade-audit.md).
 
+The hand run on that hop then found a defect in **this project's own plugin compiler**, which no gate could
+have shown: five loads of the boot scene each logged `[CS584] Internal compiler error ... at [687, 6]` and
+`Compile of MacGruber.Life ... failed.` with an **empty error list**, so a community plugin stopped loading
+without naming a reason. `[687, 6]` is an ordinary `b.Append(message).Append("\n")`; `StringBuilder.Append`
+carries a `ReadOnlySpan<char>` overload from 2020.3 on, overload resolution reaches `ReadOnlySpan<T>`'s
+`ref readonly T this[int]` indexer, and `TypeParameterInflator.Inflate` threw on the by-ref type - a branch
+upstream mono has (`mcs/mcs/generic.cs:1534`) and the 2.x compiler `src\mcs` was decompiled from never needed.
+It is fixed, and it was proven before deployment with the game's own `mcs.dll` as the control arm: on the real
+`MacGruber` file the control returns `(687,6)`, the in-game address exactly, and this build returns 0 errors
+against the same 63 references. Building the compiler also stopped being possible under 2021.3 - `Stack<T>`
+left `System.dll` for `System.Collections.dll`, whose profile copy is only a type-forwarding facade - so
+`Build-McsCompiler.ps1` now probes the project's editor and falls back to the newest editor that can build it
+(`2020.3.49f1`), which is how this 2021.3 project ships a working plugin compiler. The harness is
+`artifacts\mcs-ab`, the chain is in *The plugin compiler* in
+[`docs/rebuild-project.md`](docs/rebuild-project.md), and the check is section 9 of
+[`docs/verification.md`](docs/verification.md).
+
 ## 0.1.10-alpha
 
 The engine is **Unity 2020.3 LTS** now (`2020.3.49f1`), the third hop from the `2018.1.9f2` the game ships

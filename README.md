@@ -91,7 +91,8 @@ scripts\Invoke-SyncSolution.ps1         # writes VaM_Rebuild.sln, to open the re
 
 `Sync-Sources.ps1` is easy to miss and expensive to skip: Unity compiles `VaM_Rebuild\Assets\Scripts\`,
 not `src\`, and `Setup-RebuildProject.ps1` performs that copy once. The setup also rebuilds the runtime
-plugin compiler (`scripts\Build-McsCompiler.ps1`) with the editor's own mono, which is why it wants the
+plugin compiler (`scripts\Build-McsCompiler.ps1`) with an installed editor's own mono - the build probes the
+profiles and falls back to the newest editor that can build it, which is why it wants the
 editor installed and not just the project folder. The sync mirrors `*.cs` from `src\`
 into the project, never touches a `.cs.meta` (a scene resolves its class through that GUID), verifies
 every file byte for byte, and reports whether `Assembly-CSharp.dll` is older than the newest source. A

@@ -366,7 +366,7 @@ a type token in a serializer, or a comment.
 | Gradle / Android | `Gradle\|gradle` **0** in `src\`; **0** `.gradle`, **0** `.pro`, **0** `.aar` under `VaM_Rebuild\Assets\`; no `Assets\Plugins\Android` | no Android target is set, so the incremental Gradle path never runs |
 | The module assemblies themselves - `UnityEngine.TextCoreModule.dll` gone, `TextCoreFontEngineModule`, `TextCoreTextEngineModule` and `NVIDIAModule` new | **78** module assemblies in `Data\Managed\UnityEngine\` for 2020.3.49f1 against **90** for 2022.3.76f1 (**86** in `2021.3.45f2`, the build this hop uses, re-measured) | an editor fact rather than a project task, but it is the ground the plugin compiler's reference list stands on: the one module the set loses is named nowhere in `src\` (`TextCore` **0**) |
 
-**Four more things the hop has to decide that no guide item covers.**
+**Five more things the hop has to decide that no guide item covers.**
 
 - **The plugin compiler's reference list survives 2021.3 as it is.** `DynamicCSharp.cs:32` starts the plugin
   compiler with `assemblyReferences = {"Assembly-CSharp.dll"}` and `:34` adds seven module names to it -
@@ -380,7 +380,13 @@ a type token in a serializer, or a comment.
   `Assets\Plugins\mcs.dll` is a managed assembly built for the old module graph, so a hop that raises the editor
   version has to re-run `scripts\Build-McsCompiler.ps1` - `McsCompiler.cs:156-165` walks
   `CompilerSettings.AssemblyReferences` and resolves each name against the new editor, which is exactly the step
-  that fails loudly if a module were ever dropped.
+  that fails loudly if a module were ever dropped. What the 2021.3 editor cannot do is build that compiler at
+  all: `Stack<T>` left `System.dll` for `System.Collections.dll` in 2021, and the profile carries the type only
+  under `4.5\Facades\`, as a type-forwarding facade a build cannot use - ten sources come back `CS0246: 'Stack'
+  could not be found`, and adding `System.Collections` to the build's reference set fails with `CS0006`. So
+  `Build-McsCompiler.ps1` now probes the project's editor first and falls back to the newest installed editor
+  whose profile can build it, which is **2020.3.49f1**; the binary it emits still references `mscorlib`,
+  `System`, `System.Core` and `System.Xml`, the same four as every hop before it.
 - **The Boo/UnityScript branch stays where hop 3 put it.** `scripts\Setup-RebuildProject.ps1:303-325` stages VaM's
   `Boo.Lang.dll` whenever the editor ships none, and its own comment at `:310` records why: 2020.2 removed Boo and
   UnityScript from `MonoBleedingEdge\lib\mono\unityscript\`, so the shipped game's `Assembly-UnityScript` needs the
@@ -400,6 +406,17 @@ a type token in a serializer, or a comment.
   `plan.md` item 17 keeps the built-in-pipeline question open until **6000.3** (Unity 6.3) on the route
   `2020.3 → 2021.3 → 2022.3 → 6000.3`. Nothing in this audit changes a render pipeline asset, and the shader-keyword
   row above is a keyword-locality question inside the built-in pipeline, not a pipeline move.
+- **The plugin compiler itself carried a defect that no gate and no guide could name, and the hand run found it.**
+  Five loads of the boot scene logged `[CS584] Internal compiler error: The method or operation is not
+  implemented. in <Unknown> at [687, 6]` once per load, with
+  `Compile of MacGruber.Life.12:/Custom/Scripts/MacGruber/Life/MacGruber_Life.cslist failed.` and an empty error
+  list under it. The throw is `TypeParameterInflator.Inflate` meeting a by-ref type -
+  `ReadOnlySpan<char>`'s `ref readonly T this[int]` indexer, in the overload sets of `StringBuilder.Append` and
+  `int.Parse`, both of which carry a `Span` overload only from 2020.3 on. The missing branch is the one upstream
+  mono has at `mcs/mcs/generic.cs:1534`; see *The plugin compiler* in `rebuild-project.md` for the chain and
+  `verification.md` section 9 for the A/B. The lesson this hop leaves behind: a guide can only name an API *this
+  project* calls, and this defect lived in the compiler the project ships to other people's plugins, so only
+  running a plugin could show it.
 
 ## What stays open after the 2021.3 hop
 

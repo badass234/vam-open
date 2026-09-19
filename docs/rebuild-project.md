@@ -340,12 +340,45 @@ it is accepted: at least 700 sources, the `IMAGE_FILE_DLL` characteristic, and `
 (Unity loads by assembly name, so a renamed build would not be found). `mscorlib.dll` is deliberately not
 passed on the command line - with it the compile fails with `CS1685`, `System.Object` defined twice.
 
-One patch is applied to the sources, in `src\mcs\Mono\CSharp\Parameter.cs`: the helper that writes a
-constant through `ParameterBuilder.SetConstant` catches `ArgumentException` and `NotSupportedException` and
-drops the attribute instead of propagating. That is Mono 2.0's own behaviour with the same input - the
-emitted parameter simply carries no default - and it is what makes both the probe and real plugins compile.
-The engine still reads the default from the source, because `DynamicCSharp` compiles the plugin for the
-runtime and does not depend on the reflected attribute.
+The build picks its editor, and not always the one the project is on. The sources want `Stack<T>` out of
+`System.dll`; 2021 moved that type to `System.Collections.dll`, and the profiles have it only under
+`4.5\Facades\` as a type-forwarding facade - a build against it still fails with `CS0246: 'Stack' could not
+be found` at ten sites, while adding `System.Collections` to the reference set fails outright with `CS0006`.
+The reference *set* is therefore not the thing to change; the profile is. `Build-McsCompiler.ps1` probes the
+project's editor with the build's own `-r:System.dll -r:System.Core.dll` and falls back to the newest
+installed editor that passes, which lands on `2020.3.49f1` and produces a compiler for a 2021.3 or 2022.3
+game. What the emitted assembly references is unchanged and is the part that matters: `mscorlib` 4.0.0.0,
+`System` 4.0.0.0, `System.Core` 4.0.0.0 and `System.Xml` 4.0.0.0 - exactly four, re-read per assembly after
+the build.
+
+Two patches are applied to the sources. The first, in `src\mcs\Mono\CSharp\Parameter.cs`, is the one that
+gets plugins compiling at all: the helper that writes a constant through `ParameterBuilder.SetConstant`
+catches `ArgumentException` and `NotSupportedException` and drops the attribute instead of propagating. That
+is Mono 2.0's own behaviour with the same input - the emitted parameter simply carries no default - and it is
+what makes both the probe and real plugins compile. The engine still reads the default from the source,
+because `DynamicCSharp` compiles the plugin for the runtime and does not depend on the reflected attribute.
+
+The second, in `src\mcs\Mono\CSharp\TypeParameterInflator.cs`, is what a hand run on 2021.3 found. Inflating a
+generic type handled a type parameter and an array through their container types and then threw
+`NotImplementedException`; a **by-ref** type fell through to that throw, and the one the BCL ships is
+`ReadOnlySpan<T>`'s `ref readonly T this[int]` indexer. The 2.x compiler this file was decompiled from could
+never meet one - mono's `mscorlib` had no by-ref members then - so the branch was simply never written;
+upstream mono has it (`mcs/mcs/generic.cs:1534`) and this copy now does too. Why it fires on plugins from
+2020.3 on, and never before, is the same fact from the other side: 2020.3 seeds the language with
+`ReadOnlySpan<char>`, so the overload sets of `StringBuilder.Append` and `int.Parse` carry a `Span` overload
+each, and resolving an ordinary `b.Append(message).Append("\n")` walks into a by-ref member and throws. What
+comes back is `[CS584] Internal compiler error: The method or operation is not implemented. in <Unknown> at
+[687, 6]` - the address of that very `Append` in `MacGruber.Utils.LogTransform` - with an empty error list
+under it, because `Report.Error` throws `FatalException` the moment `ErrorsCount` reaches
+`settings.FatalCounter`, so the plugin's own errors are never written. That is the same shape as the
+`SetConstant` defect above: the compiler dies, and the only symptom is a plugin that does not load.
+
+The pair is separated by an A/B in `artifacts\mcs-ab\`, with the game's own `mcs.dll` as the control arm and
+the reference set taken from `VaM_Data\Managed` - the one place the plugin's first `using` resolves, since
+`AssetBundles` is a namespace inside `Assembly-CSharp.dll` and in no UnityEngine module. The control drives
+`Life_Internal_MacGruber_Utils.cs` to `(687,6): error CS0584: Internal compiler error: The method or
+operation is not implemented.`, the in-game address exactly, and this build returns 0 errors and 0 unresolved
+references. `verification.md` section 9 is the harness.
 
 `Setup-RebuildProject.ps1` runs the build, stages the result at `Assets\Plugins\mcs.dll`, and
 `Assets\Resources\DynamicCSharp_Settings.asset` keeps `mcs.dll` in its single `referenceRestrictions` entry
@@ -385,7 +418,9 @@ with the adaptation in place, both counts are **0**, and `MacGruber` appears 26 
 the defect was never the player's alone, and the same A/B is the regression test for the next engine hop
 (`artifacts\pluginrefs-stale.log` against `artifacts\pluginrefs-fixed.log`). What is left of that plugin is
 its own runtime fault, not the compiler's: `FieldAccessException: Field 'MiniQueue'1:position' is
-inaccessible from method 'MacGruber.Breathing/MiniQueue'1<T_REF>:.ctor ()'`.
+inaccessible from method 'MacGruber.Breathing/MiniQueue'1<T_REF>:.ctor ()'`. A second compiler defect - the
+by-ref one above - was standing in front of that fault: with it repaired the plugin compiles, and how far it
+then gets is what the next hand run answers.
 
 
 `Assets\Editor\RebuildGate.cs` is the batch entry point that proves all of this end to end; see

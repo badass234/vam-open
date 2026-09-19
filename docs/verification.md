@@ -256,7 +256,8 @@ runs it automatically after a build, and the fix script itself is step 7 of
 *Current state*: **27 references, 99 managed assemblies in the player, every reference resolves** -
 exit 0. The engine-name adaptation in effect is `UnityEngine.Timeline.dll` -> `Unity.Timeline.dll`
 with `UnityEngine.TimelineModule.dll` dropped, which is the whole of what 2019.4 changed under this
-list. See *The plugin compiler* in `rebuild-project.md` for the chain and for the A/B that measured it.
+list. See *The plugin compiler* in `rebuild-project.md` for the chain and for the A/B that measured it. The
+compiler *binary* is checked the same way and separately - section 9 below.
 
 ### 8. IDE project files - `scripts\Invoke-SyncSolution.ps1`
 
@@ -299,6 +300,47 @@ in it and 57 bytes larger. The probe was then deleted and the script run again: 
 the file is back to its previous size, byte for byte, with nothing else rewritten. So the rule in
 `rebuild-project.md` - regenerate after adding a source file or a plugin - describes what actually
 happens: the editor rewrites only the project whose file list changed, and leaves the rest alone.
+
+### 9. The plugin compiler itself - `artifacts\mcs-ab`
+
+Section 7 checks the list of names the compiler is handed. This section checks the compiler, because it is a
+binary this project builds and ships, and a defect in it is invisible from every gate: the compiler aborts,
+`Report.Error` throws `FatalException` as soon as `ErrorsCount` reaches `settings.FatalCounter`, the plugin's
+own error list comes back **empty**, and the only symptom is a plugin that does not load.
+
+`artifacts\mcs-ab\driver.cs` drives `Mono.CSharp.CompilerContext` directly - the editor's `mcs.exe` cannot
+drive a compiler whose identity is `mcs, Version=0.0.0.0` - and the two arms sit side by side as `orig\mcs.dll`
+(the game's) and `ours\mcs.dll` (this project's build). The variant under test must be copied beside
+`driver.exe` as `mcs.dll`: `-r:` satisfies the reference only, and the runtime binds by simple name.
+
+```
+$env:MCS_REFS = 'C:\Games\VaM_Updater\VaM_Data\Managed'   # files and directories; dirs are also search paths
+$env:MCS_BREAK_ON_ICE = '1'                               # rethrow instead of reporting CS0584
+mono.exe ...\lib\mono\4.5\mcs.exe -target:exe -sdk:4.5 -noconfig -nowarn:0169 -out:driver.exe `
+    -r:ours\mcs.dll driver.cs
+mono.exe driver.exe
+```
+
+Read `ERRORS=` and `UNCAUGHT=`, never the exit code: `ConsoleReportPrinter` exits 0 with errors on the
+report. `MCS_REFS` reports what will not load as `REF-FAIL=`, so a silent compile is never taken at face
+value, and `MCS_BREAK_ON_ICE=1` is what turns an internal error into a stack: the by-ref defect's runs
+`MethodSpec.InflateMember` → `TypeParameterInflator.Inflate` → `MemberCache.InflateMembers` →
+`MemberCache.GetUserOperator` → `Convert.UserDefinedConversion` → `OverloadResolver.IsArgumentCompatible` →
+`MethodGroupExpr.OverloadResolve`.
+
+*Current state*: three `Span` probes go from `CS0584` under the game's compiler to 0 errors under this build,
+and `Life_Internal_MacGruber_Utils.cs` compiled against the original game's own `VaM_Data\Managed` - **63**
+assemblies, `Assembly-CSharp.dll` plus every `UnityEngine*.dll` - gives the control
+
+```
+(687,6): error CS0584: Internal compiler error: The method or operation is not implemented.
+```
+
+against **0 errors and 0 reference failures** for this build. The reference set is load-bearing and it has to
+be that one: `using AssetBundles;` at `:19` resolves to a namespace inside `Assembly-CSharp.dll` and in no
+UnityEngine module, so the 2021 editor's `Managed\UnityEngine\` cannot stand in for it. On a partial set both
+arms report `CS0584=0` and ~56 unrelated `CS0246`, which reads as "the fix changed nothing" - the trap is that
+the control failing to fail looks like a pass.
 
 ## When a gate lies
 

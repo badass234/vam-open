@@ -57,6 +57,16 @@ namespace Mono.CSharp
 					{
 						return PointerContainer.MakeType(context.Module, typeSpec);
 					}
+					// A by-ref return or parameter of a generic type — `ref T this[int]` on
+					// ReadOnlySpan<T> is the one the BCL ships — has to be re-made around the
+					// inflated element. mono's mscorlib up to 2.0 had no by-ref members, so the
+					// 2.x compiler this was decompiled from never learned to inflate one: it
+					// threw, and every overload set that contains such a member (StringBuilder
+					// .Append, int.Parse) failed to resolve with an internal compiler error.
+					if (elementTypeSpec is ReferenceContainer)
+					{
+						return ReferenceContainer.MakeType(context.Module, typeSpec);
+					}
 					throw new NotImplementedException();
 				}
 				return elementTypeSpec;
