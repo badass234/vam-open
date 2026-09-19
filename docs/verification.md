@@ -1771,22 +1771,60 @@ Full record: `artifacts\decal-repro\REPORT.md`, machine analysis
 **And the loop was then closed by the user's own hand, which is the same A/B in a stronger form.** The run
 behind the fourth paste, `artifacts\manual-play.log` (3 605 lines, 363 186 B, static since 16:42:33), is a
 single editor session on the single scene that was failing, `SoftEros777.Lady_Clown.1:/Saves/scene/ladyclown.json`
-(`:928`; no other scene is loaded in the file). It names the revisions, so it reads as a measurement rather
-than as one more paste: the `.37` instances are torn down as `Unloading unused asset bundle
-Chokaphi.DecalMaker.37:...` (`:2306`, `:2361`, `:2416`) and throw six times (`:1459`, `:1664`, `:1886`,
-`:2109` with the deleted probe's dumps interleaved, then `:2348` and `:2403`); after the plugin's own Remove
-button (`MVRPluginManager:RemovePlugin` <- `LookInputModule:ProcessMousePressAlt`) the surviving instance runs
-the skin-image path **eight** times (`ManagerPanel:UpdateSkinImage` <- `Decal_Maker:GetCurrentGPUTexture`,
-`:2444`-`:2529`) with **no** `Failed to create texture` and **no** `multiple of 4` after `:2403`; and its own
-teardown unloads `Chokaphi.DecalMaker.38:...` (`:2622`). A bundle can only be unloaded if it was loaded, so
+(`:937`, opened through the scene file browser at `:943`; the boot scene `MeshedVR/default.json` is `:909`, and
+no third scene is loaded in the file). It names the revisions, so it reads as a measurement rather than as one
+more paste. The `.37` instances throw `Failed to create texture` six times - `:1468`, `:1673`, `:1895` and
+`:2119` with the deleted probe's dumps interleaved (`:1637`, `:1859`, `:2081`, `:2305`), then `:2358` and
+`:2413` with no probe in sight - and they are torn down as `Unloading unused asset bundle
+Chokaphi.DecalMaker.37:...` at `:2316`, `:2371` and `:2426`. The first two teardowns are the URL control's
+**Reload** (`JSONStorableUrl:Reload` <- `Button:Press` <- `LookInputModule:ProcessMousePressAlt`), and each
+Reload re-creates the same `.37` URL, so the instance that follows throws again (`:2413`, MVID `a036ba03...`);
+the third is the plugin's own **Remove** button (`MVRPluginManager:RemovePlugin` <- `CreatePluginWithId`'s
+`b__1` <- `Button:Press`, `:2436`). After it the surviving instance runs the skin-image path **eight** times
+(`Material:GetTexture` <- `Decal_Maker:GetCurrentGPUTexture` <- `ManagerPanel:UpdateSkinImage`, frames
+`:2454`-`:2538`) with **no** `Failed to create texture` anywhere after `:2413`, and its own teardown unloads
+`Chokaphi.DecalMaker.38:...` (`:2632`) as the scene closes. A bundle can only be unloaded if it was loaded, so
 the surviving instance was the delivered revision - **`.37` throws, `.38` does not, in one session on one
-scene, with no scene-side edit at all**, because the user reached the new revision from the plugin's own URL
-control and its Reload. Two limits, in the same spirit as the ones above: the log prints no plugin URL string,
-so the `.38` attribution rests on the bundle identity and on the absence of any later `.37` teardown; and the
-session **straddles** commit `fe96e9a`, which deleted the probe sources at 16:39 while this editor was open
-(the log records the deletion and the following recompilation), so only the crashes at `:2348` and `:2403`
-onwards are live-plugin evidence. Each reload recompiles the plugin through `DynamicCSharp`, which is why the
-crashing MVIDs progress `de7b9d90...` -> `828f997d...` -> `a036ba03...`.
+scene, with no scene-side edit at all**.
+
+**The line numbers this document carried for that log before were 9-10 lines early throughout, and the count
+of 54 was not a crash count; both are corrected here.** The numbers were taken while the file was still being
+written, from a snapshot of about 2 567 lines, so every one of them shifted - `:928` for the scene load,
+`:1459`/`:1664`/`:1886`/`:2109`/`:2348`/`:2403` for the throws, `:2306`/`:2361`/`:2416` for the `.37` teardowns
+and `:2622` for the `.38` one. The set in this section is the one re-measured against the finished 3 605, and
+nothing here should be re-derived from the old set. The **54** occurrences of the engine's own `requires a
+texture size that is a multiple of 4` are rule lines, not throws: six belong to the plugin (`:1453`, `:1648`,
+`:1870`, `:2094`, `:2343`, `:2398`) and the other 48 are the throwaway probe's deliberate grid - six DXT5 and
+six DXT1 per round over four rounds - which is why the probe's dumps sit in the same windows. The 10-line gap
+between a rule line and its throw is the log's own frame aliasing: a `MethodName (args)` frame line, then the
+IL frame carrying the MVID about ten lines later. Quote the frame line and say which one it is; the frame
+lines are the stable reading, the IL lines move with every recompile.
+
+Three limits, in the same spirit as the ones above. The log prints **no plugin URL string**, so the `.38`
+attribution rests on the teardown's bundle identity and on the absence of any further `.37` rather than on a
+logged value - and the creation of the surviving instance is not logged either, because a plugin whose source
+compiles succeeds silently, while the two Reloads are visible only through the teardown each one causes. The
+game's own save corroborates the attribution from a second source: `Save Saves\scene\1789828695.json` at
+`:2547`, and that file names `Chokaphi.DecalMaker.38` at its own line 894, i.e. the live URL held the delivered
+revision by then, with the eight clean blocks at `:2454`-`:2538` just before it and the `.38` teardown at
+`:2632` after. And the session **straddles** commit `fe96e9a`, which deleted the probe sources at 16:39 while
+this editor was open (the log records the deletion and the following recompilation), so only the throws at
+`:2358` and `:2413` are live-plugin evidence. Each reload recompiles the plugin through `DynamicCSharp`, which
+is why the crashing MVIDs progress `de7b9d90...` -> `828f997d...` -> `a036ba03...`.
+
+**And the class of defect has exactly one member on this machine.** Every `new Texture2D(...)` reachable from
+the installation was enumerated as text - all 80 `*.var` archives unpacked and scanned as ZIPs (12 758
+entries, 1 221 text files read) plus the loose `Custom\Scripts\` sources, 24 textual matches over **18
+distinct sites**, 16 of them live - and exactly one can construct a compressed texture at a size the engine
+refuses: `VAM_Decal_Maker.cs:219`. Fourteen are provably valid (the 4 096-square RGBA32 icons each revision
+carries, ARGB32, RGB24, and the delivered `DXT5` at 4x4), two are commented out, and one is indeterminate
+rather than invalid: `MacGruber.Essentials.16`'s `MacGruber_SkyMagicLoader.cs:223` builds
+`new Texture2D(mipsize, mipsize, cube.format, false)` where the size is a power of two and therefore safe, but
+`cube.format` comes from `mySkyProbe.customBakedTexture as Cubemap` at runtime and cannot be resolved from
+text. The delivered revision differs from the shipped one in **this line alone** - one changed line, the md5
+the compiled plugin assembly name embeds is `6BA98B00...` in the shipped `.37` against `B91C3B6A...` in the
+delivered `.38` - which is an independent confirmation of the byte-level minimality argument above. Full
+record: `artifacts\plugin-census\REPORT.md` and `census.csv`.
 
 The full record - the method verbatim, the call chain with its IL offsets, the package provenance, the
 2020.3 A/B and the evidence file list - is `docs\decal-texture-crash.md`.

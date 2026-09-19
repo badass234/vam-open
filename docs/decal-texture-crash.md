@@ -597,26 +597,52 @@ worth keeping: the control crashed **three times in one session**, because a str
 raw crash count tracks how many scenes were loaded rather than the defect, and the per-block reading is the
 one that means something.
 
-**The loop was then closed by the user's own hand, which is the same A/B in a stronger form.** The run that
+**The loop was then closed by the user's own hand, which is the same A/B in a stronger form.** The run that
 produced the fourth paste - `artifacts\manual-play.log`, 3 605 lines / 363 186 B, static since 16:42:33 - is
-one editor session on one user-loaded scene, `SoftEros777.Lady_Clown.1:/Saves/scene/ladyclown.json` (`:928`;
-no other scene is loaded in the file), and it names the revisions, so it reads as a measurement rather than as
-one more paste. Its `.37` instances throw six times (`:1459`, `:1664`, `:1886`, `:2109` with the deleted
-probe's dumps interleaved, then `:2348` and `:2403`) and are torn down as `Unloading unused asset bundle
-Chokaphi.DecalMaker.37:...` (`:2306`, `:2361`, `:2416`). After the plugin's own Remove button
-(`MVRPluginManager:RemovePlugin` <- `LookInputModule:ProcessMousePressAlt`) the surviving instance runs the
-skin-image path **eight** times (`ManagerPanel:UpdateSkinImage` <- `Decal_Maker:GetCurrentGPUTexture`,
-`:2444`-`:2529`) with **no** `Failed to create texture` and **no** `multiple of 4` after `:2403`, and its own
-teardown unloads `Chokaphi.DecalMaker.38:...` (`:2622`). A bundle can only be unloaded if it was loaded, so
-the surviving instance was the delivered revision - **`.37` throws, `.38` does not, inside one session on one
-scene, with no scene-side edit at all**, because the user reached the new revision from the plugin's own URL
-control and its Reload. This supersedes the caveat that the working shape must be "copy the scene out, repoint
-the token, load the copy": the repoint is reachable live. Two limits, in the same spirit as the ones below:
-the log prints no plugin URL string, so the attribution rests on the bundle identity and on the absence of any
-later `.37` teardown; and the session **straddles** commit `fe96e9a`, which deleted the probe sources at 16:39
-while this editor was open (the log records the deletion and the following recompilation), so only the crashes
-from `:2348` on are live-plugin evidence. Each reload recompiles the plugin through `DynamicCSharp`, which is
-why the crashing MVIDs progress `de7b9d90...` -> `828f997d...` -> `a036ba03...`.
+one editor session on one user-loaded scene, `SoftEros777.Lady_Clown.1:/Saves/scene/ladyclown.json` (`:937`,
+picked in the scene file browser at `:943`; the boot scene `MeshedVR/default.json` at `:909` is the session's
+own and no third scene is loaded), and it names the revisions, so it reads as a measurement rather than as one
+more paste. Its `.37` instances throw six times (`:1468`, `:1673`, `:1895`, `:2119` with the deleted probe's
+dumps interleaved at `:1637`, `:1859`, `:2081`, `:2305`, then `:2358` and `:2413`) and are torn down as
+`Unloading unused asset bundle Chokaphi.DecalMaker.37:...` (`:2316`, `:2371`, `:2426`). The first two teardowns
+are the URL control's **Reload** - `JSONStorableUrl:Reload` (`:2329`) <- `CreatePluginWithId`'s `b__0`
+(`:2328`) <- `Button:Press` (`:2332`) <- `LookInputModule:ProcessMousePressAlt` (`:2336`) - and each Reload
+re-creates the same `.37` URL, which is why the instance that follows throws again (`:2413`); the third teardown
+is the plugin's own **Remove** button, `MVRPluginManager:RemovePlugin` (`:2436`) <- `b__1` (`:2437`) <-
+`Button:Press` (`:2440`). After it the surviving instance runs the skin-image path **eight** times
+(`ManagerPanel:UpdateSkinImage` at `:2455`, `:2467`, `:2479`, `:2491`, `:2503`, `:2515`, `:2527`, `:2539`, each
+one a `Decal_Maker:GetCurrentGPUTexture` block at `-1`) with **no** `Failed to create texture` and **no**
+`multiple of 4` after `:2413`, and its own teardown unloads `Chokaphi.DecalMaker.38:...` (`:2632`). A bundle
+can only be unloaded if it was loaded, so the surviving instance was the delivered revision - **`.37` throws,
+`.38` does not, inside one session on one scene, with no scene-side edit at all**, because the user reached the
+new revision from the plugin's own URL control and its Reload. And the session's own save corroborates it from
+a second source: `Save Saves\scene\1789828695.json` at `:2547`, whose line 894 is `"plugin#2" :
+"Chokaphi.DecalMaker.38:/Custom/Scripts/Chokaphi/VAM_Decal_Maker/VAM_Decal_Maker.cs"` - so the live URL held
+the delivered revision by the moment of the save, with the eight clean blocks just before it (`:2454`-`:2538`)
+and the `.38` teardown after (`:2632`). This supersedes the caveat that the working shape must be "copy the
+scene out, repoint the token, load the copy": the repoint is reachable live.
+
+**The line numbers this document carried for that log before were 9-10 lines early throughout, and the count
+of rule lines is not a count of crashes.** The numbers came from a mid-run snapshot of about 2 567 lines, so
+every one of them shifted: the scene load `:928` -> `:937`, the throws `:1459`/`:1664`/`:1886`/`:2109`/`:2348`/
+`:2403` -> `:1468`/`:1673`/`:1895`/`:2119`/`:2358`/`:2413`, the `.37` teardowns `:2306`/`:2361`/`:2416` ->
+`:2316`/`:2371`/`:2426`, the clean blocks `:2444`-`:2529` -> `:2455`-`:2539`, the `.38` teardown `:2622` ->
+`:2632`. Nothing should be re-derived from the old set. The engine's own `requires a texture size that is a
+multiple of 4` prints **54** times (30 DXT5, 24 DXT1), but only **six** of those are the plugin's own - one per
+round of the probe era (`:1453`, `:1648`, `:1870`, `:2094`) and two live (`:2343`, `:2398`) - while the other
+48 are the throwaway probe's deliberate grid, six DXT5 and six DXT1 per round. The 10-line gap between a rule
+line and its throw is the log's frame aliasing: the `MethodName (args)` frame, then the IL frame carrying the
+MVID about ten lines further down.
+
+Three limits, in the same spirit as the ones below: the log prints no plugin URL string, so the attribution
+rests on the bundle identity, on the saved scene and on the absence of any later `.37` teardown - and the
+creation of the surviving instance is logged nowhere, because a plugin whose source compiles succeeds
+silently, while the two Reloads are visible only through the teardown each one causes; the session
+**straddles** commit `fe96e9a`, which deleted the probe sources at 16:39 while this editor was open (the log
+records the deletion and the following recompilation), so only the crashes from `:2358` on are live-plugin
+evidence; and each reload recompiles the plugin through `DynamicCSharp`, which is why the crashing MVIDs
+progress `de7b9d90...` (four throws, probe era) -> `828f997d...` (after the first Reload) -> `a036ba03...`
+(after the second).
 
 **What the acceptance does not show**, recorded because an over-read claim is how a wrong cause gets
 inherited. The exception's absence proves nothing by itself - the 1.6 GB crash log names the package nowhere
@@ -649,3 +675,41 @@ edited in place, so the working shape is: copy the scene out, repoint the token,
 this is repository content - it is local install state - and `-InPlace`, which rewrites the shipped package
 after saving `Chokaphi.DecalMaker.37.var.original` beside it, stays in the script as a tested capability
 for an install owner who wants it, **not** as this project's route.
+#### The class of defect, enumerated install-wide
+
+Every `new Texture2D(...)` the installation can reach was enumerated as text, independently of this diagnosis:
+all 80 `*.var` archives unpacked and scanned as ZIPs (12 758 entries, 1 221 text files read) plus the loose
+`Custom\Scripts\` sources - 24 textual matches over **18 distinct sites**, 16 of them live. Exactly **one** of
+them can construct a compressed texture at a size the engine refuses, and it is the line this document is
+about. The rest:
+
+- **14 provably valid** - the 4 096-square RGBA32 icons each revision carries, other ARGB32 / RGB24 / RGBA32
+  placeholders, and the delivered `DXT5` at 4x4.
+- **1 indeterminate rather than invalid** - `MacGruber.Essentials.16`'s `MacGruber_SkyMagicLoader.cs:223`,
+  `new Texture2D(mipsize, mipsize, cube.format, false)`: the size is a power of two, so safe by construction,
+  but `cube.format` is read from `mySkyProbe.customBakedTexture as Cubemap` at runtime and cannot be resolved
+  from text. It is the only opaque site left on the machine.
+- **2 commented out.**
+
+Two further readings from that sweep. The delivered revision differs from the shipped one in **this line
+alone** - one changed line, the md5 the compiled plugin assembly name embeds is `6BA98B00...` in the shipped
+`.37` against `B91C3B6A...` in the delivered `.38` - which is an independent confirmation of the byte-level
+minimality argument above. And reachability is corroborated the other way too: the plugin
+carries no `.disabled` marker, `VaM_Rebuild\AddonPackagesUserPrefs\Chokaphi.DecalMaker.37.prefs` exists and
+already reads `pluginsAlwaysEnabled: true` - so the second gate this document names was satisfied in the
+install before the delivery script wrote anything - and the only packages that pin `.37` are the Lady Clown
+scene pair, `SoftEros777.Lady_Clown.1` (`ladyclown.json:893`, `meta.json:33`) plus the A/B scene
+`VaM_Rebuild\Saves\scene\decal-ab\ladyclown37.json`. The boot scene names `MacGruber.Life.12` and no decal
+plugin at all, which is why the defect needs the Lady Clown scene to appear. Full record:
+`artifacts\plugin-census\REPORT.md` and `census.csv`.
+
+#### And the plugin does not crash the game
+
+Worth stating, because the pasted stacks read as fatal. The plugin's own `Setup()` **catches** the exception
+(`VAM_Decal_Maker.cs:393`) and sets `_SetupError = true` (`:397`), after which `Update()` returns immediately
+(`:281`): the plugin ends up half-initialised and silently dead, with nothing raised beyond the four lines the
+engine prints for the throw itself. The exception reaches a stack only on the *other* path, which is a
+coroutine: `Init()` -> `StartCoroutine(CharacterChanged())` -> `Update()` -> `Setup()` is the startup route and
+swallows it, while every stack the user pasted comes from `CharacterUpdated`'s iterator through `OnCoreChange`
+-> `CoreEvent` -> `UpdateSkinImage` -> `ConvertNormal` -> `GetResource`, where nothing catches. The same line
+therefore reports itself in two shapes, and only the second escapes.
