@@ -421,6 +421,62 @@ never fired in either run, and neither did the residual `Compile of ... failed. 
 The catch-all that does fire, `Exception during compile of ` at `:1022`, prints no list at all, which is why the
 TittyMagic `TypeLoadException` above has no `[CS]` twin.
 
+### 10. Plugin-compiler repair acceptance - `scripts\Test-PluginCompilerRepair.ps1`
+
+Check 9 proves the compiler by building it and compiling a known file through it. This check is about the
+*repair* inside the compiler's driver, and it exists because that acceptance had been done by hand four times
+and mis-read three of those times. The repair itself is committed as `9674a1f` (`McsDriver.ReadMethodToken`
+prefers `MemberInfo.MetadataToken` and falls back to `GetToken().Token` under `catch
+(InvalidOperationException)`), and no gate can exercise it at all: `RebuildGate.cs:658` calls
+`LoadPlayScene(sceneName, pluginsEnabled: false)`, so a `Play` run has **0** plugin-manager lines in every
+direction. The evidence is therefore a pair of **hand-run, plugin-enabled** logs, and this script is the
+reading of them.
+
+```powershell
+# the standing pair: pre-fix control against the post-fix run
+scripts\Test-PluginCompilerRepair.ps1 -Control artifacts\manual-play.log `
+                                      -Candidate artifacts\compiler-fix-ladyclown.log
+# judge one freshly produced log on its own
+scripts\Test-PluginCompilerRepair.ps1 -Log artifacts\your-run.log
+```
+
+Exit codes: **0** the expectation holds, **1** it does not (for `-Log` on a control, that is the *correct*
+verdict and the wording says so), **2** bad input - a missing file, an unreadable file, the same path given
+twice, `-Log` combined with `-Control`, a directory. The expectation is *post-fix*: token blocks **0**,
+`get_MetadataToken` frames **0**, and the repair's marker **present**.
+
+**Count blocks, never lines**, and the script does the grouping itself: hits are assigned to the block they
+belong to (the exception line and its duplicated `[Error]` twin merge into one block; the IL frames under it
+are a second family; the marker, the `failed. Compile of` header and the quiet `Exception during compile of`
+shape are separate families again). The raw-hit column is printed beside the block column only to make the
+difference visible, and it is deliberately **not** part of the verdict - in the standing pair `[4]` reads 2
+blocks against 2 raw hits in the control and 1 block against 2 raw hits in the candidate, so a rising total is
+not a regression.
+
+*Current state*: `PASS`, exit `0`. Control `artifacts\manual-play.log` (3 605 lines, 09-19 16:42:33) - token
+blocks **2** (`:1249`, `:1395`), `get_MetadataToken` frames **2**, marker **absent**, and two
+`Compile of … failed. Errors:` headers (`everlaster.TittyMagic.70` at `:1274`, `AcidBubbles.Timeline.283` at
+`:1420`). Candidate `artifacts\compiler-fix-ladyclown.log` (7 605 lines, 17:02:46) - token blocks **0**, frames
+**0**, marker **present** at `:894` reading `resolved 32`, one remaining `Compile of` header, and the three
+`[Error]`-prefixed twins merged into their originals. The by-ref pair (`artifacts\manual-play-cs584-before.log`
+against the same candidate) is reported too but judged only on the families its control exhibits - `[CS584]`
+**10 → 0** and the `MacGruber.Life.12:` headers **5 → 0** - because that control has no token defect in it and
+is therefore not a token control. The second older pair, `artifacts\decal-repro\decal-repro-A37.log` against
+`…B38.log`, exits **1**: it is a pre-fix pair on both sides (`10 → 2`, no marker anywhere), and that is the
+honest reading rather than a failure of the fix.
+
+Two things the script states in the output rather than leaving to the reader, both of them traps this project
+has fallen into. The list under `… failed. Errors:` is **always empty and nothing is missing** (`:798` writes
+the header, `:802` skips every entry beginning `[CS]`, `:804` logs the survivors), so it reports the mechanism
+instead of reporting "no errors". And defect B - `TypeBuilderInstantiation.GetMethods` →
+`NotSupportedException` from `ResolveOnTypeBuilderInst :483` - is printed as its **own named block** and is
+never folded into the token verdict: in the candidate it is one block at `:1049` (raw 2 / 2 / 2 for
+`NotSupportedException`, `TypeBuilderInstantiation`, `ResolveOnTypeBuilderInst`), and it is a separate, still
+open defect whose acceptance will need the same pair again.
+
+The long form of the script's own validation, its trap list and its measured runs is
+`artifacts\plugin-compiler\acceptance\README.md`, written by the workstream that built it.
+
 ## When a gate lies
 
 Both failure modes named first below have already happened once, and each of them produced a red verdict that had
