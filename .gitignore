@@ -51,6 +51,9 @@ VaM_Rebuild/Logs/
 VaM_Rebuild/UserSettings/
 VaM_Rebuild/prefs.json
 VaM_Rebuild/version
+VaM_Rebuild/whitelist_domains.json
+VaM_Rebuild/whitelist_domains_user.json
+VaM_Rebuild/BrowserProfile/
 VaM_Rebuild/*.csproj
 VaM_Rebuild/*.sln
 VaM_Rebuild/*.unityproj

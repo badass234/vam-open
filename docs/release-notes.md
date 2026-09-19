@@ -202,6 +202,79 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   [`docs/verification.md`](docs/verification.md), which reads the same script as section 10 and reports the
   defect's block as a pair.
 
+- **The built-in browser works in the editor, and all three of its defects were editor-only.** The player build
+  never had them: `RebuildPlayer.cs` already stages the CEF payload where the shipped game keeps it - `:36` the
+  index name, `:160` its call, `:218` `WriteWebResourceIndex` - and a player's plugin folder is the one the
+  shipped `FileLocations` looks in. In the editor, `FileLocations` joins `Application.dataPath + "/Plugins"` for
+  `resourcesPath`, `binariesPath`, `localesPath` and `subprocessFile` (`FileLocations.cs:43`, `:51-55`), while
+  this project keeps the 65-file runtime one level deeper, in `Assets\Plugins\x86_64`, because that is where the
+  game ships it - so the raise is `DllNotFoundException: ZFBrowser failed to load
+  …\Assets\Plugins\ZFProxyWeb.dll`. `BrowserNative.LoadNative` constructs
+  `new StandaloneWebResources(Application.dataPath + "/Resources/browser_assets")` (`BrowserNative.cs:519`),
+  whose `LoadIndex()` reads that file unconditionally (`StandaloneWebResources.cs:35`), and this project has no
+  such file - so `FileNotFoundException: Could not find file "…\Assets\Resources\browser_assets"`. And
+  `UserPreferences` declares `whitelist_domains.json` and `whitelist_domains_user.json` with no directory
+  (`UserPreferences.cs:567`), so both resolve against the process working directory; with no file there the set
+  is empty, `CheckWhitelistDomain` answers `false` for everything but `about:blank`, and the browser reports
+  `Attempted to load browser URL … which is not on whitelist`.
+- **Two files close all three, and neither touches the player.** `src\Assembly-CSharp\BrowserNativePaths.cs` is
+  an editor-only `[RuntimeInitializeOnLoadMethod(BeforeSceneLoad)]` hook that rewrites the cached
+  `FileLocations.Dirs` (`resourcesPath`, `binariesPath`, `localesPath`, `subprocessFile`, `logFile`) at the
+  staged folder, points the CEF log at `Library\browser.log` and writes the 14-byte index, instead of
+  duplicating 182 MB of CEF into `Assets\Plugins`; `scripts\New-RuntimeDataLinks.ps1` seeds the whitelist from
+  the installation, because the list belongs to the user and not to this repository. The hook is a deliberate
+  deviation from the decompiled original, the same shape as the `StreamingAssets` junction, and the whitelist is
+  that script's seventh - and narrowest - copy of the same kind. Both are written up in
+  [`docs/rebuild-project.md`](docs/rebuild-project.md).
+- **The acceptance is a same-engine, same-scene pair, and each cause has its own predicate reading 1 → 0.** The
+  control is `artifacts\manual-play-prefix-leak.log`, a hand run on `2021.3.45f2` (`:19`) that loads
+  `AlpacaLaps.Afterlife.6:/Saves/scene/Afterlife.json` (`:944`) - the very scene the candidate asks for, so the
+  readings isolate the fix and not a hop. Against it: `ZFProxyWeb` 1 → 0, `DllNotFoundException` 1 → 0,
+  `browser_assets` 1 → 0, `Could not find file` 1 → 0, `which is not on whitelist` 1 → 0, and `VRWebBrowser`
+  4 → 0 - which is its four *failure* frames going away rather than the component being absent, because the
+  component logs on only two paths, an exception (`VRWebBrowser.cs:592`) and a refusal (`:220`). What keeps the
+  zeros honest is the other direction: the scene's own browser panel, `WebPanelEmissive`, is 0 → 1, and so is
+  `RebuildGate OK` 0 → 1.
+- **Three of the candidate's artifacts are not logs at all**, which is the half of an acceptance that
+  "the exception is gone" can never supply. The index it writes is 14 bytes,
+  `09 7A 66 62 52 65 73 5F 76 31 00 00 00 00` - a length-prefixed `zfbRes_v1` and an `int32 0`, exactly what
+  `StandaloneWebResources`'s own writer emits for an empty entry list (`:115` write-string, `:116` write-int32)
+  and what its own `LoadIndex()` reads back. CEF writes its own `Library\browser.log`, 287 B, `zfb_init` at
+  `19:44:23.958` and `zfb_shutdown` at `19:46:24.651` - a 2 min 1 s lifetime at a path only this hook points at,
+  and a **singleton on the whole tree**. And the ordering closes it: CEF shuts down one second before the Unity
+  log closes, which is teardown rather than a crash mid-session. The gate itself is unchanged by this fix and
+  fails on none of the three defects (`PlayVerdict()` checks atoms, refusals and the scene audit, not browser
+  paths), so both runs pass it and the pair is evidence only because it was read by hand.
+- **One thing the run could not exercise, stated with it.** It cleared the whitelist's refusal branch only in
+  the sense that no refusal happened; it did not reach the acceptance side, because the seeded
+  `VaM_Rebuild\whitelist_domains.json` (165 B) permits `patreon.com`, which is the host this scene's browser
+  opens. What stands instead is the weaker claim the check needs: with no file in the project directory the set
+  is empty and the same host is refused - that is the control - so the candidate's silence can only be the list
+  being read where the code looks for it. Section 13 of [`docs/verification.md`](docs/verification.md) is the record.
+- **Two plugins the new engine refuses are delivered as new revisions, by ownership rather than by patching our
+  own tree.** Decal Maker's `GetResource` opens with `new Texture2D(1, 1, TextureFormat.DXT5, linear)` - a 1x1
+  compressed texture, and 1 is not a multiple of 4 - and 2021.2 moved that rule from the device into the
+  constructor, so where 2020.3 let the upload fail with `E_INVALIDARG` and drew nothing, 2021.3 throws before
+  `LoadImage` can reallocate over the placeholder. `scripts\New-DecalMakerPatch.ps1` copies all 46 entries
+  byte-for-byte and rewrites that one line to `4, 4`, writing `Chokaphi.DecalMaker.38.var` beside the shipped
+  `.37`; the two entries differ at exactly two bytes, and three unrelated entries hash identically. E-Motion's
+  `EmotionEngine.cs:763` keeps the package's only `Random.` call outside a method body as a **static field
+  initializer**, which runs inside `GameObject.AddComponent` where the engine refuses it - and because
+  `EmotionEngine` is `partial` across 34 of the package's 36 script entries, that one dead field (one occurrence,
+  no reader anywhere) stops the whole plugin. `scripts\New-E-MotionPatch.ps1` writes `.5` with `0.25f`, the
+  midpoint of the range it was drawn from: 179 entries byte-for-byte, one rewritten, net -19 bytes.
+- **Neither delivery reaches a scene that named the old revision, and that is deliberate.** A version-qualified
+  uid resolves exactly (`FileManager.GetPackage` consults the package group only for `.latest`/`.minNN`), the
+  package belongs to its author, and a package shipping `.cs` also needs its confirmation prefs file - so the
+  shipped revisions stay untouched and repointing a scene's own version token is the consumer's one-byte edit, a
+  capability `-InPlace` carries in both scripts and that is explicitly not this project's route. Both acceptances
+  are pairs that move in one direction while the plugin starts running: the decal's `Failed to create texture`
+  2 → 0, `GetResource` frames 6 → 0 and `UpdateSkinImage`/`GetCurrentGPUTexture` 1/0 → 8/8; E-Motion's
+  `Range is not allowed` 5 → 0, `TypeInitializationException` 6 → 0 and `RegisterUIElements`/`Init` 0 → 4 each.
+  A plugin that compiles succeeds silently, which is why the readings are the plugins' own runtime markers and
+  never a success line. The records are the *Decal Maker* section and section 12 of
+  [`docs/verification.md`](docs/verification.md), plus [`docs/decal-texture-crash.md`](docs/decal-texture-crash.md).
+
 ## 0.1.10-alpha
 
 - **The engine moved to Unity 2020.3 LTS (2020.3.49f1).** Hop three of the engine migration, made the same

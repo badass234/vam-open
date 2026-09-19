@@ -65,6 +65,13 @@ A build without them still looks correct: it launches, reaches the main menu, an
 `0xc0000409` inside `mono-2.0-bdwgc.dll` the first time a scene opens the browser, because what is
 missing surfaces as a `DllNotFoundException` raised inside a native callback.
 
+In the **editor** the build's staging is not enough on its own, because the discovery code looks one
+level up from where this project keeps the payload: it joins `Application.dataPath + "/Plugins"` with
+`/ZFProxyWeb.dll` and `Application.dataPath + "/Resources/browser_assets"`, while the staged folder is
+`Assets\Plugins\x86_64` and the project has no `Assets\Resources\browser_assets` at all. Both are
+editor-only problems and both are answered in the editor only, by `BrowserNativePaths.cs` - see
+"Deviations from the decompiled original" below and §13 of `docs\verification.md`.
+
 Only one native library is bound directly from `Assembly-CSharp`, but the rest are reached through
 wrappers or through project settings:
 
@@ -514,6 +521,18 @@ This junction is what makes the wiping in `scripts\Setup-RebuildProject.ps1` dan
 `StreamingAssets` before it clears `VaM_Rebuild\` and relinks it afterwards. Never clear that folder by
 hand while the junction is up - `scripts\New-StreamingAssetsLink.ps1 -Remove` first.
 
+The same shape of deviation applies to the built-in browser, and it is the third table row this
+document would carry if it were a table. `ZFBrowser` resolves its CEF payload and its web-resource
+index from the *immediate* children of `Application.dataPath` (`Assets\Plugins\ZFProxyWeb.dll` and
+`Assets\Resources\browser_assets`), while this project keeps the runtime one level deeper, in
+`Assets\Plugins\x86_64`, because that is the folder the game ships. `BrowserNativePaths.cs` closes
+that gap in the editor without a second 182 MB copy: an editor-only
+`[RuntimeInitializeOnLoadMethod(BeforeSceneLoad)]` hook that redirects the cached `FileLocations.Dirs`
+(`resourcesPath`, `binariesPath`, `localesPath`, `subprocessFile`, `logFile`) at the staged folder,
+and writes the 14-byte `browser_assets` index the player build writes for the same reason. It is a
+deliberate deviation rather than a repair of decompiler output, and §13 of `docs\verification.md` is
+the measurement behind it.
+
 `Launcher.cs` sets `SettingsManager.APP_PATH = Directory.GetParent(Application.dataPath).FullName`, so
 `saves`, `Custom`, `AddonPackages` and friends resolve to the *install* root in a player and to the
 project root in the editor. `FileManager` does not even use that: it filters its package list with
@@ -544,6 +563,14 @@ the other side: `RebuildGate.PresetDump` prints the resolved `QualitySettings`, 
 `UserPreferences` values and the graphics keys of the `prefs.json` it found, so a report always says
 which preset produced it.
 
+The script's seventh copy is `whitelist_domains.json`, and it is the only one the built-in browser
+cannot work without. `UserPreferences` declares its two paths as bare relative names -
+`whitelist_domains.json` and `whitelist_domains_user.json` - so both resolve against the process
+working directory, and `CheckWhitelistDomain` answers `false` for everything but `about:blank` while
+the set is empty; the browser then reports `Attempted to load browser URL ... which is not on
+whitelist`. The list belongs to the user rather than to this project, so the script seeds it from the
+installation and refreshes it when the installation's own file changes.
+
 User content created during editor Play mode otherwise lands in `VaM_Rebuild\`, not in the game
 folder; junction any of the other directories the same way if the original content has to be visible
 to an editor session.
@@ -556,14 +583,14 @@ to an editor session.
   a plugin inside an asset bundle rather than by the game assemblies.
 - CEF discovery was untested, and the first scene with a browser settled it: the player crashed with
   `0xc0000409` in `mono-2.0-bdwgc.dll` until the build started staging the CEF payload and writing
-  `browser_assets` (see "Native plugins" above). That fix is built but has not been through a hand
-  load yet. In the **editor** the same gap is still open, and it is structural rather than a missing
-  copy: `ZFBrowser` looks for both the payload and the index in the immediate children of
-  `Application.dataPath` - `Assets\Plugins\` and `Assets\Resources\browser_assets` - while this
-  project keeps the runtime one level deeper, in `Assets\Plugins\x86_64`, so an editor session logs
-  `FileNotFoundException: ...\VaM_Rebuild\Assets\Resources\browser_assets` (`artifacts\smoke-look.log`)
-  and finds no CEF either. Closing it means a second copy of 182 MB under `Assets\Plugins`, or a
-  junction for it.
+  `browser_assets` (see "Native plugins" above). The **editor** half of the same gap was structural
+  rather than a missing copy - `ZFBrowser` looks for both the payload and the index in the immediate
+  children of `Application.dataPath`, while this project keeps the runtime one level deeper - and it
+  is now closed by `BrowserNativePaths.cs`, which redirects `FileLocations.Dirs` at the staged folder
+  and writes the index instead of duplicating 182 MB under `Assets\Plugins` (see "Deviations from the
+  decompiled original" above, and §13 of `docs\verification.md`). The whitelist refusal that came with
+  it (`... which is not on whitelist`) was a third, unrelated path: a cwd-relative file the project
+  directory did not have, seeded now by `scripts\New-RuntimeDataLinks.ps1` and verified.
 - `Assets\Scripts\Assembly-CSharp` compiles as the predefined assembly, so it cannot be unit-tested
   in isolation. That is intentional: the original build has the same shape.
 - Asset bundles are not part of the project; the editor reads them from a `<project>\StreamingAssets`

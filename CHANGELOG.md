@@ -63,6 +63,58 @@ manual)` (`:655`), and `LoadPlayScene()` (`:1106`) takes none - so the marker *p
 one scene load) is the repeat. Section 10 of [`docs/verification.md`](docs/verification.md) is the script that
 reads it and section 11 the record.
 
+The built-in browser works in the editor now, and it is the one open question `0.1.8-alpha` left behind.
+Three independent defects kept it dead, and all three are **editor-only** - a player build never
+had them, because `RebuildPlayer.cs` already stages the CEF payload and writes the 14-byte `browser_assets`
+index, and a player's plugin folder is the one the shipped `FileLocations` looks in. `FileLocations` joins
+`Application.dataPath + "/Plugins"` for the payload, the locales and the subprocess, while this project keeps
+the 65-file runtime one level deeper, in `Assets\Plugins\x86_64`, because that is where the game ships it -
+which is `DllNotFoundException: ZFBrowser failed to load …\Assets\Plugins\ZFProxyWeb.dll`.
+`StandaloneWebResources.LoadIndex()` reads `Application.dataPath + "/Resources/browser_assets"` unconditionally
+and this project has no such file - which is `FileNotFoundException … browser_assets`. And `UserPreferences`
+declares both whitelist files with no directory, so they resolve against the process working directory, an
+empty set refuses every host, and the browser reports `… which is not on whitelist`. Two files close all three.
+`src\Assembly-CSharp\BrowserNativePaths.cs` is an editor-only `[RuntimeInitializeOnLoadMethod(BeforeSceneLoad)]`
+hook that rewrites the cached `FileLocations.Dirs` at the staged folder, points the CEF log at
+`Library\browser.log` and writes the index, rather than duplicating 182 MB of CEF into `Assets\Plugins` - a
+deliberate deviation from the decompiled original, the same shape as the `StreamingAssets` junction. And
+`scripts\New-RuntimeDataLinks.ps1` seeds `whitelist_domains.json` from the installation, its seventh and
+narrowest copy of that kind, because the list belongs to the user rather than to this repository. The
+acceptance is a same-engine, same-scene pair against the pre-fix control, every cause with its own predicate
+reading 1 → 0: `ZFProxyWeb`, `DllNotFoundException`, `browser_assets`, `Could not find file` and
+`which is not on whitelist` all go 1 → 0, and `VRWebBrowser` 4 → 0 is its four *failure* frames going away
+rather than the component being absent, because its only two log sites print on an exception and on a refusal.
+The zeros are kept honest from the other side: the scene's own browser panel, `WebPanelEmissive`, goes 0 → 1
+and so does `RebuildGate OK`. Three artifacts of the candidate are not logs at all - its 14 written bytes are a
+length-prefixed `zfbRes_v1` and an `int32 0`, exactly the format ZFBrowser's own `LoadIndex()` reads back;
+CEF's own `Library\browser.log` runs 2 min 1 s from `zfb_init` to `zfb_shutdown` at a path only this hook
+produces; and it shuts down one second before the Unity log closes. Section 13 of
+[`docs/verification.md`](docs/verification.md) is the record.
+
+The ladder also refuses two third-party plugins, and both are the plugin's own defect rather than ours, so both are
+delivered as new revisions and neither touches `src\`. Decal Maker's `GetResource` opens with
+`new Texture2D(1, 1, TextureFormat.DXT5, linear)` - a 1x1 **compressed** texture, and 1 is not a multiple of 4.
+2020.3 tolerated the call and let the GPU upload fail instead; 2021.2 moved the check into the constructor, so the
+plugin threw on its first cache miss and its skin-image path never ran. `scripts\New-DecalMakerPatch.ps1` copies all
+46 entries byte-for-byte and rewrites that one line to `4, 4` - one compressed block, and the size the shipped game
+uses for the same idiom - writing `Chokaphi.DecalMaker.38.var` beside the shipped `.37`, whose bytes are untouched.
+The acceptance reads per block rather than per line, because the benign `GetCurrentGPUTexture` blocks are matches
+too: `Failed to create texture` 2 → 0, the rule's own text 1 → 0 and `GetResource` frames 6 → 0, while
+`UpdateSkinImage` and `GetCurrentGPUTexture` go 1 → 8 and 0 → 8.
+
+The second delivery is E-Motion, whose `EmotionEngine.cs:763` holds
+`private static float breathRate = Random.Range(0.2f, 0.3f);` - the only `Random.` call in the 179-entry package
+outside an ordinary method body, and a static field initializer runs inside `GameObject.AddComponent`, where the
+engine refuses it. The `.cctor` throws, every later touch of the type re-raises the failure, and `EmotionEngine` is
+`partial` across 34 of the package's 36 script entries, so one dead field stopped a whole plugin.
+`scripts\New-E-MotionPatch.ps1` rewrites that one line to `0.25f` - the midpoint of the range it was drawn from,
+and lossless, because the field has no reader anywhere in the package - writing `VRAdultFun.E-Motion.5.var` under
+exactly the same rule: 179 entries byte-for-byte, one rewritten, net -19 bytes. Its pair is one scene run twice
+with the version token as the only difference: `Range is not allowed` 5 → 0, `TypeInitializationException` 6 → 0,
+and the plugin's own `RegisterUIElements` and `Init` 0 → 4 each. Neither delivery reaches a scene that named the
+old revision, because `FileManager.GetPackage` resolves a version-qualified uid exactly - so the shipped revisions
+stay untouched and repointing a scene's own version token is the consumer's edit.
+
 ## 0.1.10-alpha
 
 The engine is **Unity 2020.3 LTS** now (`2020.3.49f1`), the third hop from the `2018.1.9f2` the game ships

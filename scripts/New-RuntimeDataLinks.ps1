@@ -36,6 +36,13 @@ which is the difference between skin and skin that looks lightly oiled. The grap
 therefore matched to the installation by default and printed one by one. Pass
 -MatchGraphicsPrefs:$false to only report the difference.
 
+whitelist_domains.json is the seventh and the narrowest of these: it is what makes the built-in browser
+work at all in the editor. UserPreferences declares the two paths as bare relative names —
+"whitelist_domains.json" and "whitelist_domains_user.json" (UserPreferences.cs:567) — so both are
+resolved against the process working directory, which in the editor is the project directory, and
+VRWebBrowser refuses every http(s) address that is not on the list. The list is the user's own and is
+seeded from the installation.
+
 .EXAMPLE
 .\scripts\New-RuntimeDataLinks.ps1
 .EXAMPLE
@@ -292,6 +299,41 @@ elseif ((Test-Path -LiteralPath $projectVersion) -and ((Get-FileHash -LiteralPat
 else {
     Copy-Item -LiteralPath $installVersion -Destination $projectVersion -Force
     Write-Host 'copied the version file: the editor now reports the installation version' -ForegroundColor Green
+}
+
+# ── whitelist_domains.json: which hosts the built-in browser may open ────────
+# The seventh copy, and the one the browser refuses to work without. UserPreferences reads the two
+# names as relative paths (UserPreferences.cs:567 -> :4144), so the editor only sees a whitelist that
+# sits in the project directory; with no file there the set is empty and CheckWhitelistDomain says no to
+# every address but about:blank, which is what "Attempted to load browser URL ... which is not on
+# whitelist" reports. Seeded from the installation, and refreshed when the installation's own file
+# changes, because the list belongs to the user and not to this repository.
+$whitelistNames = @('whitelist_domains.json', 'whitelist_domains_user.json')
+
+foreach ($name in $whitelistNames) {
+    $installWhitelist = Join-Path $InstallRoot $name
+    $projectWhitelist = Join-Path $ProjectPath $name
+
+    if ($Remove) {
+        Write-Host "the editor's $name is left as it is (the game reads it, like prefs.json)"
+        continue
+    }
+
+    if (-not (Test-Path -LiteralPath $installWhitelist)) {
+        # Perfectly normal for the _user file, and a warning only for the main one.
+        if ($name -eq 'whitelist_domains.json') {
+            Write-Host "WARNING: the installation has no $name ($installWhitelist) - the browser will refuse every address" -ForegroundColor Yellow
+        }
+        continue
+    }
+
+    if ((Test-Path -LiteralPath $projectWhitelist) -and ((Get-FileHash -LiteralPath $installWhitelist).Hash -eq (Get-FileHash -LiteralPath $projectWhitelist).Hash)) {
+        Write-Host "$name already matches the installation" -ForegroundColor Green
+        continue
+    }
+
+    Copy-Item -LiteralPath $installWhitelist -Destination $projectWhitelist -Force
+    Write-Host "copied $name`: the built-in browser can open the addresses the installation allows" -ForegroundColor Green
 }
 
 Write-Host ''

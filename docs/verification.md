@@ -708,6 +708,85 @@ and the candidate two (`Tried registering param`, deduped to two strings) - so t
 E-Motion's replacement, and the rest of both lists is identical. One scene with one plugin set was run, which is
 the standing policy and not a limit of this check.
 
+### 13. The built-in browser, accepted by a same-engine hand run
+
+Three independent defects kept the built-in browser dead **in the editor**, and all three are editor-only:
+the player build never had them, because `RebuildPlayer.cs` already stages the CEF payload where the shipped
+game keeps it (`:36` the index name, `:160` its call, `:218` `WriteWebResourceIndex`) and the build's
+`Assets\Plugins\x86_64` is the folder `FileLocations` finds in a player. What the editor was missing is a
+path, a file and a list - and no one of them is visible from the other two, which is why one hand run reports
+all three and one candidate clears all three.
+
+| | cause | where it is decided | the reading that names it |
+|---|---|---|---|
+| a | CEF is discovered one level above where this project stages it | shipped `FileLocations` joins `Application.dataPath + "/Plugins"` for `resourcesPath`, `binariesPath`, `localesPath` and `subprocessFile` (`FileLocations.cs:43`, `:51-55`), while the project keeps the runtime in `Assets\Plugins\x86_64`, because that is the folder the game ships | `DllNotFoundException: ZFBrowser failed to load …\Assets\Plugins\ZFProxyWeb.dll` |
+| b | the web-resource index the player build writes has no editor equivalent | `BrowserNative.LoadNative` constructs `new StandaloneWebResources(Application.dataPath + "/Resources/browser_assets")` (`BrowserNative.cs:519`), whose `LoadIndex()` reads that file unconditionally (`StandaloneWebResources.cs:35`) | `FileNotFoundException: Could not find file "…\Assets\Resources\browser_assets"` |
+| c | the whitelist is read from a bare relative name | `UserPreferences` declares `whitelist_domains.json` and `whitelist_domains_user.json` with no directory (`UserPreferences.cs:567`), so both resolve against the process working directory, which is the project root in the editor; with no file there the set is empty and `CheckWhitelistDomain` answers `false` for everything but `about:blank` | `Attempted to load browser URL … which is not on whitelist` |
+
+Two files close all three, and neither of them touches the player. `src\Assembly-CSharp\BrowserNativePaths.cs`
+is an editor-only `[RuntimeInitializeOnLoadMethod(BeforeSceneLoad)]` hook that rewrites the cached
+`FileLocations.Dirs` (`resourcesPath`, `binariesPath`, `localesPath`, `subprocessFile`, `logFile`) at the
+staged folder and writes the 14-byte index, instead of duplicating 182 MB into `Assets\Plugins`;
+`scripts\New-RuntimeDataLinks.ps1` seeds the whitelist from the installation, because the list belongs to the
+user and not to this repository. The hook is a deliberate deviation from the decompiled original and the
+whitelist is the script's seventh copy of the same kind - both are written up in `docs\rebuild-project.md`.
+
+*The pair, and why it needed no cross-engine caveat.* The control is the same engine on the same scene:
+`artifacts\manual-play-prefix-leak.log` is a hand run on `2021.3.45f2` (`:19`), it loads
+`AlpacaLaps.Afterlife.6:/Saves/scene/Afterlife.json` at `:944`, and that is the scene the candidate asks for,
+so the readings below isolate the fix rather than a hop. The candidate is
+`artifacts\logs\browser-wl-A-with-copy.log` (1 566 914 B, mtime `19:46:25`).
+
+| | predicate | control | candidate | control line |
+|---|---|---|---|---|
+| a | `ZFProxyWeb` | 1 | **0** | `:1259` |
+| a | `DllNotFoundException` | 1 | **0** | `:1259` |
+| b | `browser_assets` | 1 | **0** | `:1314` |
+| b | `Could not find file` | 1 | **0** | `:1314` |
+| c | `which is not on whitelist` | 1 | **0** | `:1324` |
+|   | `VRWebBrowser` | 4 | **0** | `:1264`, `:1268`, `:1275`, `:1331` |
+|   | `WebPanelEmissive` | 0 | **1** | - |
+|   | `RebuildGate OK` | 0 | **1** | - |
+|   | `Afterlife` | 7 | 9 | `:944` |
+
+The `VRWebBrowser` row is the one to read carefully, because it is not a fourth symptom: the component's own
+frames print **only on exceptions** - `BrowserNative.LoadSymbols` at `:592` and the refusal branch at `:220` -
+so `4 → 0` is the four *failure* frames disappearing, not the component being absent. `OnEnable`, `SyncUrl`
+and `WatchResizeAndEnable` log nothing on the happy path, and the call chain that reaches them is
+`SuperController.AddAtom` → `<LoadAtomFromBundleAsync>d__1559.MoveNext` → `Object.Instantiate` →
+`VRWebBrowser.OnEnable` (`:542`) → `<WatchResizeAndEnable>d__87` → `Browser.Resize` →
+`BrowserNative.LoadSymbols`. The last three rows are what keeps the candidate's zeros honest:
+`WebPanelEmissive` is the scene's own browser panel and it appears only in the candidate, and `Afterlife`
+rises 7 → 9 because the second run reaches further into the same scene. The gate itself is unchanged by this
+fix and fails on none of the three defects (`PlayVerdict()` checks atoms, refusals and scene audit, not
+browser paths), so **both** runs pass it and the pair is evidence only because it was read by hand.
+
+*Three positive artifacts, none of them a log.* The negative readings above are the weak half of an
+acceptance; these three could not exist unless the code had run.
+
+| | artifact | measurement |
+|---|---|---|
+| 1 | the index | `VaM_Rebuild\Assets\Resources\browser_assets`, 14 B, bytes `09 7A 66 62 52 65 73 5F 76 31 00 00 00 00`, i.e. a length-prefixed `zfbRes_v1` followed by `int32 0` - exactly what `StandaloneWebResources`'s own writer emits for an empty entry list (`:115` write-string, `:116` write-int32) and what its own `LoadIndex()` reads back |
+| 2 | the CEF runtime | `VaM_Rebuild\Library\browser.log`, 287 B: `zfb_init: Started browser` at `19:44:23.958`, `zfb_shutdown called on thread 34524` at `19:46:24.651`, a 2 min 1 s lifetime. It is a **singleton on the whole tree**, and it sits at `Library\browser.log` - the path the hook points `FileLocations.Dirs.logFile` at, and a path no other code in this project or in the shipped assemblies produces |
+| 3 | the ordering | CEF shut down at `19:46:24.651` and the Unity log closed at `19:46:25`: the run ends **after** the browser, which is the ordinary teardown order rather than a crash mid-session |
+
+*What the run could not exercise, stated with it.* Run A cleared the whitelist's **refusal** branch only in
+the sense that no refusal happened; it did not exercise the acceptance side, because
+`VaM_Rebuild\whitelist_domains.json` (165 B, seeded from the installation) permits `patreon.com` and this is
+the host the scene's browser opens - `https://www.patreon.com/AlpacaLaps`, the address the control refuses at
+`:1324`. So cause (c)'s positive path rests on the absence of `:220`'s message and nothing stronger. What
+does not rest on that is the weaker claim this check needs: with no file in the project directory the set is
+empty and the same host is refused, which is the control, so the candidate's silence can only be the list
+being read where the code looks for it.
+
+*What this check leaves unsettled, stated with it.* Three things, all narrow. The candidate log carries 13
+tagged `[Error]` lines (`:12322-12358`), 0 `[Error]` blocks and 0 `[Exception]` lines, and **none of them is
+browser-related** - they are the standing plugin and bootstrap noise the other checks already account for, so
+this check claims the run is clean *of the browser*, not clean. `whitelist_domains_user.json` is absent from
+the project, which is expected rather than a gap: the script copies only what the installation has, and this
+installation has none. And the two runs are one scene each, which is the standing policy rather than a limit
+of the fix.
+
 ## When a gate lies
 
 Both failure modes named first below have already happened once, and each of them produced a red verdict that had
