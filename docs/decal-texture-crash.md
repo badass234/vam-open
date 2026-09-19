@@ -597,8 +597,30 @@ worth keeping: the control crashed **three times in one session**, because a str
 raw crash count tracks how many scenes were loaded rather than the defect, and the per-block reading is the
 one that means something.
 
+**The loop was then closed by the user's own hand, which is the same A/B in a stronger form.** The run that
+produced the fourth paste - `artifacts\manual-play.log`, 3 605 lines / 363 186 B, static since 16:42:33 - is
+one editor session on one user-loaded scene, `SoftEros777.Lady_Clown.1:/Saves/scene/ladyclown.json` (`:928`;
+no other scene is loaded in the file), and it names the revisions, so it reads as a measurement rather than as
+one more paste. Its `.37` instances throw six times (`:1459`, `:1664`, `:1886`, `:2109` with the deleted
+probe's dumps interleaved, then `:2348` and `:2403`) and are torn down as `Unloading unused asset bundle
+Chokaphi.DecalMaker.37:...` (`:2306`, `:2361`, `:2416`). After the plugin's own Remove button
+(`MVRPluginManager:RemovePlugin` <- `LookInputModule:ProcessMousePressAlt`) the surviving instance runs the
+skin-image path **eight** times (`ManagerPanel:UpdateSkinImage` <- `Decal_Maker:GetCurrentGPUTexture`,
+`:2444`-`:2529`) with **no** `Failed to create texture` and **no** `multiple of 4` after `:2403`, and its own
+teardown unloads `Chokaphi.DecalMaker.38:...` (`:2622`). A bundle can only be unloaded if it was loaded, so
+the surviving instance was the delivered revision - **`.37` throws, `.38` does not, inside one session on one
+scene, with no scene-side edit at all**, because the user reached the new revision from the plugin's own URL
+control and its Reload. This supersedes the caveat that the working shape must be "copy the scene out, repoint
+the token, load the copy": the repoint is reachable live. Two limits, in the same spirit as the ones below:
+the log prints no plugin URL string, so the attribution rests on the bundle identity and on the absence of any
+later `.37` teardown; and the session **straddles** commit `fe96e9a`, which deleted the probe sources at 16:39
+while this editor was open (the log records the deletion and the following recompilation), so only the crashes
+from `:2348` on are live-plugin evidence. Each reload recompiles the plugin through `DynamicCSharp`, which is
+why the crashing MVIDs progress `de7b9d90...` -> `828f997d...` -> `a036ba03...`.
+
 **What the acceptance does not show**, recorded because an over-read claim is how a wrong cause gets
-inherited. The exception's absence proves nothing by itself - the crash log names the package nowhere, and
+inherited. The exception's absence proves nothing by itself - the 1.6 GB crash log names the package nowhere
+(the smaller surviving log does, above), and
 the `The referenced script ... is missing!` block is not decal-specific: it sits some twenty-two thousand
 lines after the crash in that log, and it reads 0 in *both* runs of the paired A/B, so it is not a marker in
 either direction. `Cache\Textures` received no new files and `resourceTextures`

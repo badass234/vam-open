@@ -1726,10 +1726,12 @@ makes it unusable as a marker in either direction. The tempting explanation -
 that `FileManager`'s incremental package registration (`RegisterPackage`: `uidToVarFileEntry.Add` and
 `pathToVarFileEntry.Add` for four keys, with no build-then-swap step) leaves the index half-built when a
 read throws inside it - is real as a mechanism but **does not apply here**, because in `GetResource` the
-read returns before the constructor throws. Second, the log names the package nowhere else at all: no
+read returns before the constructor throws. Second, that 1.6 GB log names the package nowhere else at all: no
 `Chokaphi` line, no `.var` path. So **the absence of the exception is not evidence that the plugin
 loaded**, and the acceptance was therefore designed as an A/B (`.37` against `.38`) looking for positive
-evidence that the plugin initialises, not for the exception's silence.
+evidence that the plugin initialises, not for the exception's silence. The qualification that came later: the
+*smaller* log that survives - `artifacts\manual-play.log` - does name it, and that is what let the user's own
+session be read as the same A/B, in its stronger one-session form (the last paragraph of this section).
 
 **The acceptance has since run, and it passed.** A `.37`-against-`.38` A/B on the same scene, its only
 difference a version token, measured per block rather than per raw line count (the raw count *rises*,
@@ -1765,6 +1767,26 @@ loaded rather than the defect, and the per-block reading is the one that means s
 
 Full record: `artifacts\decal-repro\REPORT.md`, machine analysis
 `artifacts\decal-repro\step2-acceptance.txt`.
+
+**And the loop was then closed by the user's own hand, which is the same A/B in a stronger form.** The run
+behind the fourth paste, `artifacts\manual-play.log` (3 605 lines, 363 186 B, static since 16:42:33), is a
+single editor session on the single scene that was failing, `SoftEros777.Lady_Clown.1:/Saves/scene/ladyclown.json`
+(`:928`; no other scene is loaded in the file). It names the revisions, so it reads as a measurement rather
+than as one more paste: the `.37` instances are torn down as `Unloading unused asset bundle
+Chokaphi.DecalMaker.37:...` (`:2306`, `:2361`, `:2416`) and throw six times (`:1459`, `:1664`, `:1886`,
+`:2109` with the deleted probe's dumps interleaved, then `:2348` and `:2403`); after the plugin's own Remove
+button (`MVRPluginManager:RemovePlugin` <- `LookInputModule:ProcessMousePressAlt`) the surviving instance runs
+the skin-image path **eight** times (`ManagerPanel:UpdateSkinImage` <- `Decal_Maker:GetCurrentGPUTexture`,
+`:2444`-`:2529`) with **no** `Failed to create texture` and **no** `multiple of 4` after `:2403`; and its own
+teardown unloads `Chokaphi.DecalMaker.38:...` (`:2622`). A bundle can only be unloaded if it was loaded, so
+the surviving instance was the delivered revision - **`.37` throws, `.38` does not, in one session on one
+scene, with no scene-side edit at all**, because the user reached the new revision from the plugin's own URL
+control and its Reload. Two limits, in the same spirit as the ones above: the log prints no plugin URL string,
+so the `.38` attribution rests on the bundle identity and on the absence of any later `.37` teardown; and the
+session **straddles** commit `fe96e9a`, which deleted the probe sources at 16:39 while this editor was open
+(the log records the deletion and the following recompilation), so only the crashes at `:2348` and `:2403`
+onwards are live-plugin evidence. Each reload recompiles the plugin through `DynamicCSharp`, which is why the
+crashing MVIDs progress `de7b9d90...` -> `828f997d...` -> `a036ba03...`.
 
 The full record - the method verbatim, the call chain with its IL offsets, the package provenance, the
 2020.3 A/B and the evidence file list - is `docs\decal-texture-crash.md`.
