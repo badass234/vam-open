@@ -33,7 +33,9 @@ failure mode E below.
 database the editor's window does not share.
 
 *Current state*: `----- RebuildGate OK -----`, 0 errors, 0 unique errors, `Assembly-CSharp.dll`
-6 079 488 B, `VaMUnityScript.dll` 17 408 B, `Assembly-CSharp-Editor.dll` present.
+5 511 680 B, `VaMUnityScript.dll` 16 384 B, `Assembly-CSharp-Editor.dll` present. Size is not a health
+reading on this line: 2021.3 compiles against Roslyn reference assemblies, so the assembly is **9.4% smaller**
+than it was on 2020.3 (6 079 488 B) with 0 errors on both sides.
 
 ### 2. Scene integrity - `scripts\Invoke-SmokeTest.ps1 -Method InspectScene`
 
@@ -432,10 +434,10 @@ Check 9 proves the compiler by building it and compiling a known file through it
 *repair* inside the compiler's driver, and it exists because that acceptance had been done by hand four times
 and mis-read three of those times. The repair itself is committed as `9674a1f` (`McsDriver.ReadMethodToken`
 prefers `MemberInfo.MetadataToken` and falls back to `GetToken().Token` under `catch
-(InvalidOperationException)`), and no gate can exercise it at all: `RebuildGate.cs:658` calls
-`LoadPlayScene(sceneName, pluginsEnabled: false)`, so a `Play` run has **0** plugin-manager lines in every
-direction. The evidence is therefore a pair of **hand-run, plugin-enabled** logs, and this script is the
-reading of them.
+(InvalidOperationException)`), and the ordinary gate exercises it: `RebuildGate.cs` carries no plugin flag at
+all - `Play()` calls `ArmPlay(false)` (`:635`), `ManualPlay()` calls `ArmPlay(true)` (`:651`), the only parameter
+is `bool manual` (`:655`), and `LoadPlayScene()` (`:1106`) has none - so a `Play` run is a plugin-enabled run.
+The standing pair is therefore the gate's own output, and this script is the reading of it.
 
 ```powershell
 # the standing pair: pre-fix control against the post-fix run
@@ -572,6 +574,139 @@ rather than write a row the writer cannot name. The new
 `NotSupportedException` guard rail at `:536` was **not exercised** by either run - `System.NotSupportedException`
 is 0 in the post-fix log - so it is written and unproven by observation. And one scene with one plugin set was
 run, which is the standing policy rather than a limit of this check.
+
+### 12. The E-Motion plugin, accepted by a one-byte scene A/B
+
+`VRAdultFun.E-Motion.4` is a third-party plugin that fails on every engine of the ladder, and the failure is its
+own: `VRAdultFun.EmotionEngine..cctor` calls `UnityEngine.Random.Range` from a **static initializer**, which Unity
+refuses - `Range is not allowed to be called from a MonoBehaviour constructor (or instance field initializer)`.
+That initializer runs inside `GameObject.AddComponent` while `DynamicCSharp.ScriptType.CreateBehaviourInstance`
+builds the component (`ScriptType.cs:105`, reached from `MVRPluginManager.CreateScriptController`), so it arrives
+as a `TypeInitializationException`; the object survives with a poisoned type and rethrows when `Init()` is called.
+None of that is this project's code, and the fix is delivered as a **new revision** (`VRAdultFun.E-Motion.5.var`,
+`scripts\New-E-MotionPatch.ps1`) rather than as a patch to `src\`.
+
+The question this check answers is the part that is easy to get wrong: a plugin that loads **successfully prints
+nothing naming itself**, so "the exception is gone" can equally mean the plugin never ran. What separates the two
+runs below is a set of stack frames, not the absence of a message.
+
+*The pair, and how it is rebuilt.* Two copies of one scene, one byte apart:
+
+| | copy | bytes | sha256 | `VRAdultFun.E-Motion.4:` | `.5:` |
+|---|---|---|---|---|---|
+| control | `Saves\scene\emotion-ab\ladyclown4.json` | 341 667 | `45f040d8…c83956fe` | 1 | 0 |
+| candidate | `Saves\scene\emotion-ab\ladyclown5.json` | 341 667 | `523ad903…f28f3039` | 0 | 1 |
+
+Both derive from `Saves\scene\decal-ab\ladyclown38.json` (`artifacts\emotion-repro\make-ab-scene.py`), the copy the
+Decal Maker acceptance already built, because it names `Chokaphi.DecalMaker.38` and so keeps the other known
+third-party crash out of the pair. The token substitution is size-neutral and touches **exactly one byte**, offset
+27942; the control copy is byte-identical to the base. The scene's own content is unchanged - 10 declared atoms,
+71 `DAZImport` and 154 `DAZHairGroup` components on both sides. The delivered `.5` needs its own
+`AddonPackagesUserPrefs\VRAdultFun.E-Motion.5.prefs` (125 B, written by the delivery script), because
+`VarPackage.LoadUserPrefs` hands an unconfirmed package to a `UserConfirm` a headless run cannot answer.
+
+*Run it as check 10 does*, one run per copy, with a warmup long enough for the scene to finish loading inside the
+window:
+
+```powershell
+scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 60 -WarmupSeconds 25 `
+    -Scene 'Saves/scene/emotion-ab/ladyclown4.json' -LogFile 'artifacts\emotion-repro\A4-ladyclown4.log'
+scripts\Invoke-SmokeTest.ps1 -Method Play -Seconds 60 -WarmupSeconds 25 `
+    -Scene 'Saves/scene/emotion-ab/ladyclown5.json' -LogFile 'artifacts\emotion-repro\B5-ladyclown5.log'
+```
+
+Both runs agree on everything that is not the plugin: `played: 60.0 s`, the scene asked for after 25 s,
+`requested=True, taken=True, finished=True after 52.7 s / 52.5 s, refused=False`, `errors before the load: 5`,
+`scene atoms: 10 declared, 10 present, 0 missing`, 66 compute shader assets, and `----- RebuildGate OK -----`. The
+logs are 900 814 B against 896 661 B, and the per-family census is `artifacts\emotion-repro\census-{A4,B5}.txt`.
+**Mind the line counter**: by CRLF terminators alone they are 7 599 and 7 587 lines, and `Get-Content` reads
+7 620 and 7 604 because a progress line writes a lone carriage return, which it also counts as a break. Nothing
+in the verdict below depends on which of the two numbers is quoted - every reading in it is a frame, counted per
+block - but two documents quoting "the line count" of this pair will disagree unless they say which one they mean.
+
+*The verdict is not the count, and that is this check's first lesson.* `PlayVerdict()`
+(`RebuildGate.cs:1152-1202`) fails only on a missing `SuperController`, a refused load, an unaudited or unfinished
+scene, declared-but-absent atoms, and `PlayErrors` entries containing `" is missing"` or `"Not ready for load"`.
+The E-Motion crash is none of those, so **both runs pass** - and the printed integer is not an error count for
+this plugin either: it is `PlayErrors.Count`, distinct `[Type] first-line` strings with the stack stripped
+(`:808`), deduped through `PlaySeen` (`:812-815`) and capped at `playErrorLimit` (`:56`, `:667`). It reads **18**
+in the control against **17** in the candidate - fewer errors where the plugin works, but a number built out of
+four missing addon packages, a screen-resolution line, two other plugins' `TypeLoadException`s and eight material
+warnings. Read the frames.
+
+*The frames that discriminate, counted per block:*
+
+| frame | control | candidate |
+|---|---|---|
+| `MVRPluginManager.cs:518 ` (bare - the caught exception's own trace) | 1 - line 1004 | 0 |
+| `MVRPluginManager.cs:518)` (with paren - a `Debug.Log` stack) | 0 | 4 - 957, 980, 1003, 1026 |
+| `MVRPluginManager.cs:522)` - the `Init` rethrow's reporter | 1 - 1011 | 0 |
+| `MVRPluginManager.cs:529)` - the plugin-failure reporter | 1 - 1034 | 0 |
+| `MVRPluginManager.cs:640)` - `ReportPluginFailure` | 1 - 1033 | 0 |
+| `MVRPluginManager.cs:440)` - the `AddComponent` call site | 2 | 0 |
+| `VRAdultFun.EmotionEngine:Init ()` | 0 | 8 - 4 blocks x 2 frames |
+| `ScriptType.cs:105` | 2 | 0 |
+| `UnityException: Range is not allowed` | 5 | 0 |
+| `TypeInitializationException` | 6 | 0 |
+| `plugin#1temp` | 5 | 0 |
+| `Tried registering param` | 0 | 6 - 4 live, 2 in the tagged list |
+| `MVRPluginManager.cs:884)` - the success path, reached on both sides | 4 | 4 |
+| `[DynamicCSharp] resolved …` - the repaired compiler's marker | 2 - `32` at 894, `75` at 1049 | 2 - `32` at 894, `75` at 1041 |
+
+*The `:518` spelling trap, and it is the one that matters.* The same line number is spelled two ways in these
+logs, because they are two kinds of frame: an original exception trace writes
+`at MVRPluginManager.CreateScriptController (…) [0x00251] in <path>\MVRPluginManager.cs:518 ` - no closing paren,
+no `Assets\` prefix, an IL offset - while a Unity `Debug.Log` stack writes
+`MVRPluginManager:CreateScriptController (…) (at Assets/Scripts/Assembly-CSharp/MVRPluginManager.cs:518)`. A grep
+for `:518)` therefore reports **0 in the control and 4 in the candidate** and hides the control's own `:518`; a
+grep for `:518 ` reports the reverse. Both readings are true and neither decides anything on its own: search the
+bare line number, then read the frame's format.
+
+*The control's failure, as the log states it.* The throw happens inside `AddComponent`, so `CreateInstance` fails
+and the poisoned type rethrows at `Init()`; it is reported twice, and each report carries the caught exception's
+own trace ending on the bare `:518` form:
+
+```text
+Exception during plugin script Init: System.TypeInitializationException: The type initializer for
+'VRAdultFun.EmotionEngine' threw an exception. ---> UnityEngine.UnityException: Range is not allowed to be
+called from a MonoBehaviour constructor (or instance field initializer) … 'EmotionEngine' on game object
+'plugin#1temp'.
+  at (wrapper managed-to-native) UnityEngine.Random.Range(single,single)
+  at VRAdultFun.EmotionEngine..cctor () [0x00e7d] in <6cbc8299d4434f17a197020d506056ff>:0
+   --- End of inner exception stack trace ---
+  at MVRPluginManager.CreateScriptController (…) [0x00251] in <path>\MVRPluginManager.cs:518
+```
+
+followed by the reporter's own stack - `CreateScriptController (:522)` → `SuperController:Error (:7728)`, through
+`SyncPluginUrlInternal (:884)` and `SyncPluginUrl (:583)` from `CreatePluginWithId`'s continuation (`:178`) - and
+then by the second, named report, `Plugin VRAdultFun.E-Motion.4:/Custom/Scripts/E-Motion/E-Motion_AddThisONLY.cslist
+failed to initialize [TypeInitializationException: …]`, ending `CreateScriptController (:529)` →
+`ReportPluginFailure (:640)`.
+
+*The candidate's healthy call, and its positive marker.* The same line is reached and returned from four times,
+and the only thing the plugin produces is the side effect of `RegisterUIElements` running: `JSONStorable`
+complains when the plugin registers a parameter the scene's instance already owns. The block opens
+`(Filename: Assets/Scripts/Assembly-CSharp/SuperController.cs Line: 7728)` and its stack runs `Debug:LogError` →
+`JSONStorable:RegisterBool (JSONStorableBool) (…JSONStorable.cs:641)` → `VRAdultFun.EmotionEngine:RegisterUIElements
+()` → `VRAdultFun.EmotionEngine:Init ()` → `MVRPluginManager:CreateScriptController (…) (:518)` →
+`SyncPluginUrlInternal (:884)` - **no catch frame anywhere in the chain**, which is what makes it a live plugin
+rather than a recovered failure. The four live lines are `Tried registering param Adjust Hands that already
+exists` at 949 (`RegisterBool`, `JSONStorable.cs:641`) and `Tried registering param Custom Body Weight Mult that
+already exists` at 972, 995 and 1018 (`RegisterFloat`, `:732`); the gate's deduped list holds the same two strings
+at 6644 and 6645. The control prints this family **zero** times, because its `Init()` never gets that far. It is a
+real marker but a weak one - it only appears when a registration collides, so its absence would not prove failure.
+The pair of stacks above is what proves success or failure.
+
+*What this check leaves unsettled, stated with it.* The one-byte substitution changes **which revision runs**, not
+the plugin's defect: `.4` still throws from its static initializer for anyone who loads it, and the shipped `.4` is
+untouched by design. The candidate's own URL appears in neither log - the census reads `plugin url .5 anywhere` as
+**0/0** - so its identity rests on `.5` being the only delivered revision, on its prefs file, and on the candidate's
+stack reaching `Init()` at all; the scene's token is the only thing that was changed, and the frames are the only
+thing that shows the change took effect. The two logs' tagged error lists differ by exactly **one** entry - the
+control contributes three E-Motion entries (`Range is not allowed`, the `Init` rethrow, the named failure report)
+and the candidate two (`Tried registering param`, deduped to two strings) - so the 18-to-17 difference *is*
+E-Motion's replacement, and the rest of both lists is identical. One scene with one plugin set was run, which is
+the standing policy and not a limit of this check.
 
 ## When a gate lies
 

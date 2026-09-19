@@ -449,10 +449,17 @@ Two reads on that path were themselves unguarded, and each cost a plugin its loa
 array on its way there, and lets `Save()` reach the very writer state that killed the editor at hop 3. The
 throw is protective.
 
-Both were accepted by hand runs on a boot scene **with plugins enabled**, which is the only kind of run that
-can see them: `RebuildGate.cs:658` calls `LoadPlayScene(sceneName, pluginsEnabled: false)` on purpose, because
-every package's `.prefs` in this install carries `pluginsAlwaysEnabled:false`, so no gate log names a plugin at
-all. `docs\verification.md` sections 9 to 11 are the record, and section 10's script
+Both were accepted on runs that carry a full plugin boot, and **the ordinary gate is one of them**: `RebuildGate`
+takes no plugin flag anywhere - `Play()` calls `ArmPlay(false)` (`:635`), `ManualPlay()` calls `ArmPlay(true)`
+(`:651`), the only parameter is `bool manual` (`:655`), and `LoadPlayScene()` (`:1106`, called from `:999`) has
+none - so a gate run *is* a run with plugins enabled. The pair behind sections 9 to 11 is the gate's own output,
+`scripts\Invoke-SmokeTest.ps1 -Method Play -Scene Saves/scene/emotion-ab/ladyclown{4,5}.json -Seconds 60
+-WarmupSeconds 25`, and each log carries the census of a plugin boot (`MVRPluginManager` 84 and 80 mentions,
+`DynamicCSharp` 74 and 64) plus the repair's own marker **twice** inside one scene load: `resolved 32` at `:894`,
+then `resolved 75` at `:1049` (B: `:1041`). Every reachable `.prefs` root reads `"pluginsAlwaysEnabled" : "true"`
+- 5 files in the install root, 18 under `VaM_Rebuild`, 17 under `artifacts\player`, none `false` - and the only
+switch that could disable a package is `MVRPlugin.cs:56`'s predicate, which needs `pluginsAlwaysDisabled:"true"`.
+`docs\verification.md` sections 9 to 11 are the record, and section 10's script
 (`scripts\Test-PluginCompilerRepair.ps1`) is the census that replaced the hand greps. What is **not** settled
 either way is whether a builder declaration answered with the created method of its generic *definition* is the
 semantically right row - it is writable, and the loader refuses it (`TypeLoadException`, `Method overrides a

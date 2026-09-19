@@ -160,11 +160,17 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   `NotSupportedException` from `McsDriver.cs:483` - a **second, separate** unguarded call in the same repair,
   resolved afterwards in this same release and recorded in its own bullet below. `everlaster.TittyMagic.70` no longer dies in
   the repair at all - it compiles and then fails to *load*, with `TypeLoadException` on its own
-  `ColliderModel\`1` vtable while the scene restores its plugin URL, outside the repair entirely. **No gate can
-  repeat this measurement**, and that is a limit of the harness rather than of the fix:
-  `src\Assembly-CSharp\RebuildGate.cs:658` calls `LoadPlayScene(sceneName, pluginsEnabled: false)` on purpose,
-  because every package's `.prefs` in this install carries `pluginsAlwaysEnabled:false`, so the gate logs name
-  no plugin path at all and have no plugin failures to count.
+  `ColliderModel\`1` vtable while the scene restores its plugin URL, outside the repair entirely. **The ordinary
+  gate does repeat this measurement**, and the pair it produced is the gate's own output:
+  `scripts\Invoke-SmokeTest.ps1 -Method Play -Scene Saves/scene/emotion-ab/ladyclown{4,5}.json -Seconds 60
+  -WarmupSeconds 25` wrote `artifacts\emotion-repro\A4-ladyclown4.log` and `…B5-ladyclown5.log`, and each carries
+  a full plugin boot (`MVRPluginManager` 84 / 80 mentions, `DynamicCSharp` 74 / 64) with the repair's marker
+  **twice** inside one scene load - `resolved 32` at `:894`, then `resolved 75` at `:1049` (B: `:1041`). The gate
+  carries no plugin flag at all: `Play()` calls `ArmPlay(false)` (`RebuildGate.cs:635`), `ManualPlay()` calls
+  `ArmPlay(true)` (`:651`), the only parameter is `bool manual` (`:655`), and `LoadPlayScene()` (`:1106`, called
+  from `:999`) has none. Every reachable `.prefs` root reads `"pluginsAlwaysEnabled" : "true"` - 5 files in the
+  install root, 18 under `VaM_Rebuild`, 17 under `artifacts\player`, none `false` - and the only switch that
+  could disable a package is `MVRPlugin.cs:56`'s predicate, which needs `pluginsAlwaysDisabled:"true"`.
 
 - **The repair's second call, resolved in the same release.** The other unguarded read in
   `RepairMethodOverrideDeclarations` is `inflated.GetMethods(...)` (`McsDriver.cs:489`).

@@ -56,9 +56,12 @@ be routed around, so the override declaration is now resolved from the created m
 a rethrow when the index has nothing, because the catch-and-continue alternative would leave the builder in the
 overrides array and hand `Save()` the writer state that killed the editor at hop 3. On the same pair the
 defect's blocks go 1 → 0 and the repair's marker from once to twice (32 and 75 declarations), which is one
-plugin finishing where it used to abort. No gate can repeat the measurement, because the gate disables plugins
-on purpose; the pair is the check, and section 11 of [`docs/verification.md`](docs/verification.md) is the
-record.
+plugin finishing where it used to abort. The ordinary gate does repeat the measurement rather than needing hand
+runs: `RebuildGate` carries no plugin flag at all - `Play()` and `ManualPlay()` differ only in `ArmPlay(bool
+manual)` (`:655`), and `LoadPlayScene()` (`:1106`) takes none - so the marker *pair* in the gate's own
+`artifacts\emotion-repro\A4-ladyclown4.log` and `…B5-ladyclown5.log` (`resolved 32` then `resolved 75`, inside
+one scene load) is the repeat. Section 10 of [`docs/verification.md`](docs/verification.md) is the script that
+reads it and section 11 the record.
 
 ## 0.1.10-alpha
 
