@@ -416,11 +416,13 @@ Both directions were measured in the editor on the boot scene. With the shipped 
 printed 5 `Metadata file` lines, 2 `Compile of ... failed.` and no trace of the plugin beyond its failure;
 with the adaptation in place, both counts are **0**, and `MacGruber` appears 26 times as running code - so
 the defect was never the player's alone, and the same A/B is the regression test for the next engine hop
-(`artifacts\pluginrefs-stale.log` against `artifacts\pluginrefs-fixed.log`). What is left of that plugin is
-its own runtime fault, not the compiler's: `FieldAccessException: Field 'MiniQueue'1:position' is
-inaccessible from method 'MacGruber.Breathing/MiniQueue'1<T_REF>:.ctor ()'`. A second compiler defect - the
-by-ref one above - was standing in front of that fault: with it repaired the plugin compiles, and how far it
-then gets is what the next hand run answers.
+(`artifacts\pluginrefs-stale.log` against `artifacts\pluginrefs-fixed.log`). What is left of that plugin on
+**that** engine is its own runtime fault, not the compiler's: `FieldAccessException: Field 'MiniQueue'1:position'
+is inaccessible from method 'MacGruber.Breathing/MiniQueue'1<T_REF>:.ctor ()'` - a reading of the 2018/2019/2020
+Mono, absent from all 25 logs naming `2021.3.45f2`. A second compiler defect - the by-ref one above - was
+standing in front of that fault, and hop four's hand run is the answer to how far the plugin then gets: it
+compiles, its `Breathing` MonoBehaviour is instantiated and torn down cleanly, and neither fault appears
+(`artifacts\manual-play.log` against the control `artifacts\manual-play-cs584-before.log`).
 
 
 `Assets\Editor\RebuildGate.cs` is the batch entry point that proves all of this end to end; see

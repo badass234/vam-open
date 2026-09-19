@@ -342,6 +342,85 @@ UnityEngine module, so the 2021 editor's `Managed\UnityEngine\` cannot stand in 
 arms report `CS0584=0` and ~56 unrelated `CS0246`, which reads as "the fix changed nothing" - the trap is that
 the control failing to fail looks like a pass.
 
+*A second defect, in the repair the hop-3 crash left behind.* `RepairMethodOverrideDeclarations`
+(`McsDriver.cs:292`) rewrites the override table mcs leaves on builder methods, and it looked each
+declaration's token up by `declaration.MetadataToken` (`:383`). `MethodBuilder` does not override
+`MemberInfo.MetadataToken` - the base implementation only throws - so that read raised
+`InvalidOperationException` on **every** declaration, the loop's own `catch` swallowed it,
+`CollectCreatedMethods` matched nothing, and the repair returned having changed nothing while reporting
+nothing. The assembly then died in the runtime with `requested token for MethodBuilder`, which is the hop-3
+crash. The other three token reads in the file (`:265` of the created methods, `:474`/`:494` of the resolved
+candidates) are on runtime methods and never threw - measured rather than assumed, because the control's
+stack names `:383` and nothing else. `ReadMethodToken` (declared at `:429`, `MetadataToken` at `:433`,
+`catch (InvalidOperationException)` at `:435`) tries `MetadataToken` first, so a runtime that implements it is
+preferred, and falls back to `GetToken().Token`, the builder's metadata table index, which is the number the
+created method reports.
+
+*Acceptance, as a control pair.* `artifacts\decal-repro\decal-repro-B38.log` is the pre-fix control and
+`artifacts\compiler-fix-ladyclown.log` the post-fix run, one editor session each, read by grep rather than by
+line number because the helper shifted every line below `:380`:
+
+| reading | control | post-fix |
+|---|---|---|
+| `MemberInfo.get_MetadataToken` frames | 2 | 0 |
+| `[CS]: System.InvalidOperationException` | 2 | 0 |
+| the repair's own marker, `resolved N method override declaration(s)` | 0 | 1, reading 32 |
+| `[CS]: System.NotSupportedException` | 0 | 2 |
+| plugins that failed to compile | `everlaster.TittyMagic.70`, `AcidBubbles.Timeline.283` | the same two |
+
+The marker reports itself from `McsDriver.cs:405`, which is the `UnityEngine.Debug.Log` call at the end of
+`RepairMethodOverrideDeclarations` (`:292`) - reached from `Compile :220` and `CompileFromSettings :128` in the
+same stack - and not a further token read. The token reads in that file are `:265`, `:474` and `:494`, all on
+runtime methods, plus `ReadMethodToken`'s own `:433`, which is the one that has to tolerate the throw, and the
+repaired call site at `:383`.
+
+The exception moves rather than disappears, and that is the fix working. The control's stack is
+`MemberInfo.get_MetadataToken()` <- `RepairMethodOverrideDeclarations [0x00252] :383` <- `Compile [0x0027d]
+:220` <- `CompileFromSettings :128` - the repair giving up on its first declaration. The post-fix stack is
+`TypeBuilderInstantiation.GetMethods` <- `ResolveOnTypeBuilderInst [0x00086] :483` <-
+`RepairMethodOverrideDeclarations [0x001d5] :361` - the repair now reaching its own resolution step on the
+same plugin and meeting a limit of `System.Reflection.Emit` there. **Nothing was added to catch that, and it
+needs nothing added:** it escapes `McsDriver.Compile`, and `CompileFromSettings`'s `catch (Exception)`
+(`McsCompiler.cs:130`) turns it into a `CompilerError` through `ErrorText = ex.ToString()`, which is exactly
+what the `[CS]:` line and the frames under it are - so `Save()` is never reached **for that plugin** and the
+editor survives. The control shows the same containment, so containment is not the difference; the repair
+running is.
+
+The failing set is identical before and after, and one plugin in it changed shape. `everlaster.TittyMagic.70`
+no longer dies in the repair at all - it now reaches the point where the compiled assembly is loaded, and
+mono refuses the plugin's own generic-iterator vtable at `:921`, twin at `:6636`. Quoted from `:921` whole -
+it is one line of the log, wrapped nowhere here - with only the manager's own `Exception during compile of
+<plugin>: ` prefix removed:
+
+```
+System.TypeLoadException: Could not set up parent class, due to: Generic Type Definition failed to init, due to: Parent class vtable failed to initialize, due to: Method overrides a class or interface that is not extended or implemented by this type assembly:data-00000271549756A0 type:ColliderModel member:(null) assembly:data-00000271549756A0 type:ColliderModel`1 member:(null) assembly:data-00000271549756A0 type:ColliderModel`1 member:(null)
+```
+
+`AcidBubbles.Timeline.283` still fails through the residual `NotSupportedException` above. Both are recorded
+as they are: the same two plugins failed before the fix, one of them now fails later and for a reason of its
+own, and that reason is a different class of defect.
+
+When counting failures in these logs, mind three traps. `Select-String` is **case-insensitive by default**, so
+a search for `Compile of ` also matches `Exception during compile of ...` and reports four hits where two
+plugins failed; use `-CaseSensitive` for exact phrases. And the gate logs each failure a second time with an
+`[Error]` prefix, so every count is half again what it looks like unless the twins are excluded.
+
+The third trap is the one that looks like evidence of a lost error, so it is worth stating as a mechanism
+rather than as a caution: **`... failed. Errors:` is always followed by nothing, and nothing is missing.**
+Every string this compiler puts into `ScriptCompiler.errors` is built by `AddError` as
+`$"[CS{code}]: {message}"` (`ScriptCompiler.cs:180-186`, with `AddWarning` at `:167-176` doing the same for
+warnings), and the print loop at `MVRPluginManager.cs:800-806` skips every entry whose `text8.StartsWith("[CS]")`
+(`:802`) - which, on this codebase, is every entry there is. The error itself is not suppressed: it is printed
+once by `ScriptCompiler.PrintErrors` (`:64-71`, a bare `Debug.LogError` per entry) from
+`ScriptDomain.CompileAndLoadScriptSources` (`ScriptDomain.cs:175`, immediately after the compile at `:173`), so
+the `[CS]` block appears **above** the header, not under it. Measured in both logs rather than reasoned: control
+`:928` + `:953` and `:1074` + `:1099`, post-fix `:1049` + `:1075`, with the header's next line in every case an
+unrelated material warning. The sibling branch - `catch (Exception ex)` at `:811-829`, which prints
+`... failed. Exception: ` at `:817` and then, when `Errors.Length > 0`, an **unfiltered** list at `:820-825` -
+never fired in either run, and neither did the residual `Compile of ... failed. Exception:` shape: **0** in both.
+The catch-all that does fire, `Exception during compile of ` at `:1022`, prints no list at all, which is why the
+TittyMagic `TypeLoadException` above has no `[CS]` twin.
+
 ## When a gate lies
 
 Both failure modes named first below have already happened once, and each of them produced a red verdict that had
@@ -1831,15 +1910,38 @@ The full record - the method verbatim, the call chain with its IL offsets, the p
 
 ## Still open
 
-- **`MacGruber.Life` compiles now but throws on load.** This is the one plugin the boot scene names
-  (`plugin#0`), and after the reference-list adaptation above it gets as far as running its own code:
-  `FieldAccessException: Field 'MiniQueue'1:position' is inaccessible from method
-  'MacGruber.Breathing/MiniQueue'1<T_REF>:.ctor ()'`, then `NullReferenceException` in
-  `MacGruber.Breathing.Init`/`Cleanup`, then `failed to initialize`. It is not a gate failure - the
-  scene loads 18 of 18 atoms with the plugin broken - but a reader comparing logs against the
-  installation will see the difference. Tracked as item 16 of the plan; the fields it names are in the
-  plugin's own nested generic type, accessed from that type's constructor, which a compiler should not
-  emit at all.
+- **`MacGruber.Life` - closed, and closed as a live plugin rather than as a failure that moved.** Under
+  2021.3 the plugin compiles once the by-ref `TypeParameterInflator` gap is repaired (`bb6a177`), and that is
+  measured on this very plugin: `[CS584]` **10 -> 0** and `Compile of MacGruber... failed.` **5 -> 0** between
+  `artifacts\manual-play-cs584-before.log` and `artifacts\manual-play.log`. The single `failed to initialize`
+  left in the post-fix run is another plugin's, `VRAdultFun.E-Motion.4` (`TypeInitializationException` on
+  `VRAdultFun.EmotionEngine`, `:1372`).
+
+  **Compiling clean is not the verdict - instantiating is.** The positive markers read **1 / 1 / 2** in
+  `artifacts\manual-play.log` (`MacGruber_Breathing.audiobundle` unloaded, `MacGruber.Breathing:OnDestroy`,
+  `Unloading unused asset bundle MacGruber`) and **0** in every earlier run, so the plugin's `Breathing`
+  MonoBehaviour existed there and did not before. The `FieldAccessException` the two earlier hops recorded is
+  **absent from all 25 logs naming `2021.3.45f2`** and present in **47** of the ones before them, each
+  carrying it twice - 31 on `2018.1.9f2` (oldest `artifacts\smoke-manual.log`, 09-15 22:35, and still there in
+  `artifacts\smoke-plugin-fix.log` 09-17 17:38 and `artifacts\pluginrefs-fixed.log` 09-18 13:30, i.e. after
+  the plugin-reference A/B), 2 on `2018.4.36f1`, 8 on `2019.4.41f2` and 6 on `2020.3.49f1` (newest
+  `artifacts\logs\hop4-baseline2-default-smoke.log`, 2026-09-19 00:10) - so `MiniQueue'1`'s private field was
+  inaccessible to the 2018/2019/2020 Mono and is not to the 2021.3 one. An
+  `Unload demand activated morph MacGruber.Life.12:.../Breathing_*.vmi` line is **not**
+  evidence either way: the pre-fix control carries 12 of them while the plugin never compiled at all, because
+  `default.json` declares `plugin#0_MacGruber.Breathing`'s morphs and the atom loads those `.vmi` files
+  itself.
+
+  **And a gate cannot see a plugin that works.** The plugin path prints failures and teardowns and nothing
+  else, which is why `MacGruber_Breathing.audiobundle` reads **0** in both `artifacts\smoke-play.log` and
+  `artifacts\logs\hop4-baseline2-default-smoke.log` against **1** in the hand run: the 2021.3 gate's plugin
+  silence is not a reading about the plugin in either direction. What it does show is that nothing failed
+  where 2020.3 failed - 5 errors against 12, the plugin block contributing 7 of them.
+
+  The old bullet also named the wrong scene, and that misreading is worth one line because it recurs: the
+  `atoms: 18` reading is the **boot scene**'s (`default.json`, `hop4-baseline2-default-smoke.log:6240`),
+  while `CyberDemoAlt` is 17 of 17 and is named **0** times in that log, in `artifacts\smoke-play.log` and in
+  `artifacts\manual-play.log`.
 
 - **The shadow filter is proven to be ours, but not tuned.** The transcribed disk darkens the body by
   8.26/255 on the lit pixels under the scene's own three point lights at `shadowStrength` 0.10, where

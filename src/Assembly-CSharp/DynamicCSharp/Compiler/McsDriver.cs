@@ -329,9 +329,9 @@ namespace DynamicCSharp.Compiler
 				CollectTypeBuilders(typeBuilders, allBuilders);
 				foreach (TypeBuilder typeBuilder in allBuilders)
 				{
-					// Reading MetadataToken on a builder whose type is not created yet would allocate a
-					// fresh token instead of answering with the one the created method carries, so a type
-					// that was never closed is left alone here.
+					// A declaration is resolved below by looking its token up among the methods of the
+					// created types, so a method of a type that was never closed has nothing to match
+					// and is left alone here.
 					if (typeBuilder == null || TypeBuilderCreatedField.GetValue(typeBuilder) == null)
 					{
 						continue;
@@ -380,7 +380,7 @@ namespace DynamicCSharp.Compiler
 							}
 							TypeBuilder declaringType = declaration.DeclaringType as TypeBuilder;
 							MethodInfo resolved;
-							if ((declaringType == null || TypeBuilderCreatedField.GetValue(declaringType) != null) && createdMethods.TryGetValue(declaration.MetadataToken, out resolved) && resolved != null && resolved.Name == declaration.Name)
+							if ((declaringType == null || TypeBuilderCreatedField.GetValue(declaringType) != null) && createdMethods.TryGetValue(ReadMethodToken(declaration), out resolved) && resolved != null && resolved.Name == declaration.Name)
 							{
 								overrides[i] = resolved;
 								changed = true;
@@ -409,6 +409,33 @@ namespace DynamicCSharp.Compiler
 				UnityEngine.Debug.LogWarning(string.Format("[DynamicCSharp] {0} method override declaration(s) could not be resolved and will fail the metadata write: {1}", unresolved.Count, string.Join("; ", unresolved.ToArray())));
 			}
 			return repaired;
+		}
+
+		/// <summary>
+		/// Reads the metadata token a method builder will carry in the assembly being written.
+		/// </summary>
+		/// <remarks>
+		/// MethodBuilder does not override MemberInfo.MetadataToken, and that base implementation only
+		/// throws InvalidOperationException - on every engine this project runs on, 2018.1.9f2 through
+		/// 2021.3.45f2 alike, whose own mscorlib carries no MetadataToken declaration in MethodBuilder
+		/// at all. Reading it on a builder therefore throws whether the type is closed or not, which is
+		/// how the repair used to give up on a declaration: the override stayed a builder and Save()
+		/// then died in the runtime with "requested token for MethodBuilder". GetToken() is the token to
+		/// read instead - it answers from the builder's metadata table index, the same number the created
+		/// method reports. MetadataToken is still tried first so that a runtime which implements it is
+		/// preferred, and the InvalidOperationException it raises on Mono is the case this method exists
+		/// for.
+		/// </remarks>
+		private static int ReadMethodToken(MethodBuilder methodBuilder)
+		{
+			try
+			{
+				return methodBuilder.MetadataToken;
+			}
+			catch (InvalidOperationException)
+			{
+				return methodBuilder.GetToken().Token;
+			}
 		}
 
 		/// <summary>

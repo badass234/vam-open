@@ -42,6 +42,17 @@ left `System.dll` for `System.Collections.dll`, whose profile copy is only a typ
 [`docs/rebuild-project.md`](docs/rebuild-project.md), and the check is section 9 of
 [`docs/verification.md`](docs/verification.md).
 
+The same hand run then found a second defect, this time in the repair the previous hop had left behind, and it
+is the one that had been failing plugins silently. `RepairMethodOverrideDeclarations` read each declaration's
+token through `MemberInfo.MetadataToken`, which `MethodBuilder` never overrides - the base implementation only
+throws - so the read raised `InvalidOperationException` on every declaration, a `catch` inside the loop
+swallowed it, and the repair returned having changed nothing while the plugin failed with an empty error list.
+`ReadMethodToken` now prefers the property and falls back to `GetToken().Token`, the builder's metadata index,
+and the case is measured as a pair against the run before it: `get_MetadataToken` frames 2 → 0,
+`[CS]: System.InvalidOperationException` 2 → 0, the repair's marker once reading 32. What it does **not** fix
+is stated with it - a second unguarded call at `McsDriver.cs:483` still aborts the repair for one plugin, and
+no gate can repeat the measurement, because the gate disables plugins on purpose.
+
 ## 0.1.10-alpha
 
 The engine is **Unity 2020.3 LTS** now (`2020.3.49f1`), the third hop from the `2018.1.9f2` the game ships

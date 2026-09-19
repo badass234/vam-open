@@ -123,11 +123,48 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   build's own `-r:System.dll -r:System.Core.dll` and falls back to the newest installed editor that passes,
   which is `2020.3.49f1` - a 2020.3 profile building the compiler a 2021.3 game ships. What the emitted
   assembly references is unchanged: `mscorlib`, `System`, `System.Core` and `System.Xml`, exactly four.
-- **What the fix does not settle.** Compiling clean is not loading, so the hand run that watches
-  `MacGruber.Life` compile and load under the new binary has not been taken. The plugin also still carries the
-  second, older fault of its own - `MacGruber.Breathing/MiniQueue`'s `FieldAccessException`, which the
-  plugin-reference A/B measured after the compiler stopped being the obstacle - so the repair removes one wall
-  rather than promising a working plugin.
+- **What the fix settles.** Compiling clean is not loading, so it was proved in a hand run rather than
+  declared: `artifacts\manual-play.log` compiles `MacGruber.Life.12`, and its `Breathing` MonoBehaviour is
+  instantiated and then torn down - `MacGruber_Breathing.audiobundle` unloaded, `MacGruber.Breathing:OnDestroy`
+  reached through `MVRPluginManager:DestroyScriptController` - while `[CS584]` and `Compile of MacGruber...
+  failed.` both read 0. The plugin's second, older fault does **not** reproduce there: the
+  `MacGruber.Breathing/MiniQueue` `FieldAccessException` that the plugin-reference A/B measured on 2019.4 is
+  in 47 logs written before 2021.3 (31 of them on `2018.1.9f2`) and in none of the 25 that name
+  `2021.3.45f2`, so that private field was inaccessible to the older Mono and is not to this one. The limit is
+  worth stating with it: a gate cannot see a plugin that works, because that path prints only failures and
+  teardowns - which is why this verdict rests on the hand run.
+- **The repair the hop-3 crash left behind had a defect of its own, and it is why the remaining plugins still
+  failed silently.** `RepairMethodOverrideDeclarations` looked every declaration's token up by
+  `declaration.MetadataToken` (`McsDriver.cs:383`). `MethodBuilder` does **not** override
+  `MemberInfo.MetadataToken` - the base implementation only throws, and the decompiled `MethodBuilder` of all
+  five installed editors declares it nowhere - so that read raised `InvalidOperationException` on *every*
+  declaration, the loop's own `catch` swallowed it, `CollectCreatedMethods` matched nothing, and the repair
+  returned having changed nothing while reporting nothing. The assembly then died in the runtime with
+  `requested token for MethodBuilder`, which is the hop-3 abort. It runs only on the writing path
+  (`McsDriver.cs:218-221`, under `if (!generateInMemory)`), never for the in-memory compile.
+  `ReadMethodToken` (declared at `:429`, the property at `:433`, `catch (InvalidOperationException)` at `:435`)
+  now tries `MetadataToken` first - so a runtime that implements it is preferred - and falls back to
+  `GetToken().Token`, the builder's metadata table index, which is the number the created method reports; a
+  probe read it as `0x06000001`. **Skipping the member was rejected rather than merely not chosen:** an entry
+  left unresolved stays in the overrides table and `Save()` then hits exactly the writer state that aborted the
+  editor at hop 3, so a `catch` that continues is not a fix.
+- **What that repair settles, as a control pair.** `artifacts\decal-repro\decal-repro-B38.log` is the pre-fix
+  control and `artifacts\compiler-fix-ladyclown.log` the post-fix run, one editor session each: the
+  `MemberInfo.get_MetadataToken` frames go **2 → 0**, `[CS]: System.InvalidOperationException` **2 → 0**, and
+  the repair's own marker appears **once**, reading `resolved 32 method override declaration(s)`
+  (`McsDriver.cs:405`). Pre-fix the throw is the cause of *every* silent `Compile of ... failed. Errors:`
+  failure in the logs that carry it - 2 of 2 in `artifacts\manual-play.log`, 5 of 5 in the big run; the sixth
+  there, `Blazedust/VAMLaunch`, is a post-compile security rejection rather than a compile failure - and
+  post-fix it explains none. **The exception moves rather than disappears, and that is the fix working:**
+  `AcidBubbles.Timeline.283` now dies one step further on, in `TypeBuilderInstantiation.GetMethods` →
+  `NotSupportedException` from `McsDriver.cs:483`, which is a **second, separate** unguarded call in the same
+  repair and is left open rather than caught, for the reason above. `everlaster.TittyMagic.70` no longer dies in
+  the repair at all - it compiles and then fails to *load*, with `TypeLoadException` on its own
+  `ColliderModel\`1` vtable while the scene restores its plugin URL, outside the repair entirely. **No gate can
+  repeat this measurement**, and that is a limit of the harness rather than of the fix:
+  `src\Assembly-CSharp\RebuildGate.cs:658` calls `LoadPlayScene(sceneName, pluginsEnabled: false)` on purpose,
+  because every package's `.prefs` in this install carries `pluginsAlwaysEnabled:false`, so the gate logs name
+  no plugin path at all and have no plugin failures to count.
 
 ## 0.1.10-alpha
 
@@ -288,8 +325,10 @@ look, `shader-reconstruction.md` for the families, `rebuild-project.md` for the 
   editor: 5 log lines naming the missing file and 2 failed plugin compiles with the shipped list, 0 of each
   with the adaptation** (`artifacts\pluginrefs-stale.log` against `artifacts\pluginrefs-fixed.log`), where
   the earlier standing count to beat was **16 failed compiles**. What is left of that plugin is its own
-  runtime fault rather than the compiler's: `MacGruber.Breathing` now loads far enough to throw
-  `FieldAccessException` on a private field of its own nested generic type during `Init`. The A/B is the
+  runtime fault rather than the compiler's: on **this** engine (2019.4) `MacGruber.Breathing` loads far enough
+  to throw `FieldAccessException` on a private field of its own nested generic type during `Init` - a reading
+  that does not survive hop four, where the plugin compiles and its MonoBehaviour runs (see `0.1.11-alpha`
+  above, and section 9 of `docs\verification.md`). The A/B is the
   regression test for the next engine hop, and the chain is written up under *The plugin compiler* in
   `docs\rebuild-project.md` with the check itself as section 7 of `docs\verification.md`.
 - **The hop rewrote two more tracked project files, and touched nothing else.**
